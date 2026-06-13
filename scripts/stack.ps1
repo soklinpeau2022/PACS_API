@@ -253,6 +253,17 @@ function Invoke-Compose {
     & docker compose --env-file $envFile --profile $Target -f docker-compose.yml @ComposeArgs
 }
 
+function Show-LocalDockerPsSnapshot {
+    if ($Target -ne "local" -or $Action -notin @("up", "deploy")) { return }
+    if ($env:UDAYA_PACS_DOCKER_PS_LOGGED -eq "1") { return }
+
+    Write-Host ""
+    Write-Host ("Docker containers before local API {0}:" -f $Action)
+    docker ps | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "docker ps failed before local API $Action." }
+    $env:UDAYA_PACS_DOCKER_PS_LOGGED = "1"
+}
+
 function Resolve-HostPath {
     param([string]$PathValue, [string]$DefaultValue)
     $value = if ([string]::IsNullOrWhiteSpace($PathValue)) { $DefaultValue } else { $PathValue }
@@ -662,6 +673,8 @@ Then redeploy the API:
 "@
     }
 }
+
+Show-LocalDockerPsSnapshot
 
 switch ($Action) {
     "up" {

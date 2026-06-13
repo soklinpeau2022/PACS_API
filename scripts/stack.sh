@@ -444,6 +444,20 @@ compose() {
   docker compose --env-file "$ENV_FILE" --profile "$TARGET" -f docker-compose.yml "$@"
 }
 
+log_local_docker_ps_snapshot() {
+  if [[ "$TARGET" != "local" || ( "$ACTION" != "up" && "$ACTION" != "deploy" ) ]]; then
+    return 0
+  fi
+  if [[ "${UDAYA_PACS_DOCKER_PS_LOGGED:-}" == "1" ]]; then
+    return 0
+  fi
+
+  echo
+  echo "Docker containers before local API ${ACTION}:"
+  docker ps
+  export UDAYA_PACS_DOCKER_PS_LOGGED=1
+}
+
 target_env_value() {
   local suffix="$1"
   local fallback_key="${2:-}"
@@ -820,6 +834,8 @@ Then redeploy the API:
 EOF
   fi
 }
+
+log_local_docker_ps_snapshot
 
 case "$ACTION" in
   up)
