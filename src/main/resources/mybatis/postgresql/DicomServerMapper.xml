@@ -1,0 +1,1348 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.pacs.DicomServerMapper">
+
+    <resultMap id="HospitalDicomServerResponse" type="com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse" autoMapping="true"/>
+    <resultMap id="HospitalDicomMachineResponse" type="com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomMachineResponse" autoMapping="true"/>
+    <resultMap id="HospitalDicomRoutingConfigResponse" type="com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomRoutingConfigResponse" autoMapping="true"/>
+    <resultMap id="HospitalModalityServerRouteResponse" type="com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalModalityServerRouteResponse" autoMapping="true"/>
+    <resultMap id="WorklistMachineRouteChoiceResponse" type="com.ut.emrPacs.model.dto.response.pacs.worklist.WorklistMachineRouteChoiceResponse" autoMapping="true"/>
+    <resultMap id="WorklistRouteServerOptionResponse" type="com.ut.emrPacs.model.dto.response.pacs.worklist.WorklistRouteServerOptionResponse" autoMapping="true"/>
+
+    <sql id="DICOM_MACHINE_COLUMNS">
+            machine.id AS id,
+            machine.public_id::text AS publicKey,
+            machine.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            machine.modality_id AS modalityId,
+            m.public_id::text AS modalityPublicKey,
+            m.name AS modalityName,
+            m.abbr AS modalityAbbr,
+            machine.machine_name AS machineName,
+            machine.machine_ae_title AS machineAeTitle,
+            machine.machine_host AS machineHost,
+            machine.machine_port AS machinePort,
+            machine.is_active AS isActive,
+            TO_CHAR(machine.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+            TO_CHAR(machine.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+    </sql>
+
+    <sql id="DICOM_MACHINE_WHERE">
+        WHERE machine.is_active != 2
+          <if test="hospitalId != null">
+              AND machine.hospital_id = #{hospitalId}
+          </if>
+          <if test="request != null and request.modalityId != null and request.modalityId > 0">
+              AND machine.modality_id = #{request.modalityId}
+          </if>
+          <if test="request != null and request.searchText != null and request.searchText != ''">
+              AND (
+                  COALESCE(machine.machine_name, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(machine.machine_ae_title, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(machine.machine_host, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(m.name, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(h.name, '') ILIKE '%' || #{request.searchText} || '%'
+              )
+          </if>
+    </sql>
+
+    <sql id="DICOM_SERVER_URL_COLUMNS">
+            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) AS baseUrl,
+            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) AS dicomServerUiBaseUrl,
+            ((CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) || COALESCE(NULLIF(BTRIM(s.dicomweb_path), ''), '/dicom-web')) AS dicomwebBaseUrl,
+            COALESCE(NULLIF(BTRIM(s.dicomweb_path), ''), '/dicom-web') AS dicomwebPath,
+    </sql>
+
+    <sql id="DICOM_SERVER_CONFIG_COLUMNS">
+            s.pacs_result_api_key_hash AS pacsResultApiKeyHash,
+            (s.pacs_result_api_key_hash IS NOT NULL AND BTRIM(s.pacs_result_api_key_hash) != '') AS hasPacsResultApiKey,
+            s.storage_directory AS storageDirectory,
+            s.index_directory AS indexDirectory,
+            s.maximum_storage_size AS maximumStorageSize,
+            s.maximum_patient_count AS maximumPatientCount,
+            s.remote_access_allowed AS remoteAccessAllowed,
+            s.http_server_enabled AS httpServerEnabled,
+            s.enable_http_compression AS enableHttpCompression,
+            s.ssl_enabled AS sslEnabled,
+            s.authentication_enabled AS authenticationEnabled,
+            s.authorization_enabled AS authorizationEnabled,
+            s.authorization_root AS authorizationRoot,
+            s.authorization_checked_level AS authorizationCheckedLevel,
+            s.dicom_always_allow_echo AS dicomAlwaysAllowEcho,
+            s.dicom_always_allow_find AS dicomAlwaysAllowFind,
+            s.dicom_always_allow_get AS dicomAlwaysAllowGet,
+            s.dicom_always_allow_move AS dicomAlwaysAllowMove,
+            s.dicom_always_allow_store AS dicomAlwaysAllowStore,
+            s.dicom_check_called_aet AS dicomCheckCalledAet,
+            s.dicom_tls_enabled AS dicomTlsEnabled,
+            s.dicom_scp_timeout AS dicomScpTimeout,
+            s.dicom_peers_json AS dicomPeersJson,
+            s.worklists_enabled AS worklistsEnabled,
+            s.worklists_database AS worklistsDatabase,
+            s.plugins_paths AS pluginsPaths,
+    </sql>
+
+    <sql id="DICOM_SERVER_WHERE">
+        WHERE s.is_active != 2
+          <if test="hospitalId != null">
+              AND s.hospital_id = #{hospitalId}
+          </if>
+          <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+              AND (
+                  s.name ILIKE '%' || #{filter.searchText} || '%'
+                  OR s.ip_address ILIKE '%' || #{filter.searchText} || '%'
+                  OR s.port::text ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(s.dicom_port, 4242)::text ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(s.viewer_base_url, '') ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(s.pacs_api_callback_base_url, '') ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(s.ae_title, '') ILIKE '%' || #{filter.searchText} || '%'
+              )
+          </if>
+    </sql>
+
+    <sql id="DICOM_SERVER_ROUTE_JOINS">
+        LEFT JOIN hospital_dicom_routing_configs route_cfg
+               ON route_cfg.hospital_id = s.hospital_id
+              AND route_cfg.dicom_server_id = s.id
+              AND route_cfg.is_active = 1
+        LEFT JOIN hospital_modality_server_routes route_info
+               ON route_info.hospital_id = route_cfg.hospital_id
+              AND route_info.routing_config_id = route_cfg.id
+              AND route_info.is_active = 1
+        LEFT JOIN modalities route_modality
+               ON route_modality.id = route_info.modality_id
+              AND route_modality.is_active = 1
+    </sql>
+
+    <select id="countDicomServers" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_dicom_servers s
+        <include refid="DICOM_SERVER_WHERE"/>
+    </select>
+
+    <select id="listDicomServers" resultMap="HospitalDicomServerResponse">
+        SELECT
+            s.id AS id,
+            s.public_id::text AS publicKey,
+            s.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            s.name AS name,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.public_health_check_url AS publicHealthCheckUrl,
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            STRING_AGG(DISTINCT route_info.modality_id::text, ',' ORDER BY route_info.modality_id::text) AS modalityIdCsv,
+            STRING_AGG(DISTINCT route_modality.public_id::text, ',' ORDER BY route_modality.public_id::text) AS modalityPublicKeyCsv,
+            STRING_AGG(DISTINCT route_modality.name, ',' ORDER BY route_modality.name) AS modalityNameCsv,
+            s.is_active AS isActive,
+            TO_CHAR(s.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+            TO_CHAR(s.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+        FROM hospital_dicom_servers s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        <include refid="DICOM_SERVER_ROUTE_JOINS"/>
+        <include refid="DICOM_SERVER_WHERE"/>
+        GROUP BY s.id, h.id
+        ORDER BY s.id DESC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage}
+            OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="getDicomServerById" resultMap="HospitalDicomServerResponse">
+        SELECT
+            s.id AS id,
+            s.public_id::text AS publicKey,
+            s.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            s.name AS name,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.public_health_check_url AS publicHealthCheckUrl,
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            STRING_AGG(DISTINCT route_info.modality_id::text, ',' ORDER BY route_info.modality_id::text) AS modalityIdCsv,
+            STRING_AGG(DISTINCT route_modality.public_id::text, ',' ORDER BY route_modality.public_id::text) AS modalityPublicKeyCsv,
+            STRING_AGG(DISTINCT route_modality.name, ',' ORDER BY route_modality.name) AS modalityNameCsv,
+            s.is_active AS isActive,
+            TO_CHAR(s.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+            TO_CHAR(s.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+        FROM hospital_dicom_servers s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        <include refid="DICOM_SERVER_ROUTE_JOINS"/>
+        WHERE s.id = #{id}
+          <if test="hospitalId != null">
+              AND s.hospital_id = #{hospitalId}
+          </if>
+          AND s.is_active != 2
+        GROUP BY s.id, h.id
+        LIMIT 1
+    </select>
+
+    <select id="countActiveDicomServerNameDuplicate" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_dicom_servers
+        WHERE hospital_id = #{hospitalId}
+          AND is_active = 1
+          AND LOWER(name) = LOWER(#{name})
+        <if test="excludeId != null">
+            AND id != #{excludeId}
+        </if>
+    </select>
+
+    <select id="countActiveDicomServerEndpointDuplicate" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_dicom_servers
+        WHERE hospital_id = #{hospitalId}
+          AND is_active = 1
+          AND LOWER(ip_address) = LOWER(#{ipAddress})
+          AND port = #{port}
+          AND COALESCE(dicom_port, 4242) = COALESCE(#{dicomPort}, 4242)
+          AND LOWER(COALESCE(ae_title, '')) = LOWER(COALESCE(#{aeTitle}, ''))
+        <if test="excludeId != null">
+            AND id != #{excludeId}
+        </if>
+    </select>
+
+    <insert id="createDicomServer" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO hospital_dicom_servers (
+            hospital_id,
+            name,
+            ip_address,
+            port,
+            dicom_port,
+            ae_title,
+            dicomweb_path,
+            public_health_check_url,
+            viewer_base_url,
+            pacs_api_callback_base_url,
+            username,
+            password,
+            pacs_result_api_key_hash,
+            storage_directory,
+            index_directory,
+            maximum_storage_size,
+            maximum_patient_count,
+            remote_access_allowed,
+            http_server_enabled,
+            enable_http_compression,
+            ssl_enabled,
+            authentication_enabled,
+            authorization_enabled,
+            authorization_root,
+            authorization_checked_level,
+            dicom_always_allow_echo,
+            dicom_always_allow_find,
+            dicom_always_allow_get,
+            dicom_always_allow_move,
+            dicom_always_allow_store,
+            dicom_check_called_aet,
+            dicom_tls_enabled,
+            dicom_scp_timeout,
+            dicom_peers_json,
+            worklists_enabled,
+            worklists_database,
+            plugins_paths,
+            is_active,
+            created_by,
+            modified_by,
+            created_at,
+            modified_at
+        ) VALUES (
+            #{hospitalId},
+            #{name},
+            #{ipAddress},
+            #{port},
+            #{dicomPort},
+            #{aeTitle},
+            #{dicomwebPath},
+            #{publicHealthCheckUrl},
+            #{viewerBaseUrl},
+            #{pacsApiCallbackBaseUrl},
+            #{username},
+            #{password},
+            #{pacsResultApiKeyHash},
+            #{storageDirectory},
+            #{indexDirectory},
+            #{maximumStorageSize},
+            #{maximumPatientCount},
+            #{remoteAccessAllowed},
+            #{httpServerEnabled},
+            #{enableHttpCompression},
+            #{sslEnabled},
+            #{authenticationEnabled},
+            #{authorizationEnabled},
+            #{authorizationRoot},
+            #{authorizationCheckedLevel},
+            #{dicomAlwaysAllowEcho},
+            #{dicomAlwaysAllowFind},
+            #{dicomAlwaysAllowGet},
+            #{dicomAlwaysAllowMove},
+            #{dicomAlwaysAllowStore},
+            #{dicomCheckCalledAet},
+            #{dicomTlsEnabled},
+            #{dicomScpTimeout},
+            #{dicomPeersJson},
+            #{worklistsEnabled},
+            #{worklistsDatabase},
+            #{pluginsPaths},
+            1,
+            #{createdBy},
+            #{modifiedBy},
+            NOW(),
+            NOW()
+        )
+    </insert>
+
+    <update id="updateDicomServer">
+        UPDATE hospital_dicom_servers
+        SET
+            name = #{name},
+            ip_address = #{ipAddress},
+            port = #{port},
+            dicom_port = #{dicomPort},
+            ae_title = #{aeTitle},
+            dicomweb_path = #{dicomwebPath},
+            public_health_check_url = #{publicHealthCheckUrl},
+            viewer_base_url = #{viewerBaseUrl},
+            pacs_api_callback_base_url = #{pacsApiCallbackBaseUrl},
+            username = #{username},
+            password = #{password},
+            pacs_result_api_key_hash = #{pacsResultApiKeyHash},
+            storage_directory = #{storageDirectory},
+            index_directory = #{indexDirectory},
+            maximum_storage_size = #{maximumStorageSize},
+            maximum_patient_count = #{maximumPatientCount},
+            remote_access_allowed = #{remoteAccessAllowed},
+            http_server_enabled = #{httpServerEnabled},
+            enable_http_compression = #{enableHttpCompression},
+            ssl_enabled = #{sslEnabled},
+            authentication_enabled = #{authenticationEnabled},
+            authorization_enabled = #{authorizationEnabled},
+            authorization_root = #{authorizationRoot},
+            authorization_checked_level = #{authorizationCheckedLevel},
+            dicom_always_allow_echo = #{dicomAlwaysAllowEcho},
+            dicom_always_allow_find = #{dicomAlwaysAllowFind},
+            dicom_always_allow_get = #{dicomAlwaysAllowGet},
+            dicom_always_allow_move = #{dicomAlwaysAllowMove},
+            dicom_always_allow_store = #{dicomAlwaysAllowStore},
+            dicom_check_called_aet = #{dicomCheckCalledAet},
+            dicom_tls_enabled = #{dicomTlsEnabled},
+            dicom_scp_timeout = #{dicomScpTimeout},
+            dicom_peers_json = #{dicomPeersJson},
+            worklists_enabled = #{worklistsEnabled},
+            worklists_database = #{worklistsDatabase},
+            plugins_paths = #{pluginsPaths},
+            is_active = #{isActive},
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND hospital_id = #{hospitalId}
+          AND is_active != 2
+    </update>
+
+    <update id="updateDicomServerHttpCredential">
+        UPDATE hospital_dicom_servers
+        SET
+            username = #{username},
+            password = #{password},
+            http_server_enabled = TRUE,
+            remote_access_allowed = TRUE,
+            authentication_enabled = TRUE,
+            authorization_enabled = TRUE,
+            authorization_root = COALESCE(NULLIF(BTRIM(authorization_root), ''), '/authorization'),
+            authorization_checked_level = COALESCE(NULLIF(BTRIM(authorization_checked_level), ''), 'studies'),
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND hospital_id = #{hospitalId}
+          AND is_active = 1
+    </update>
+
+    <update id="deleteDicomServer">
+        UPDATE hospital_dicom_servers
+        SET
+            is_active = 2,
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND hospital_id = #{hospitalId}
+          AND is_active != 2
+          AND NOT EXISTS (
+              SELECT 1
+              FROM hospital_dicom_routing_configs cfg
+              WHERE cfg.hospital_id = hospital_dicom_servers.hospital_id
+                AND cfg.dicom_server_id = hospital_dicom_servers.id
+                AND cfg.is_active = 1
+          )
+    </update>
+
+    <select id="listActiveRouteUsageByDicomServerId" resultType="java.lang.String">
+        SELECT DISTINCT CONCAT(
+            COALESCE(NULLIF(BTRIM(h.abbr), ''), h.name, 'Hospital #' || h.id::text),
+            ' / ',
+            COALESCE(NULLIF(BTRIM(m.abbr), ''), m.name, 'Modality #' || m.id::text),
+            ' / ',
+            COALESCE(NULLIF(BTRIM(machine.machine_name), ''), 'Machine #' || machine.id::text),
+            ' -> ',
+            COALESCE(NULLIF(BTRIM(s.name), ''), 'DICOM Server #' || s.id::text)
+        ) AS usage
+        FROM hospital_modality_server_routes route
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = route.routing_config_id
+               AND cfg.hospital_id = route.hospital_id
+               AND cfg.is_active = 1
+        INNER JOIN hospitals h ON h.id = route.hospital_id
+        INNER JOIN modalities m ON m.id = route.modality_id
+        INNER JOIN hospital_dicom_machines machine ON machine.id = route.machine_id
+        INNER JOIN hospital_dicom_servers s ON s.id = cfg.dicom_server_id
+        WHERE route.hospital_id = #{hospitalId}
+          AND cfg.dicom_server_id = #{dicomServerId}
+          AND route.is_active = 1
+        ORDER BY usage ASC
+        LIMIT 12
+    </select>
+
+    <update id="updateDicomServerPacsResultApiKeyHash">
+        UPDATE hospital_dicom_servers
+        SET
+            pacs_result_api_key_hash = #{apiKeyHash},
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND hospital_id = #{hospitalId}
+          AND is_active != 2
+    </update>
+
+    <select id="countActiveDicomServersByHospital" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT id)
+        FROM hospital_dicom_servers
+        WHERE hospital_id = #{hospitalId}
+          AND is_active = 1
+          AND id IN
+        <foreach collection="serverIds" item="serverId" open="(" separator="," close=")">
+            #{serverId}
+        </foreach>
+    </select>
+
+    <select id="countDicomMachines" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_dicom_machines machine
+        INNER JOIN hospitals h ON h.id = machine.hospital_id
+        INNER JOIN modalities m ON m.id = machine.modality_id
+        <include refid="DICOM_MACHINE_WHERE"/>
+    </select>
+
+    <select id="listDicomMachines" resultMap="HospitalDicomMachineResponse">
+        SELECT
+            <include refid="DICOM_MACHINE_COLUMNS"/>
+        FROM hospital_dicom_machines machine
+        INNER JOIN hospitals h ON h.id = machine.hospital_id
+        INNER JOIN modalities m ON m.id = machine.modality_id
+        <include refid="DICOM_MACHINE_WHERE"/>
+        ORDER BY machine.modality_id ASC, machine.machine_name ASC, machine.id DESC
+        <if test="request != null and request.page != null and request.rowsPerPage != null">
+            LIMIT #{request.rowsPerPage}
+            OFFSET #{request.page}
+        </if>
+    </select>
+
+    <select id="getDicomMachineById" resultMap="HospitalDicomMachineResponse">
+        SELECT
+            <include refid="DICOM_MACHINE_COLUMNS"/>
+        FROM hospital_dicom_machines machine
+        INNER JOIN hospitals h ON h.id = machine.hospital_id
+        INNER JOIN modalities m ON m.id = machine.modality_id
+        WHERE machine.id = #{id}
+          <if test="hospitalId != null">
+              AND machine.hospital_id = #{hospitalId}
+          </if>
+          AND machine.is_active != 2
+        LIMIT 1
+    </select>
+
+    <select id="countActiveDicomMachineEndpointDuplicate" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_dicom_machines
+        WHERE hospital_id = #{hospitalId}
+          AND modality_id = #{modalityId}
+          AND LOWER(machine_ae_title) = LOWER(#{machineAeTitle})
+          AND LOWER(machine_host) = LOWER(#{machineHost})
+          AND machine_port = #{machinePort}
+          AND is_active = 1
+        <if test="excludeId != null">
+            AND id != #{excludeId}
+        </if>
+    </select>
+
+    <select id="countRoutesByMachineId" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_modality_server_routes
+        WHERE hospital_id = #{hospitalId}
+          AND machine_id = #{machineId}
+    </select>
+
+    <select id="listActiveRouteUsageByMachineId" resultType="java.lang.String">
+        SELECT DISTINCT CONCAT(
+            COALESCE(NULLIF(BTRIM(h.abbr), ''), h.name, 'Hospital #' || h.id::text),
+            ' / ',
+            COALESCE(NULLIF(BTRIM(m.abbr), ''), m.name, 'Modality #' || m.id::text),
+            ' -> ',
+            COALESCE(NULLIF(BTRIM(s.name), ''), 'DICOM Server #' || s.id::text)
+        ) AS usage
+        FROM hospital_modality_server_routes route
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = route.routing_config_id
+               AND cfg.hospital_id = route.hospital_id
+               AND cfg.is_active = 1
+        INNER JOIN hospitals h ON h.id = route.hospital_id
+        INNER JOIN modalities m ON m.id = route.modality_id
+        INNER JOIN hospital_dicom_servers s ON s.id = cfg.dicom_server_id
+        WHERE route.hospital_id = #{hospitalId}
+          AND route.machine_id = #{machineId}
+          AND route.is_active = 1
+        ORDER BY usage ASC
+        LIMIT 12
+    </select>
+
+    <insert id="createDicomMachine" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO hospital_dicom_machines (
+            hospital_id,
+            modality_id,
+            machine_name,
+            machine_ae_title,
+            machine_host,
+            machine_port,
+            is_active,
+            created_by,
+            modified_by,
+            created_at,
+            modified_at
+        ) VALUES (
+            #{hospitalId},
+            #{modalityId},
+            #{machineName},
+            #{machineAeTitle},
+            #{machineHost},
+            #{machinePort},
+            1,
+            #{createdBy},
+            #{modifiedBy},
+            NOW(),
+            NOW()
+        )
+    </insert>
+
+    <update id="updateDicomMachine">
+        UPDATE hospital_dicom_machines
+        SET
+            modality_id = #{modalityId},
+            machine_name = #{machineName},
+            machine_ae_title = #{machineAeTitle},
+            machine_host = #{machineHost},
+            machine_port = #{machinePort},
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND hospital_id = #{hospitalId}
+          AND is_active != 2
+    </update>
+
+    <update id="deleteDicomMachine">
+        UPDATE hospital_dicom_machines
+        SET
+            is_active = 2,
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND hospital_id = #{hospitalId}
+          AND is_active != 2
+          AND NOT EXISTS (
+              SELECT 1
+              FROM hospital_modality_server_routes route
+              WHERE route.hospital_id = hospital_dicom_machines.hospital_id
+                AND route.machine_id = hospital_dicom_machines.id
+                AND route.is_active = 1
+          )
+    </update>
+
+    <sql id="ROUTING_WHERE">
+        WHERE r.hospital_id = #{hospitalId}
+          AND r.is_active != 2
+          <if test="request != null and request.modalityId != null and request.modalityId > 0">
+              AND r.modality_id = #{request.modalityId}
+          </if>
+          <if test="request != null and request.searchText != null and request.searchText != ''">
+              AND (
+                  COALESCE(s.name, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(s.ip_address, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(s.viewer_base_url, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(s.ae_title, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(machine.machine_name, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(machine.machine_ae_title, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(machine.machine_host, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(m.name, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(h.name, '') ILIKE '%' || #{request.searchText} || '%'
+              )
+          </if>
+    </sql>
+
+    <sql id="ROUTING_CONFIG_WHERE">
+        WHERE cfg.is_active != 2
+          <if test="hospitalId != null">
+              AND cfg.hospital_id = #{hospitalId}
+          </if>
+          <if test="request != null and request.modalityId != null and request.modalityId > 0">
+              AND EXISTS (
+                  SELECT 1
+                  FROM hospital_modality_server_routes route_filter
+                  WHERE route_filter.routing_config_id = cfg.id
+                    AND route_filter.hospital_id = cfg.hospital_id
+                    AND route_filter.is_active = 1
+                    AND route_filter.modality_id = #{request.modalityId}
+              )
+          </if>
+          <if test="request != null and request.searchText != null and request.searchText != ''">
+              AND (
+                  COALESCE(h.name, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(cfg_server.name, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(cfg_server.viewer_base_url, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR COALESCE(cfg_server.ae_title, '') ILIKE '%' || #{request.searchText} || '%'
+                  OR EXISTS (
+                      SELECT 1
+                      FROM hospital_modality_server_routes route_filter
+                      LEFT JOIN modalities modality_filter
+                             ON modality_filter.id = route_filter.modality_id
+                      LEFT JOIN hospital_dicom_machines machine_filter
+                             ON machine_filter.id = route_filter.machine_id
+                            AND machine_filter.hospital_id = route_filter.hospital_id
+                      WHERE route_filter.routing_config_id = cfg.id
+                        AND route_filter.hospital_id = cfg.hospital_id
+                        AND route_filter.is_active = 1
+                        AND (
+                            COALESCE(machine_filter.machine_name, '') ILIKE '%' || #{request.searchText} || '%'
+                            OR COALESCE(machine_filter.machine_ae_title, '') ILIKE '%' || #{request.searchText} || '%'
+                            OR COALESCE(machine_filter.machine_host, '') ILIKE '%' || #{request.searchText} || '%'
+                            OR COALESCE(modality_filter.name, '') ILIKE '%' || #{request.searchText} || '%'
+                        )
+                  )
+              )
+          </if>
+    </sql>
+
+    <select id="countRoutingRoutes" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_modality_server_routes r
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = r.routing_config_id
+               AND cfg.hospital_id = r.hospital_id
+               AND cfg.is_active != 2
+        INNER JOIN hospitals h ON h.id = r.hospital_id
+        INNER JOIN modalities m ON m.id = r.modality_id
+        INNER JOIN hospital_dicom_servers s ON s.id = cfg.dicom_server_id
+        INNER JOIN hospital_dicom_machines machine ON machine.id = r.machine_id
+        <include refid="ROUTING_WHERE"/>
+    </select>
+
+    <select id="listRoutingRoutes" resultMap="HospitalModalityServerRouteResponse">
+        SELECT
+            r.id AS id,
+            r.public_id::text AS publicKey,
+            r.routing_config_id AS routingConfigId,
+            cfg.public_id::text AS routingConfigPublicKey,
+            r.machine_id AS machineId,
+            machine.public_id::text AS machinePublicKey,
+            r.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            r.modality_id AS modalityId,
+            m.public_id::text AS modalityPublicKey,
+            m.name AS modalityName,
+            m.abbr AS modalityAbbr,
+            cfg.dicom_server_id AS dicomServerId,
+            s.public_id::text AS dicomServerPublicKey,
+            s.name AS dicomServerName,
+            machine.machine_name AS machineName,
+            machine.machine_ae_title AS machineAeTitle,
+            machine.machine_host AS machineHost,
+            machine.machine_port AS machinePort,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            r.is_active AS isActive
+        FROM hospital_modality_server_routes r
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = r.routing_config_id
+               AND cfg.hospital_id = r.hospital_id
+               AND cfg.is_active != 2
+        INNER JOIN hospitals h ON h.id = r.hospital_id
+        INNER JOIN modalities m ON m.id = r.modality_id
+        INNER JOIN hospital_dicom_servers s ON s.id = cfg.dicom_server_id
+        INNER JOIN hospital_dicom_machines machine ON machine.id = r.machine_id
+        <include refid="ROUTING_WHERE"/>
+        ORDER BY r.id DESC
+        <if test="request != null and request.page != null and request.rowsPerPage != null">
+            LIMIT #{request.rowsPerPage}
+            OFFSET #{request.page}
+        </if>
+    </select>
+
+    <select id="countRoutingConfigs" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT cfg.id)
+        FROM hospital_dicom_routing_configs cfg
+        INNER JOIN hospitals h ON h.id = cfg.hospital_id
+        LEFT JOIN hospital_dicom_servers cfg_server ON cfg_server.id = cfg.dicom_server_id AND cfg_server.hospital_id = cfg.hospital_id
+        <include refid="ROUTING_CONFIG_WHERE"/>
+    </select>
+
+    <select id="listRoutingConfigs" resultMap="HospitalDicomRoutingConfigResponse">
+        SELECT
+            cfg.id AS id,
+            cfg.public_id::text AS publicKey,
+            cfg.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            cfg.dicom_server_id AS dicomServerId,
+            cfg_server.public_id::text AS dicomServerPublicKey,
+            cfg_server.name AS dicomServerName,
+            COUNT(DISTINCT route_summary.id)::bigint AS routeCount,
+            COUNT(DISTINCT route_summary.modality_id)::bigint AS modalityCount,
+            CASE WHEN cfg.dicom_server_id IS NULL THEN 0::bigint ELSE 1::bigint END AS dicomServerCount,
+            STRING_AGG(DISTINCT route_summary.modality_id::text, ',' ORDER BY route_summary.modality_id::text) AS modalityIdCsv,
+            STRING_AGG(DISTINCT modality_summary.public_id::text, ',' ORDER BY modality_summary.public_id::text) AS modalityPublicKeyCsv,
+            STRING_AGG(DISTINCT modality_summary.name, '~|~' ORDER BY modality_summary.name) AS modalityNameCsv,
+            cfg.dicom_server_id::text AS dicomServerIdCsv,
+            cfg_server.public_id::text AS dicomServerPublicKeyCsv,
+            cfg_server.name AS dicomServerNameCsv,
+            (CASE WHEN cfg_server.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || cfg_server.ip_address || ':' || cfg_server.port) AS dicomServerBaseUrlCsv,
+            cfg_server.ae_title AS aeTitleCsv,
+            STRING_AGG(DISTINCT COALESCE(machine_summary.machine_name, ''), '~|~' ORDER BY COALESCE(machine_summary.machine_name, '')) AS machineNameCsv,
+            STRING_AGG(DISTINCT COALESCE(machine_summary.machine_ae_title, ''), '~|~' ORDER BY COALESCE(machine_summary.machine_ae_title, '')) AS machineAeTitleCsv,
+            STRING_AGG(DISTINCT COALESCE(machine_summary.machine_host, ''), '~|~' ORDER BY COALESCE(machine_summary.machine_host, '')) AS machineHostCsv,
+            STRING_AGG(DISTINCT COALESCE(machine_summary.machine_port::text, ''), '~|~' ORDER BY COALESCE(machine_summary.machine_port::text, '')) AS machinePortCsv,
+            cfg.is_active AS isActive,
+            TO_CHAR(cfg.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+            TO_CHAR(cfg.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+        FROM hospital_dicom_routing_configs cfg
+        INNER JOIN hospitals h ON h.id = cfg.hospital_id
+        LEFT JOIN hospital_dicom_servers cfg_server ON cfg_server.id = cfg.dicom_server_id AND cfg_server.hospital_id = cfg.hospital_id
+        LEFT JOIN hospital_modality_server_routes route_summary
+               ON route_summary.routing_config_id = cfg.id
+              AND route_summary.hospital_id = cfg.hospital_id
+              AND route_summary.is_active = 1
+        LEFT JOIN modalities modality_summary ON modality_summary.id = route_summary.modality_id
+        LEFT JOIN hospital_dicom_machines machine_summary ON machine_summary.id = route_summary.machine_id
+        <include refid="ROUTING_CONFIG_WHERE"/>
+        GROUP BY cfg.id, cfg.hospital_id, h.name, h.public_id, cfg.dicom_server_id, cfg_server.id, cfg_server.name, cfg_server.ssl_enabled, cfg_server.ip_address, cfg_server.port, cfg_server.ae_title, cfg.is_active, cfg.created_at, cfg.modified_at
+        ORDER BY cfg.id DESC
+        <if test="request != null and request.page != null and request.rowsPerPage != null">
+            LIMIT #{request.rowsPerPage}
+            OFFSET #{request.page}
+        </if>
+    </select>
+
+    <select id="getRoutingConfigById" resultMap="HospitalDicomRoutingConfigResponse">
+        SELECT
+            cfg.id AS id,
+            cfg.public_id::text AS publicKey,
+            cfg.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            cfg.dicom_server_id AS dicomServerId,
+            cfg_server.public_id::text AS dicomServerPublicKey,
+            cfg_server.name AS dicomServerName,
+            COUNT(DISTINCT route_summary.id)::bigint AS routeCount,
+            COUNT(DISTINCT route_summary.modality_id)::bigint AS modalityCount,
+            CASE WHEN cfg.dicom_server_id IS NULL THEN 0::bigint ELSE 1::bigint END AS dicomServerCount,
+            STRING_AGG(DISTINCT route_summary.modality_id::text, ',' ORDER BY route_summary.modality_id::text) AS modalityIdCsv,
+            STRING_AGG(DISTINCT modality_summary.public_id::text, ',' ORDER BY modality_summary.public_id::text) AS modalityPublicKeyCsv,
+            STRING_AGG(DISTINCT modality_summary.name, '~|~' ORDER BY modality_summary.name) AS modalityNameCsv,
+            cfg.dicom_server_id::text AS dicomServerIdCsv,
+            cfg_server.public_id::text AS dicomServerPublicKeyCsv,
+            cfg_server.name AS dicomServerNameCsv,
+            (CASE WHEN cfg_server.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || cfg_server.ip_address || ':' || cfg_server.port) AS dicomServerBaseUrlCsv,
+            cfg_server.ae_title AS aeTitleCsv,
+            STRING_AGG(DISTINCT COALESCE(machine_summary.machine_name, ''), '~|~' ORDER BY COALESCE(machine_summary.machine_name, '')) AS machineNameCsv,
+            STRING_AGG(DISTINCT COALESCE(machine_summary.machine_ae_title, ''), '~|~' ORDER BY COALESCE(machine_summary.machine_ae_title, '')) AS machineAeTitleCsv,
+            STRING_AGG(DISTINCT COALESCE(machine_summary.machine_host, ''), '~|~' ORDER BY COALESCE(machine_summary.machine_host, '')) AS machineHostCsv,
+            STRING_AGG(DISTINCT COALESCE(machine_summary.machine_port::text, ''), '~|~' ORDER BY COALESCE(machine_summary.machine_port::text, '')) AS machinePortCsv,
+            cfg.is_active AS isActive,
+            TO_CHAR(cfg.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+            TO_CHAR(cfg.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+        FROM hospital_dicom_routing_configs cfg
+        INNER JOIN hospitals h ON h.id = cfg.hospital_id
+        LEFT JOIN hospital_dicom_servers cfg_server ON cfg_server.id = cfg.dicom_server_id AND cfg_server.hospital_id = cfg.hospital_id
+        LEFT JOIN hospital_modality_server_routes route_summary
+               ON route_summary.routing_config_id = cfg.id
+              AND route_summary.hospital_id = cfg.hospital_id
+              AND route_summary.is_active = 1
+        LEFT JOIN modalities modality_summary ON modality_summary.id = route_summary.modality_id
+        LEFT JOIN hospital_dicom_machines machine_summary ON machine_summary.id = route_summary.machine_id
+        WHERE cfg.id = #{id}
+          <if test="hospitalId != null">
+              AND cfg.hospital_id = #{hospitalId}
+          </if>
+          AND cfg.is_active != 2
+        GROUP BY cfg.id, cfg.hospital_id, h.name, h.public_id, cfg.dicom_server_id, cfg_server.id, cfg_server.name, cfg_server.ssl_enabled, cfg_server.ip_address, cfg_server.port, cfg_server.ae_title, cfg.is_active, cfg.created_at, cfg.modified_at
+        LIMIT 1
+    </select>
+
+    <select id="countActiveRoutingConfigByHospitalAndServer" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_dicom_routing_configs
+        WHERE hospital_id = #{hospitalId}
+          AND dicom_server_id = #{dicomServerId}
+          AND is_active = 1
+        <if test="excludeId != null">
+            AND id != #{excludeId}
+        </if>
+    </select>
+
+    <select id="findActiveRoutingConfigIdByHospital" resultType="java.lang.Long">
+        SELECT id
+        FROM hospital_dicom_routing_configs
+        WHERE hospital_id = #{hospitalId}
+          AND is_active = 1
+        ORDER BY id DESC
+        LIMIT 1
+    </select>
+
+    <insert id="createRoutingConfig" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO hospital_dicom_routing_configs (
+            hospital_id,
+            dicom_server_id,
+            is_active,
+            created_by,
+            modified_by,
+            created_at,
+            modified_at
+        ) VALUES (
+            #{hospitalId},
+            #{dicomServerId},
+            1,
+            #{createdBy},
+            #{modifiedBy},
+            NOW(),
+            NOW()
+        )
+    </insert>
+
+    <update id="touchRoutingConfig">
+        UPDATE hospital_dicom_routing_configs
+        SET
+            dicom_server_id = #{dicomServerId},
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND hospital_id = #{hospitalId}
+          AND is_active != 2
+    </update>
+
+    <update id="deleteRoutingConfigById">
+        UPDATE hospital_dicom_routing_configs
+        SET
+            is_active = 2,
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND hospital_id = #{hospitalId}
+          AND is_active != 2
+    </update>
+
+    <update id="deactivateRoutesByRoutingConfigId">
+        UPDATE hospital_modality_server_routes
+        SET
+            is_active = 2,
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE routing_config_id = #{routingConfigId}
+          AND hospital_id = #{hospitalId}
+          AND is_active != 2
+    </update>
+
+    <select id="listRoutesByRoutingConfigIds" resultMap="HospitalModalityServerRouteResponse">
+        SELECT
+            r.id AS id,
+            r.public_id::text AS publicKey,
+            r.routing_config_id AS routingConfigId,
+            cfg.public_id::text AS routingConfigPublicKey,
+            r.machine_id AS machineId,
+            machine.public_id::text AS machinePublicKey,
+            r.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            r.modality_id AS modalityId,
+            m.public_id::text AS modalityPublicKey,
+            m.name AS modalityName,
+            m.abbr AS modalityAbbr,
+            cfg.dicom_server_id AS dicomServerId,
+            s.public_id::text AS dicomServerPublicKey,
+            s.name AS dicomServerName,
+            machine.machine_name AS machineName,
+            machine.machine_ae_title AS machineAeTitle,
+            machine.machine_host AS machineHost,
+            machine.machine_port AS machinePort,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            r.is_active AS isActive
+        FROM hospital_modality_server_routes r
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = r.routing_config_id
+               AND cfg.hospital_id = r.hospital_id
+               AND cfg.is_active = 1
+        INNER JOIN hospitals h ON h.id = r.hospital_id
+        INNER JOIN modalities m ON m.id = r.modality_id
+        INNER JOIN hospital_dicom_servers s ON s.id = cfg.dicom_server_id
+        INNER JOIN hospital_dicom_machines machine ON machine.id = r.machine_id
+        WHERE r.is_active = 1
+          <if test="hospitalId != null">
+              AND r.hospital_id = #{hospitalId}
+          </if>
+          AND r.routing_config_id IN
+        <foreach collection="routingConfigIds" item="routingConfigId" open="(" separator="," close=")">
+            #{routingConfigId}
+        </foreach>
+        <if test="modalityId != null and modalityId > 0">
+            AND r.modality_id = #{modalityId}
+        </if>
+        ORDER BY r.routing_config_id ASC, m.name ASC, s.name ASC, r.id ASC
+    </select>
+
+    <select id="listRoutesByHospitalAndModality" resultMap="HospitalModalityServerRouteResponse">
+        SELECT
+            r.id AS id,
+            r.public_id::text AS publicKey,
+            r.routing_config_id AS routingConfigId,
+            cfg.public_id::text AS routingConfigPublicKey,
+            r.machine_id AS machineId,
+            machine.public_id::text AS machinePublicKey,
+            r.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            r.modality_id AS modalityId,
+            m.public_id::text AS modalityPublicKey,
+            m.name AS modalityName,
+            m.abbr AS modalityAbbr,
+            cfg.dicom_server_id AS dicomServerId,
+            s.public_id::text AS dicomServerPublicKey,
+            s.name AS dicomServerName,
+            machine.machine_name AS machineName,
+            machine.machine_ae_title AS machineAeTitle,
+            machine.machine_host AS machineHost,
+            machine.machine_port AS machinePort,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            r.is_active AS isActive
+        FROM hospital_modality_server_routes r
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = r.routing_config_id
+               AND cfg.hospital_id = r.hospital_id
+               AND cfg.is_active != 2
+        INNER JOIN hospitals h ON h.id = r.hospital_id
+        INNER JOIN modalities m ON m.id = r.modality_id
+        INNER JOIN hospital_dicom_servers s ON s.id = cfg.dicom_server_id
+        INNER JOIN hospital_dicom_machines machine ON machine.id = r.machine_id
+        WHERE r.hospital_id = #{hospitalId}
+          AND r.modality_id = #{modalityId}
+          AND r.is_active != 2
+        ORDER BY r.id ASC
+    </select>
+
+    <select id="listActiveRoutesByHospitalAndModality" resultMap="HospitalModalityServerRouteResponse">
+        SELECT
+            r.id AS id,
+            r.public_id::text AS publicKey,
+            r.routing_config_id AS routingConfigId,
+            cfg.public_id::text AS routingConfigPublicKey,
+            r.machine_id AS machineId,
+            machine.public_id::text AS machinePublicKey,
+            r.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            r.modality_id AS modalityId,
+            m.public_id::text AS modalityPublicKey,
+            m.name AS modalityName,
+            m.abbr AS modalityAbbr,
+            cfg.dicom_server_id AS dicomServerId,
+            s.public_id::text AS dicomServerPublicKey,
+            s.name AS dicomServerName,
+            machine.machine_name AS machineName,
+            machine.machine_ae_title AS machineAeTitle,
+            machine.machine_host AS machineHost,
+            machine.machine_port AS machinePort,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            r.is_active AS isActive
+        FROM hospital_modality_server_routes r
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = r.routing_config_id
+               AND cfg.hospital_id = r.hospital_id
+               AND cfg.is_active = 1
+        INNER JOIN hospitals h ON h.id = r.hospital_id AND h.is_active = 1
+        INNER JOIN modalities m ON m.id = r.modality_id AND m.is_active = 1
+        INNER JOIN hospital_dicom_servers s ON s.id = cfg.dicom_server_id AND s.is_active = 1
+        INNER JOIN hospital_dicom_machines machine ON machine.id = r.machine_id AND machine.is_active = 1
+        WHERE r.hospital_id = #{hospitalId}
+          AND r.modality_id = #{modalityId}
+          AND r.is_active = 1
+        ORDER BY r.id ASC
+    </select>
+
+    <select id="listActiveRouteChoicesByHospitalAndModality" resultMap="WorklistMachineRouteChoiceResponse">
+        SELECT
+            r.id AS id,
+            r.public_id::text AS publicKey,
+            r.modality_id AS modalityId,
+            m.public_id::text AS modalityPublicKey,
+            m.name AS modalityName,
+            m.abbr AS modalityCode,
+            machine.public_id::text AS machinePublicKey,
+            machine.machine_name AS machineName,
+            s.public_id::text AS dicomServerPublicKey,
+            s.name AS dicomServerName
+        FROM hospital_modality_server_routes r
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = r.routing_config_id
+               AND cfg.hospital_id = r.hospital_id
+               AND cfg.is_active = 1
+        INNER JOIN modalities m ON m.id = r.modality_id AND m.is_active = 1
+        INNER JOIN hospital_dicom_servers s ON s.id = cfg.dicom_server_id AND s.is_active = 1
+        INNER JOIN hospital_dicom_machines machine ON machine.id = r.machine_id AND machine.is_active = 1
+        WHERE r.hospital_id = #{hospitalId}
+          AND r.modality_id = #{modalityId}
+          AND r.is_active = 1
+        ORDER BY machine.machine_name ASC, r.id ASC
+    </select>
+
+    <select id="listActiveRouteServerOptionsByHospitalAndModality" resultMap="WorklistRouteServerOptionResponse">
+        SELECT
+            s.id AS dicomServerId,
+            s.public_id::text AS dicomServerPublicKey,
+            s.name AS dicomServerName,
+            COUNT(DISTINCT r.id)::bigint AS routeCount,
+            COUNT(DISTINCT machine.id)::bigint AS machineCount
+        FROM hospital_modality_server_routes r
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = r.routing_config_id
+               AND cfg.hospital_id = r.hospital_id
+               AND cfg.is_active = 1
+        INNER JOIN hospitals h ON h.id = r.hospital_id AND h.is_active = 1
+        INNER JOIN modalities m ON m.id = r.modality_id AND m.is_active = 1
+        INNER JOIN hospital_dicom_servers s ON s.id = cfg.dicom_server_id AND s.is_active = 1
+        INNER JOIN hospital_dicom_machines machine ON machine.id = r.machine_id AND machine.is_active = 1
+        WHERE r.hospital_id = #{hospitalId}
+          AND r.modality_id = #{modalityId}
+          AND r.is_active = 1
+        GROUP BY s.id, s.public_id, s.name
+        ORDER BY s.name ASC, s.id ASC
+    </select>
+
+    <select id="listActiveRoutedModalityOptionsByHospital" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
+        SELECT
+            m.id AS value,
+            m.public_id::text AS publicKey,
+            CONCAT(COALESCE(NULLIF(m.abbr, ''), 'OT'), ' - ', m.name) AS label
+        FROM hospital_modality_server_routes r
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = r.routing_config_id
+               AND cfg.hospital_id = r.hospital_id
+               AND cfg.is_active = 1
+        INNER JOIN hospitals h ON h.id = r.hospital_id AND h.is_active = 1
+        INNER JOIN hospital_modalities hm
+                ON hm.hospital_id = r.hospital_id
+               AND hm.modality_id = r.modality_id
+               AND hm.is_active = 1
+        INNER JOIN modalities m ON m.id = r.modality_id AND m.is_active = 1
+        INNER JOIN hospital_dicom_servers s ON s.id = cfg.dicom_server_id AND s.is_active = 1
+        INNER JOIN hospital_dicom_machines machine
+                ON machine.id = r.machine_id
+               AND machine.hospital_id = r.hospital_id
+               AND machine.modality_id = r.modality_id
+               AND machine.is_active = 1
+        WHERE r.hospital_id = #{hospitalId}
+          AND r.is_active = 1
+        GROUP BY m.id, m.abbr, m.name
+        ORDER BY COALESCE(NULLIF(m.abbr, ''), 'OT') ASC, m.name ASC, m.id ASC
+    </select>
+
+    <insert id="upsertSingleRoute">
+        INSERT INTO hospital_modality_server_routes (
+            routing_config_id,
+            hospital_id,
+            modality_id,
+            machine_id,
+            is_active,
+            created_by,
+            modified_by,
+            created_at,
+            modified_at
+        ) VALUES (
+            #{routingConfigId},
+            #{hospitalId},
+            #{modalityId},
+            #{machineId},
+            1,
+            #{createdBy},
+            #{modifiedBy},
+            NOW(),
+            NOW()
+        )
+    </insert>
+
+    <select id="findActiveDicomServerByWorklist" resultMap="HospitalDicomServerResponse">
+        SELECT
+            s.id AS id,
+            s.public_id::text AS publicKey,
+            s.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            s.name AS name,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            route_info.modality_id_csv AS modalityIdCsv,
+            route_info.modality_public_key_csv AS modalityPublicKeyCsv,
+            route_info.modality_name_csv AS modalityNameCsv,
+            s.is_active AS isActive,
+            TO_CHAR(s.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+            TO_CHAR(s.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+        FROM pacs_worklists q
+        LEFT JOIN hospital_modality_server_routes selected_route
+            ON selected_route.id = q.dicom_route_id
+           AND selected_route.hospital_id = q.hospital_id
+        LEFT JOIN hospital_dicom_routing_configs selected_cfg
+            ON selected_cfg.id = selected_route.routing_config_id
+           AND selected_cfg.hospital_id = selected_route.hospital_id
+           AND selected_cfg.is_active = 1
+        LEFT JOIN pacs_worklist_study_links qsl
+            ON qsl.hospital_id = q.hospital_id
+           AND qsl.worklist_id = q.id
+           AND qsl.is_primary = 1
+        LEFT JOIN pacs_studies study
+            ON study.hospital_id = q.hospital_id
+           AND study.id = COALESCE(q.study_id, qsl.study_id)
+           AND study.is_active = 1
+        INNER JOIN hospital_dicom_servers s
+            ON s.id = COALESCE(selected_cfg.dicom_server_id, study.dicom_server_id)
+           AND s.hospital_id = q.hospital_id
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        LEFT JOIN LATERAL (
+            SELECT
+                STRING_AGG(DISTINCT r.modality_id::text, ',' ORDER BY r.modality_id::text) AS modality_id_csv,
+                STRING_AGG(DISTINCT m.public_id::text, ',' ORDER BY m.public_id::text) AS modality_public_key_csv,
+                STRING_AGG(DISTINCT m.name, ',' ORDER BY m.name) AS modality_name_csv
+            FROM hospital_modality_server_routes r
+            INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = r.routing_config_id
+               AND cfg.hospital_id = r.hospital_id
+               AND cfg.is_active = 1
+            INNER JOIN modalities m ON m.id = r.modality_id AND m.is_active = 1
+            WHERE r.hospital_id = s.hospital_id
+              AND cfg.dicom_server_id = s.id
+              AND r.is_active = 1
+        ) route_info ON TRUE
+        WHERE q.hospital_id = #{hospitalId}
+          AND q.id = #{worklistId}
+          AND s.is_active = 1
+        LIMIT 1
+    </select>
+
+    <select id="findActiveDicomServerByHospitalAndAeTitle" resultMap="HospitalDicomServerResponse">
+        SELECT
+            s.id AS id,
+            s.public_id::text AS publicKey,
+            s.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            s.name AS name,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            route_info.modality_id_csv AS modalityIdCsv,
+            route_info.modality_public_key_csv AS modalityPublicKeyCsv,
+            route_info.modality_name_csv AS modalityNameCsv,
+            s.is_active AS isActive,
+            TO_CHAR(s.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+            TO_CHAR(s.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+        FROM hospital_dicom_servers s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        LEFT JOIN LATERAL (
+            SELECT
+                STRING_AGG(DISTINCT r.modality_id::text, ',' ORDER BY r.modality_id::text) AS modality_id_csv,
+                STRING_AGG(DISTINCT m.public_id::text, ',' ORDER BY m.public_id::text) AS modality_public_key_csv,
+                STRING_AGG(DISTINCT m.name, ',' ORDER BY m.name) AS modality_name_csv
+            FROM hospital_modality_server_routes r
+            INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = r.routing_config_id
+               AND cfg.hospital_id = r.hospital_id
+               AND cfg.is_active = 1
+            INNER JOIN modalities m ON m.id = r.modality_id AND m.is_active = 1
+            WHERE r.hospital_id = s.hospital_id
+              AND cfg.dicom_server_id = s.id
+              AND r.is_active = 1
+        ) route_info ON TRUE
+        WHERE s.hospital_id = #{hospitalId}
+          AND s.is_active = 1
+          AND UPPER(TRIM(s.ae_title)) = UPPER(TRIM(#{aeTitle}))
+        ORDER BY s.id ASC
+        LIMIT 1
+    </select>
+
+    <select id="listActiveDicomServersByHttpUsername" resultMap="HospitalDicomServerResponse">
+        SELECT
+            s.id AS id,
+            s.public_id::text AS publicKey,
+            s.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            s.name AS name,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            s.is_active AS isActive,
+            TO_CHAR(s.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+            TO_CHAR(s.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+        FROM hospital_dicom_servers s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        WHERE s.is_active = 1
+          AND s.username IS NOT NULL
+          AND BTRIM(s.username) != ''
+          AND LOWER(BTRIM(s.username)) = LOWER(BTRIM(#{username}))
+        ORDER BY s.id ASC
+    </select>
+
+    <select id="listActiveDicomServersByHospital" resultMap="HospitalDicomServerResponse">
+        SELECT
+            s.id AS id,
+            s.public_id::text AS publicKey,
+            s.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            s.name AS name,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            s.is_active AS isActive,
+            TO_CHAR(s.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+            TO_CHAR(s.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+        FROM hospital_dicom_servers s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        WHERE s.hospital_id = #{hospitalId}
+          AND s.is_active = 1
+        ORDER BY s.id ASC
+    </select>
+
+    <select id="listActiveDicomServersForHealth" resultMap="HospitalDicomServerResponse">
+        SELECT
+            s.id AS id,
+            s.public_id::text AS publicKey,
+            s.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            s.name AS name,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.public_health_check_url AS publicHealthCheckUrl,
+            s.username AS username,
+            s.password AS password,
+            s.ssl_enabled AS sslEnabled,
+            s.is_active AS isActive
+        FROM hospital_dicom_servers s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        WHERE s.is_active = 1
+          AND h.is_active = 1
+          <if test="hospitalId != null">
+              AND s.hospital_id = #{hospitalId}
+          </if>
+        ORDER BY h.name ASC, s.name ASC, s.id ASC
+    </select>
+
+</mapper>

@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.log.ActivityLogMapper">
+
+    <resultMap id="ActivityLog" type="com.ut.emrPacs.model.log.ActivityLog">
+        <id property="id" column="id"/>
+        <result property="publicKey" column="public_key"/>
+        <result property="module" column="module"/>
+        <result property="moduleId" column="module_id"/>
+        <result property="act" column="action"/>
+        <result property="action" column="action"/>
+        <result property="actionName" column="action_name"/>
+        <result property="description" column="description"/>
+        <result property="bug" column="bug"/>
+        <result property="browser" column="browser"/>
+        <result property="operatingSystem" column="operating_system"/>
+        <result property="ip" column="ip"/>
+        <result property="duration" column="duration"/>
+        <result property="hostName" column="host_name"/>
+        <result property="line" column="line_code"/>
+        <result property="endpoint" column="endpoint"/>
+        <result property="created" column="created"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="createdBy" column="created_by"/>
+        <result property="username" column="username"/>
+    </resultMap>
+
+    <sql id="BASE_COLUMN_LIST">
+        system_activities.id,
+        system_activities.public_id::text AS public_key,
+        system_activities.module,
+        system_activities.module_id,
+        system_activities.action,
+        system_activities.action AS action_name,
+        system_activities.description,
+        system_activities.bug,
+        system_activities.browser,
+        system_activities.operating_system,
+        system_activities.ip,
+        system_activities.duration,
+        system_activities.host_name,
+        system_activities.line_code,
+        system_activities.endpoint,
+        system_activities.created_by,
+        system_activities.created::text AS created,
+        system_activities.created::text AS created_at,
+        COALESCE(
+            NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''),
+            u.username,
+            CONCAT('User#', system_activities.created_by)
+        ) AS username,
+        COALESCE(
+            NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''),
+            u.username,
+            CONCAT('User#', system_activities.created_by)
+        ) AS user_name
+    </sql>
+
+    <sql id="BASE_FROM">
+        FROM system_activities
+        LEFT JOIN users u ON u.id = system_activities.created_by
+    </sql>
+
+    <sql id="BASE_WHERE">
+        WHERE 1 = 1
+
+        <if test="startDate != null and startDate != '' and startDate != '0000-00-00'
+                and endDate != null and endDate != '' and endDate != '0000-00-00'">
+
+            AND system_activities.created &gt;= TO_DATE(#{startDate}, 'YYYY-MM-DD')
+
+            AND system_activities.created &lt; (TO_DATE(#{endDate}, 'YYYY-MM-DD') + INTERVAL '1 day')
+
+        </if>
+
+        <if test="moduleId != null">
+            AND system_activities.module_id = #{moduleId}
+        </if>
+
+        <if test="userId != null">
+            AND system_activities.created_by = #{userId}
+        </if>
+
+        <if test="status != null">
+            AND system_activities.status = #{status}
+        </if>
+
+        <if test="action != null and action != ''">
+            AND LOWER(COALESCE(system_activities.action, '')) = LOWER(#{action})
+        </if>
+
+        <if test="module != null and module != ''">
+            AND LOWER(COALESCE(system_activities.module, '')) = LOWER(#{module})
+        </if>
+
+        <if test="endpoint != null and endpoint != ''">
+            AND LOWER(COALESCE(system_activities.endpoint, '')) = LOWER(#{endpoint})
+        </if>
+
+        <if test="searchText != null and searchText != ''">
+            AND (
+                COALESCE(system_activities.endpoint, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(system_activities.module, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(system_activities.action, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(system_activities.description, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(system_activities.ip, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(system_activities.host_name, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(u.username, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(u.first_name, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(u.last_name, '') ILIKE '%' || #{searchText} || '%'
+            )
+        </if>
+    </sql>
+
+    <select id="listActivityLog" parameterType="com.ut.emrPacs.model.base.filter.ActivityFilter" resultMap="ActivityLog">
+        SELECT
+        <include refid="BASE_COLUMN_LIST"/>
+        <include refid="BASE_FROM"/>
+        <include refid="BASE_WHERE"/>
+        ORDER BY
+        <choose>
+            <when test="orderBy != null and orderBy != ''">
+                ${orderBy}
+            </when>
+            <otherwise>
+                system_activities.id DESC
+            </otherwise>
+        </choose>
+        <if test="page != null and rowsPerPage != null">LIMIT #{rowsPerPage} OFFSET #{page}</if>
+    </select>
+
+    <select id="countList" parameterType="com.ut.emrPacs.model.base.filter.ActivityFilter" resultType="java.lang.Long">
+        SELECT COUNT(system_activities.id)
+        <include refid="BASE_FROM"/>
+        <include refid="BASE_WHERE"/>
+    </select>
+
+    <select id="getActivityLogById" parameterType="java.lang.Long" resultMap="ActivityLog">
+        SELECT
+        <include refid="BASE_COLUMN_LIST"/>
+        <include refid="BASE_FROM"/>
+        WHERE system_activities.id = #{id}
+    </select>
+
+    <insert id="createActivityLog" parameterType="com.ut.emrPacs.model.log.ActivityLog" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO system_activities (
+            endpoint, module, module_id, action, description, bug, line_code, browser, operating_system, ip, host_name, duration, created_by, created, status
+        ) VALUES (
+                     #{endpoint}, #{module}, #{moduleId}, #{act}, #{description}, #{bug}, #{line}, #{browser}, #{operatingSystem}, #{ip}, #{hostName}, #{duration}, #{createdBy}, NOW(), #{status}
+                 )
+    </insert>
+
+    <select id="getModuleId" resultType="java.lang.Long">
+        SELECT id
+        FROM modules
+        WHERE is_active = 1
+          AND name = #{moduleName}
+        LIMIT 1
+    </select>
+
+    <select id="getFullName" resultType="java.lang.String">
+        SELECT username
+        FROM users
+        WHERE is_active = 1
+          AND id = #{userId}
+        LIMIT 1
+    </select>
+
+</mapper>

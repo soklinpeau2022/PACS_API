@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.report.users.UserLogMapper">
+    <resultMap id="UserLogResponse" type="com.ut.emrPacs.model.dto.response.reports.users.UserLogResponse">
+        <id property="id" column="id"/>
+        <result property="publicKey" column="public_key"/>
+        <result property="userId" column="user_id"/>
+        <result property="dateTime" column="date_time"/>
+        <result property="userName" column="user_name"/>
+        <result property="username" column="username"/>
+        <result property="action" column="action"/>
+        <result property="actionName" column="action_name"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="description" column="description"/>
+        <result property="message" column="message"/>
+        <result property="remoteAddr" column="remote_addr"/>
+        <result property="httpUserAgent" column="http_user_agent"/>
+    </resultMap>
+
+    <sql id="BASE_COLUMN_LIST">
+        user_logs.id AS id,
+        user_logs.public_id::text AS public_key,
+        user_logs.user_id AS user_id,
+        user_logs.created::text AS date_time,
+        user_logs.created::text AS created_at,
+        COALESCE(
+            NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''),
+            u.username,
+            CONCAT('User#', user_logs.user_id)
+        ) AS user_name,
+        COALESCE(
+            NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''),
+            u.username,
+            CONCAT('User#', user_logs.user_id)
+        ) AS username,
+        user_logs.type AS action,
+        user_logs.type AS action_name,
+        user_logs.type AS description,
+        user_logs.type AS message,
+        user_logs.remote_addr AS remote_addr,
+        user_logs.http_user_agent AS http_user_agent
+    </sql>
+
+    <sql id="BASE_FROM">
+        FROM user_logs
+        LEFT JOIN users u ON u.id = user_logs.user_id
+    </sql>
+
+    <sql id="BASE_WHERE">
+        WHERE 1 = 1
+        <if test="dateFrom != null and dateFrom != '' and dateFrom != '0000-00-00'">
+            AND user_logs.created >= TO_DATE(#{dateFrom}, 'YYYY-MM-DD')
+        </if>
+        <if test="dateTo != null and dateTo != '' and dateTo != '0000-00-00'">
+            AND user_logs.created &lt; (TO_DATE(#{dateTo}, 'YYYY-MM-DD') + INTERVAL '1 day')
+        </if>
+        <if test="userNameId != null">
+            AND user_logs.user_id = #{userNameId}
+        </if>
+        <if test="searchText != null and searchText != ''">
+            AND (
+                COALESCE(user_logs.type, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(user_logs.remote_addr, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(user_logs.http_user_agent, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(u.username, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(u.first_name, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(u.last_name, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''), '') ILIKE '%' || #{searchText} || '%'
+            )
+        </if>
+
+    </sql>
+
+    <select id="listUserLog" parameterType="com.ut.emrPacs.model.base.filter.UserLogFilter" resultMap="UserLogResponse">
+        SELECT
+        <include refid="BASE_COLUMN_LIST"/>
+        <include refid="BASE_FROM"/>
+        <include refid="BASE_WHERE"/>
+        ORDER BY
+        <choose>
+            <when test="orderBy != null and orderBy != ''">
+                ${orderBy}
+            </when>
+            <otherwise>
+                user_logs.id DESC
+            </otherwise>
+        </choose>
+        <if test="page != null and rowsPerPage != null">LIMIT #{rowsPerPage} OFFSET #{page}</if>
+    </select>
+
+    <select id="countList" parameterType="com.ut.emrPacs.model.base.filter.UserLogFilter" resultType="java.lang.Long">
+        SELECT COUNT(user_logs.id)
+        <include refid="BASE_FROM"/>
+        <include refid="BASE_WHERE"/>
+    </select>
+
+    <select id="getUserLogById" parameterType="java.lang.Long" resultMap="UserLogResponse">
+        SELECT
+        <include refid="BASE_COLUMN_LIST" />
+        <include refid="BASE_FROM" />
+        WHERE user_logs.id = #{id}
+    </select>
+
+</mapper>

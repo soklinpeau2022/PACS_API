@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.user.UserProfileMapper">
+    <resultMap id="UserProfileResponse" type="com.ut.emrPacs.model.dto.response.authentication.user.UserProfileResponse" autoMapping="true"/>
+
+    <select id="getProfileByUserId" resultMap="UserProfileResponse">
+        SELECT
+            COALESCE(users.first_name, '') AS firstName,
+            COALESCE(users.last_name, '') AS lastName,
+            '' AS gender,
+            '' AS dateOfBirth,
+            '' AS address,
+            COALESCE(users.telephone, '') AS telephone,
+            COALESCE(users.email, '') AS email,
+            NULL AS nationalityId,
+            '' AS nationalityName,
+            COALESCE(users.username, '') AS username
+        FROM users
+        WHERE users.is_active = 1
+          AND users.id = #{userId}
+            LIMIT 1
+    </select>
+
+    <select id="getPasswordByUserId" resultType="java.lang.String">
+        SELECT password
+        FROM users
+        WHERE is_active = 1
+          AND id = #{userId}
+            LIMIT 1
+    </select>
+
+    <select id="checkDuplicateUsernameEdit" resultType="java.lang.Long">
+        SELECT COUNT(id)
+        FROM users
+        WHERE is_active = 1
+          AND username = #{username}
+          AND id <![CDATA[<>]]> #{userId}
+    </select>
+
+    <update id="updateUserProfile" parameterType="com.ut.emrPacs.model.dto.request.authentication.user.UserProfileUpdateRequest">
+        UPDATE users SET
+        <if test="username != null">username = #{username},</if>
+        first_name = #{firstName},
+        last_name = #{lastName},
+        <if test="telephone != null">telephone = #{telephone},</if>
+        <if test="email != null">email = #{email},</if>
+        <if test="password != null">password = #{password},</if>
+        modified = NOW(),
+        modified_by = #{modifiedBy}
+        WHERE id = #{id};
+    </update>
+
+</mapper>

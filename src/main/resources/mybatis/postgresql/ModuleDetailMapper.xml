@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.user.ModuleDetailMapper">
+
+    <select id="listModuleDetailByModuleType" resultType="com.ut.emrPacs.model.dto.response.permission.ModuleDetailResponse">
+        SELECT
+            md.id,
+            md.public_id::text AS publicKey,
+            md.module_id AS moduleId,
+            m.public_id::text AS modulePublicKey,
+            md.code,
+            md.name,
+            md.name_other AS nameOther,
+            md.type,
+            md.action_key AS actionKey,
+            md.display_order AS displayOrder,
+            FALSE AS checked
+        FROM module_details md
+        JOIN modules m ON m.id = md.module_id
+        WHERE md.is_active = 1
+          AND m.module_type_id = #{moduleTypeId}
+        ORDER BY md.display_order, md.id
+    </select>
+
+</mapper>

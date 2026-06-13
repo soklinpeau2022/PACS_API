@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.permission.PermissionMapper">
+
+    <select id="listPermissionCodes" resultType="java.lang.String">
+        SELECT DISTINCT md.code
+        FROM user_groups ug
+        JOIN roles r ON r.id = ug.role_id
+        JOIN role_module_details rmd ON rmd.role_id = r.id
+        JOIN module_details md ON md.id = rmd.module_detail_id
+        WHERE ug.user_id = #{userId}
+          AND ug.is_active = 1
+          AND r.is_active = 1
+          AND md.is_active = 1
+    </select>
+
+    <select id="listRolePermissionTree" resultType="com.ut.emrPacs.model.dto.response.permission.RolePermissionTreeResponse">
+        SELECT
+            mt.id            AS moduleTypeId,
+            mt.public_id::text AS moduleTypePublicKey,
+            mt.code          AS moduleTypeCode,
+            mt.name          AS moduleTypeName,
+            mt.name_other    AS moduleTypeNameOther,
+            mt.display_order AS moduleTypeOrder,
+            m.id             AS moduleId,
+            m.public_id::text AS modulePublicKey,
+            m.code           AS moduleCode,
+            m.name           AS moduleName,
+            m.display_order  AS moduleOrder,
+            md.id            AS moduleDetailId,
+            md.public_id::text AS moduleDetailPublicKey,
+            md.code          AS code,
+            md.action_key    AS "actionKey",
+            md.display_order AS "orderNo",
+            md.name          AS moduleDetailName,
+            md.name_other    AS moduleDetailNameOther,
+            md.type          AS moduleDetailType,
+            CASE WHEN rmd.module_detail_id IS NULL THEN FALSE ELSE TRUE END AS checked
+        FROM module_types mt
+        JOIN modules m ON m.module_type_id = mt.id AND m.is_active = 1
+        JOIN module_details md ON md.module_id = m.id AND md.is_active = 1
+        LEFT JOIN role_module_details rmd
+            ON rmd.module_detail_id = md.id
+           AND rmd.role_id = #{roleId}
+        WHERE mt.is_active = 1
+        ORDER BY mt.display_order, mt.id, m.display_order, m.id, md.display_order, md.id
+    </select>
+
+    <select id="countActiveModuleDetailsByIds" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT md.id)
+        FROM module_details md
+        WHERE md.is_active = 1
+          AND md.id IN
+        <foreach collection="moduleDetailIds" item="moduleDetailId" open="(" separator="," close=")">
+            #{moduleDetailId}
+        </foreach>
+    </select>
+
+</mapper>

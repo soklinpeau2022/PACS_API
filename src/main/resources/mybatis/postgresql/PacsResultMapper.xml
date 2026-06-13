@@ -1,0 +1,764 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.pacs.PacsResultMapper">
+
+    <resultMap id="PacsResultResponse" type="com.ut.emrPacs.model.dto.response.pacs.result.PacsResultResponse" autoMapping="true"/>
+    <resultMap id="PacsResultImageResponse" type="com.ut.emrPacs.model.dto.response.pacs.result.PacsResultImageResponse" autoMapping="true"/>
+    <resultMap id="PacsResultTemplateResponse" type="com.ut.emrPacs.model.dto.response.pacs.result.PacsResultTemplateResponse" autoMapping="true"/>
+    <resultMap id="PacsResultContextResponse" type="com.ut.emrPacs.model.dto.response.pacs.result.PacsResultContextResponse" autoMapping="true"/>
+    <resultMap id="PacsViewerStateResponse" type="com.ut.emrPacs.model.dto.response.pacs.result.PacsViewerStateResponse" autoMapping="true"/>
+
+    <sql id="Worklist_STATUS_NAME">
+        CASE q.status
+            WHEN 1 THEN 'WAITING'
+            WHEN 2 THEN 'IN_PROGRESS'
+            WHEN 3 THEN 'CANCELLED'
+            WHEN 4 THEN 'FAILED'
+            ELSE NULL
+        END
+    </sql>
+
+    <sql id="STUDY_STATUS_NAME">
+        CASE s.status
+            WHEN 1 THEN 'IMAGE_RECEIVED'
+            WHEN 2 THEN 'COMPLETED'
+            ELSE NULL
+        END
+    </sql>
+
+    <sql id="RESULT_COLUMNS">
+        pr.id,
+        pr.result_public_id::text AS resultKey,
+        pr.hospital_id AS hospitalId,
+        pr.modality_id AS modalityId,
+        pr.study_id AS studyId,
+        pr.worklist_id AS worklistId,
+        q.dicom_server_worklist_id AS worklistCode,
+        s.study_instance_uid AS studyInstanceUid,
+        COALESCE(s.accession_number, q.visit_code) AS accessionNumber,
+        COALESCE(pr.patient_id, s.patient_id, q.patient_id) AS patientId,
+        p.patient_uid AS patientCode,
+        NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '') AS patientName,
+        p.phone_number AS patientPhone,
+        TO_CHAR(pr.result_date, 'YYYY-MM-DD') AS resultDate,
+        pr.template_id AS templateId,
+        rt.public_id::text AS templateKey,
+        rt.template_name AS templateName,
+        pr.result_text AS resultText,
+        pr.status,
+        pr.completed,
+        pr.created_by AS createdBy,
+        TO_CHAR(pr.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+        TO_CHAR(pr.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS updatedAt
+    </sql>
+
+    <sql id="RESULT_REFERENCE_JOINS">
+        LEFT JOIN pacs_worklists q
+            ON q.id = pr.worklist_id
+           AND q.hospital_id = pr.hospital_id
+        LEFT JOIN pacs_worklist_study_links qsl
+            ON qsl.hospital_id = pr.hospital_id
+           AND qsl.worklist_id = pr.worklist_id
+           AND qsl.is_primary = 1
+        LEFT JOIN pacs_studies s
+            ON s.hospital_id = pr.hospital_id
+           AND s.id = COALESCE(pr.study_id, q.study_id, qsl.study_id)
+           AND s.is_active = 1
+        LEFT JOIN patients p
+            ON p.id = COALESCE(pr.patient_id, s.patient_id, q.patient_id)
+           AND p.hospital_id = pr.hospital_id
+    </sql>
+
+    <select id="insertResult" resultType="java.lang.Long">
+        INSERT INTO pacs_results (
+            hospital_id,
+            modality_id,
+            study_id,
+            worklist_id,
+            patient_id,
+            result_date,
+            template_id,
+            result_text,
+            status,
+            completed,
+            is_active,
+            created_by,
+            created_at,
+            modified_at
+        ) VALUES (
+            #{request.hospitalId},
+            #{request.modalityId},
+            #{request.studyId},
+            #{request.worklistId},
+            #{request.patientId},
+            COALESCE(#{request.resultDate}, CURRENT_DATE),
+            #{request.templateId},
+            #{request.resultText},
+            #{status},
+            COALESCE(#{request.completed}, FALSE),
+            1,
+            #{createdBy},
+            NOW(),
+            NOW()
+        )
+        RETURNING id
+    </select>
+
+    <update id="updateResult">
+        UPDATE pacs_results
+        SET
+            hospital_id = #{request.hospitalId},
+            modality_id = #{request.modalityId},
+            study_id = #{request.studyId},
+            worklist_id = #{request.worklistId},
+            patient_id = #{request.patientId},
+            result_date = COALESCE(#{request.resultDate}, result_date, CURRENT_DATE),
+            template_id = #{request.templateId},
+            result_text = #{request.resultText},
+            status = #{status},
+            completed = COALESCE(#{request.completed}, FALSE),
+            modified_at = NOW()
+        WHERE is_active = 1
+        <choose>
+            <when test="request.resultKey != null and request.resultKey != ''">
+                AND result_public_id = CAST(#{request.resultKey} AS uuid)
+            </when>
+            <otherwise>
+                AND id = #{request.id}
+            </otherwise>
+        </choose>
+    </update>
+
+    <select id="findById" resultMap="PacsResultResponse">
+        SELECT
+            <include refid="RESULT_COLUMNS"/>
+        FROM pacs_results pr
+        <include refid="RESULT_REFERENCE_JOINS"/>
+        LEFT JOIN pacs_result_templates rt ON rt.id = pr.template_id
+        WHERE pr.id = #{resultId}
+          AND pr.is_active = 1
+        LIMIT 1
+    </select>
+
+    <select id="findByResultKey" resultMap="PacsResultResponse">
+        SELECT
+            <include refid="RESULT_COLUMNS"/>
+        FROM pacs_results pr
+        <include refid="RESULT_REFERENCE_JOINS"/>
+        LEFT JOIN pacs_result_templates rt ON rt.id = pr.template_id
+        WHERE pr.result_public_id = CAST(#{resultKey} AS uuid)
+          AND pr.is_active = 1
+        LIMIT 1
+    </select>
+
+    <select id="findByStudyId" resultMap="PacsResultResponse">
+        SELECT
+            <include refid="RESULT_COLUMNS"/>
+        FROM pacs_results pr
+        <include refid="RESULT_REFERENCE_JOINS"/>
+        LEFT JOIN pacs_result_templates rt ON rt.id = pr.template_id
+        WHERE pr.hospital_id = #{hospitalId}
+          AND pr.modality_id = #{modalityId}
+          AND pr.is_active = 1
+          AND pr.study_id = #{studyId}
+        ORDER BY pr.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findByStudyInstanceUid" resultMap="PacsResultResponse">
+        SELECT
+            <include refid="RESULT_COLUMNS"/>
+        FROM pacs_results pr
+        <include refid="RESULT_REFERENCE_JOINS"/>
+        LEFT JOIN pacs_result_templates rt ON rt.id = pr.template_id
+        WHERE pr.hospital_id = #{hospitalId}
+          AND pr.modality_id = #{modalityId}
+          AND s.study_instance_uid = #{studyInstanceUid}
+          AND pr.is_active = 1
+        ORDER BY pr.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findByWorklist" resultMap="PacsResultResponse">
+        SELECT
+            <include refid="RESULT_COLUMNS"/>
+        FROM pacs_results pr
+        <include refid="RESULT_REFERENCE_JOINS"/>
+        LEFT JOIN pacs_result_templates rt ON rt.id = pr.template_id
+        WHERE pr.hospital_id = #{request.hospitalId}
+          AND pr.worklist_id = #{request.worklistId}
+          AND pr.is_active = 1
+        ORDER BY pr.id DESC
+        LIMIT 1
+    </select>
+
+    <sql id="RESULT_CONTEXT_COLUMNS">
+        COALESCE(q.hospital_id, s.hospital_id) AS hospitalId,
+        h.public_id::text AS hospitalKey,
+        h.code AS hospitalCode,
+        h.name AS hospitalName,
+        h.logo_path AS hospitalLogoPath,
+        h.logo_file_name AS hospitalLogoFileName,
+        h.logo_file_type AS hospitalLogoFileType,
+        CASE WHEN NULLIF(TRIM(COALESCE(h.logo_path, '')), '') IS NOT NULL THEN TRUE ELSE FALSE END AS hospitalLogoAvailable,
+        COALESCE(q.modality_id, m.id) AS modalityId,
+        m.public_id::text AS modalityKey,
+        COALESCE(m.abbr, s.modality) AS modalityCode,
+        COALESCE(m.name, s.modality) AS modalityName,
+        COALESCE(q.study_id, s.id) AS studyId,
+        s.public_id::text AS studyKey,
+        q.id AS worklistId,
+        q.public_id::text AS worklistKey,
+        q.dicom_server_worklist_id AS worklistCode,
+        s.study_instance_uid AS studyInstanceUid,
+        COALESCE(s.accession_number, q.visit_code) AS accessionNumber,
+        COALESCE(q.patient_id, s.patient_id) AS patientId,
+        p.public_id::text AS patientKey,
+        p.patient_uid AS patientCode,
+        NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '') AS patientName,
+        p.phone_number AS patientPhone,
+        COALESCE(<include refid="STUDY_STATUS_NAME"/>, CASE WHEN s.id IS NOT NULL THEN 'IMAGE_RECEIVED' ELSE NULL END) AS status,
+        <include refid="Worklist_STATUS_NAME"/> AS worklistStatus,
+        s.dicom_server_study_id AS dicomServerStudyId,
+        s.dicom_server_patient_id AS dicomServerPatientId,
+        s.dicom_server_series_id AS dicomServerSeriesId,
+        TO_CHAR(COALESCE(q.image_received_at, q.received_at, s.received_at), 'YYYY-MM-DD HH24:MI:SS') AS imageReceivedAt
+    </sql>
+
+    <select id="findContextByWorklistId" resultMap="PacsResultContextResponse">
+        SELECT
+            <include refid="RESULT_CONTEXT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id AND p.hospital_id = q.hospital_id
+        LEFT JOIN pacs_worklist_study_links qsl
+            ON qsl.hospital_id = q.hospital_id
+           AND qsl.worklist_id = q.id
+           AND qsl.is_primary = 1
+        LEFT JOIN pacs_studies s
+            ON s.hospital_id = q.hospital_id
+           AND s.id = COALESCE(q.study_id, qsl.study_id)
+           AND s.is_active = 1
+        LEFT JOIN modalities m ON m.id = q.modality_id AND m.is_active = 1
+        WHERE q.id = #{request.worklistId}
+        <if test="request.hospitalId != null and request.hospitalId > 0">
+            AND q.hospital_id = #{request.hospitalId}
+        </if>
+        LIMIT 1
+    </select>
+
+    <select id="findContextByStudyId" resultMap="PacsResultContextResponse">
+        SELECT
+            <include refid="RESULT_CONTEXT_COLUMNS"/>
+        FROM pacs_studies s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+        LEFT JOIN pacs_worklist_study_links qsl
+            ON qsl.hospital_id = s.hospital_id
+           AND qsl.study_id = s.id
+           AND qsl.is_primary = 1
+        LEFT JOIN pacs_worklists q
+            ON q.id = qsl.worklist_id
+           AND q.hospital_id = s.hospital_id
+        LEFT JOIN modalities m
+            ON m.is_active = 1
+           AND (
+                m.id = q.modality_id
+                OR (
+                    q.modality_id IS NULL
+                    AND (
+                        UPPER(COALESCE(m.abbr, '')) = UPPER(COALESCE(s.modality, ''))
+                        OR UPPER(COALESCE(m.name, '')) = UPPER(COALESCE(s.modality, ''))
+                    )
+                )
+           )
+        LEFT JOIN hospital_modalities hm
+            ON hm.hospital_id = s.hospital_id
+           AND hm.modality_id = m.id
+           AND hm.is_active = 1
+        WHERE s.id = #{request.studyId}
+          AND s.is_active = 1
+        <if test="request.hospitalId != null and request.hospitalId > 0">
+            AND s.hospital_id = #{request.hospitalId}
+        </if>
+        <if test="request.modalityId != null and request.modalityId > 0">
+            AND COALESCE(q.modality_id, m.id) = #{request.modalityId}
+        </if>
+          AND (q.modality_id IS NOT NULL OR hm.modality_id IS NOT NULL)
+        ORDER BY q.id DESC NULLS LAST, s.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findContextByStudyInstanceUid" resultMap="PacsResultContextResponse">
+        SELECT
+            <include refid="RESULT_CONTEXT_COLUMNS"/>
+        FROM pacs_studies s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+        LEFT JOIN pacs_worklist_study_links qsl
+            ON qsl.hospital_id = s.hospital_id
+           AND qsl.study_id = s.id
+           AND qsl.is_primary = 1
+        LEFT JOIN pacs_worklists q
+            ON q.id = qsl.worklist_id
+           AND q.hospital_id = s.hospital_id
+        LEFT JOIN modalities m
+            ON m.is_active = 1
+           AND (
+                m.id = q.modality_id
+                OR (
+                    q.modality_id IS NULL
+                    AND (
+                        UPPER(COALESCE(m.abbr, '')) = UPPER(COALESCE(s.modality, ''))
+                        OR UPPER(COALESCE(m.name, '')) = UPPER(COALESCE(s.modality, ''))
+                    )
+                )
+           )
+        LEFT JOIN hospital_modalities hm
+            ON hm.hospital_id = s.hospital_id
+           AND hm.modality_id = m.id
+           AND hm.is_active = 1
+        WHERE s.study_instance_uid = #{request.studyInstanceUid}
+          AND s.is_active = 1
+        <if test="request.hospitalId != null and request.hospitalId > 0">
+            AND s.hospital_id = #{request.hospitalId}
+        </if>
+        <if test="request.modalityId != null and request.modalityId > 0">
+            AND COALESCE(q.modality_id, m.id) = #{request.modalityId}
+        </if>
+          AND (q.modality_id IS NOT NULL OR hm.modality_id IS NOT NULL)
+        ORDER BY q.id DESC NULLS LAST, s.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findContextByAccessionNumber" resultMap="PacsResultContextResponse">
+        SELECT
+            <include refid="RESULT_CONTEXT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id AND p.hospital_id = q.hospital_id
+        LEFT JOIN pacs_worklist_study_links qsl
+            ON qsl.hospital_id = q.hospital_id
+           AND qsl.worklist_id = q.id
+           AND qsl.is_primary = 1
+        LEFT JOIN pacs_studies s
+            ON s.hospital_id = q.hospital_id
+           AND s.id = COALESCE(q.study_id, qsl.study_id)
+           AND s.is_active = 1
+        LEFT JOIN modalities m ON m.id = q.modality_id AND m.is_active = 1
+        WHERE (
+            q.visit_code = #{request.accessionNumber}
+            OR s.accession_number = #{request.accessionNumber}
+        )
+        <if test="request.hospitalId != null and request.hospitalId > 0">
+            AND q.hospital_id = #{request.hospitalId}
+        </if>
+        <if test="request.modalityId != null and request.modalityId > 0">
+            AND q.modality_id = #{request.modalityId}
+        </if>
+        ORDER BY q.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findExisting" resultMap="PacsResultResponse">
+        SELECT
+            <include refid="RESULT_COLUMNS"/>
+        FROM pacs_results pr
+        <include refid="RESULT_REFERENCE_JOINS"/>
+        LEFT JOIN pacs_result_templates rt ON rt.id = pr.template_id
+        WHERE pr.hospital_id = #{request.hospitalId}
+          AND pr.modality_id = #{request.modalityId}
+          AND pr.is_active = 1
+          AND (
+              (#{request.studyId} IS NOT NULL AND pr.study_id = #{request.studyId})
+              OR (#{request.worklistId} IS NOT NULL AND pr.worklist_id = #{request.worklistId})
+              OR (#{request.studyInstanceUid} IS NOT NULL AND #{request.studyInstanceUid} != '' AND s.study_instance_uid = #{request.studyInstanceUid})
+              OR (#{request.accessionNumber} IS NOT NULL AND #{request.accessionNumber} != '' AND COALESCE(s.accession_number, q.visit_code) = #{request.accessionNumber})
+          )
+        ORDER BY pr.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="listImages" resultMap="PacsResultImageResponse">
+        SELECT
+            pi.id,
+            pi.image_public_id::text AS imageKey,
+            pi.result_id AS resultId,
+            pr.hospital_id AS hospitalId,
+            pr.modality_id AS modalityId,
+            pi.image_path AS imagePath,
+            pi.original_file_name AS originalFileName,
+            pi.file_type AS fileType,
+            pi.file_size AS fileSize,
+            pi.sort_order AS sortOrder,
+            TO_CHAR(pi.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt
+        FROM pacs_result_images pi
+        INNER JOIN pacs_results pr ON pr.id = pi.result_id
+        WHERE pi.result_id = #{resultId}
+          AND pi.is_active = 1
+        ORDER BY pi.sort_order ASC, pi.id ASC
+    </select>
+
+    <select id="findImage" resultMap="PacsResultImageResponse">
+        SELECT
+            pi.id,
+            pi.image_public_id::text AS imageKey,
+            pi.result_id AS resultId,
+            pr.hospital_id AS hospitalId,
+            pr.modality_id AS modalityId,
+            pi.image_path AS imagePath,
+            pi.original_file_name AS originalFileName,
+            pi.file_type AS fileType,
+            pi.file_size AS fileSize,
+            pi.sort_order AS sortOrder,
+            TO_CHAR(pi.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt
+        FROM pacs_result_images pi
+        INNER JOIN pacs_results pr ON pr.id = pi.result_id
+        WHERE pi.is_active = 1
+        <choose>
+            <when test="request.imageKey != null and request.imageKey != ''">
+                AND pi.image_public_id = CAST(#{request.imageKey} AS uuid)
+            </when>
+            <otherwise>
+                AND pi.id = #{request.imageId}
+            </otherwise>
+        </choose>
+        LIMIT 1
+    </select>
+
+    <insert id="insertImage">
+        INSERT INTO pacs_result_images (
+            result_id,
+            image_path,
+            original_file_name,
+            file_type,
+            file_size,
+            sort_order,
+            is_active,
+            created_at
+        ) VALUES (
+            #{resultId},
+            #{imagePath},
+            #{originalFileName},
+            #{fileType},
+            #{fileSize},
+            COALESCE(#{sortOrder}, 0),
+            1,
+            NOW()
+        )
+    </insert>
+
+    <update id="deactivateImage">
+        UPDATE pacs_result_images
+        SET is_active = 2
+        WHERE is_active = 1
+        <choose>
+            <when test="request.imageKey != null and request.imageKey != ''">
+                AND image_public_id = CAST(#{request.imageKey} AS uuid)
+            </when>
+            <otherwise>
+                AND id = #{request.imageId}
+            </otherwise>
+        </choose>
+    </update>
+
+    <select id="nextImageSortOrder" resultType="java.lang.Integer">
+        SELECT COALESCE(MAX(sort_order), -1) + 1
+        FROM pacs_result_images
+        WHERE result_id = #{resultId}
+          AND is_active = 1
+    </select>
+
+    <sql id="TEMPLATE_SCOPE_FROM">
+        FROM pacs_result_templates rt
+        INNER JOIN hospitals h ON h.id = rt.hospital_id AND h.is_active = 1
+        INNER JOIN modalities m ON m.id = rt.modality_id AND m.is_active = 1
+        WHERE rt.hospital_id = #{request.hospitalId}
+          AND rt.modality_id = #{request.modalityId}
+          AND rt.is_active = 1
+    </sql>
+
+    <select id="listTemplateOptions" resultMap="PacsResultTemplateResponse">
+        SELECT
+            rt.public_id::text AS publicKey,
+            rt.public_id::text AS templateKey,
+            h.public_id::text AS hospitalKey,
+            h.code AS hospitalCode,
+            h.name AS hospitalName,
+            m.public_id::text AS modalityKey,
+            m.abbr AS modalityCode,
+            m.name AS modalityName,
+            rt.template_name AS templateName,
+            TO_CHAR(rt.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS updatedAt
+        <include refid="TEMPLATE_SCOPE_FROM"/>
+        ORDER BY rt.template_name ASC, rt.id ASC
+    </select>
+
+    <select id="findTemplateByIdAndScope" resultMap="PacsResultTemplateResponse">
+        SELECT
+            rt.public_id::text AS publicKey,
+            rt.public_id::text AS templateKey,
+            h.public_id::text AS hospitalKey,
+            h.code AS hospitalCode,
+            h.name AS hospitalName,
+            m.public_id::text AS modalityKey,
+            m.abbr AS modalityCode,
+            m.name AS modalityName,
+            rt.template_name AS templateName,
+            rt.template_content AS templateContent,
+            TO_CHAR(rt.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS updatedAt
+        <include refid="TEMPLATE_SCOPE_FROM"/>
+          AND rt.id = #{templateId}
+        LIMIT 1
+    </select>
+
+    <sql id="VIEWER_STATE_COLUMNS">
+        pvs.id,
+        pvs.public_id::text AS viewerStateKey,
+        pvs.hospital_id AS hospitalId,
+        h.public_id::text AS hospitalKey,
+        h.code AS hospitalCode,
+        h.name AS hospitalName,
+        pvs.modality_id AS modalityId,
+        m.public_id::text AS modalityKey,
+        m.abbr AS modalityCode,
+        m.name AS modalityName,
+        pvs.study_id AS studyId,
+        s.public_id::text AS studyKey,
+        pvs.worklist_id AS worklistId,
+        q.public_id::text AS worklistKey,
+        q.dicom_server_worklist_id AS worklistCode,
+        pvs.patient_id AS patientId,
+        p.public_id::text AS patientKey,
+        COALESCE(p.patient_uid, pvs.patient_code) AS patientCode,
+        NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '') AS patientName,
+        pvs.study_instance_uid AS studyInstanceUid,
+        pvs.accession_number AS accessionNumber,
+        pvs.state_type AS stateType,
+        pvs.schema_version AS schemaVersion,
+        pvs.version,
+        pvs.viewer_state::text AS viewerStateJson,
+        pvs.measurements::text AS measurementsJson,
+        pvs.annotations::text AS annotationsJson,
+        pvs.segmentations::text AS segmentationsJson,
+        pvs.labelmap_segmentations::text AS labelmapSegmentationsJson,
+        pvs.contour_segmentations::text AS contourSegmentationsJson,
+        pvs.surface_segmentations::text AS surfaceSegmentationsJson,
+        pvs.additional_findings::text AS additionalFindingsJson,
+        pvs.presentation_state::text AS presentationStateJson,
+        pvs.tool_state::text AS toolStateJson,
+        pvs.metadata::text AS metadataJson,
+        pvs.payload_size_bytes AS payloadSizeBytes,
+        pvs.payload_sha256 AS payloadSha256,
+        pvs.created_by AS createdBy,
+        pvs.modified_by AS modifiedBy,
+        TO_CHAR(pvs.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+        TO_CHAR(pvs.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS updatedAt
+    </sql>
+
+    <select id="findViewerState" resultMap="PacsViewerStateResponse">
+        SELECT
+            <include refid="VIEWER_STATE_COLUMNS"/>
+        FROM pacs_viewer_states pvs
+        INNER JOIN hospitals h ON h.id = pvs.hospital_id
+        LEFT JOIN modalities m ON m.id = pvs.modality_id
+        LEFT JOIN pacs_studies s ON s.id = pvs.study_id AND s.hospital_id = pvs.hospital_id
+        LEFT JOIN pacs_worklists q ON q.id = pvs.worklist_id AND q.hospital_id = pvs.hospital_id
+        LEFT JOIN patients p ON p.id = pvs.patient_id AND p.hospital_id = pvs.hospital_id
+        WHERE pvs.is_active = 1
+          AND pvs.hospital_id = #{request.hospitalId}
+          AND pvs.state_type = #{request.stateType}
+        <choose>
+            <when test="request.viewerStateKey != null and request.viewerStateKey != ''">
+                AND pvs.public_id = CAST(#{request.viewerStateKey} AS uuid)
+            </when>
+            <when test="request.worklistId != null and request.worklistId > 0">
+                AND pvs.worklist_id = #{request.worklistId}
+            </when>
+            <when test="request.studyId != null and request.studyId > 0">
+                AND pvs.study_id = #{request.studyId}
+            </when>
+            <when test="request.studyInstanceUid != null and request.studyInstanceUid != ''">
+                AND pvs.study_instance_uid = #{request.studyInstanceUid}
+            </when>
+            <otherwise>
+                AND pvs.accession_number = #{request.accessionNumber}
+            </otherwise>
+        </choose>
+        ORDER BY pvs.modified_at DESC, pvs.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="lockViewerStateScope" resultType="java.lang.Integer">
+        SELECT 1
+        FROM (
+            SELECT pg_advisory_xact_lock(
+                hashtextextended(
+                    CONCAT_WS(
+                        '|',
+                        #{request.hospitalId}::text,
+                        #{request.stateType},
+                        CASE
+                            WHEN #{request.worklistId} IS NOT NULL THEN 'worklist:' || #{request.worklistId}::text
+                            WHEN #{request.studyId} IS NOT NULL THEN 'study:' || #{request.studyId}::text
+                            WHEN #{request.studyInstanceUid} IS NOT NULL THEN 'study-uid:' || #{request.studyInstanceUid}
+                            ELSE 'accession:' || #{request.accessionNumber}
+                        END
+                    ),
+                    0
+                )
+            )
+        ) viewer_state_scope_lock
+    </select>
+
+    <select id="insertViewerState" resultType="java.lang.Long">
+        INSERT INTO pacs_viewer_states (
+            hospital_id,
+            modality_id,
+            study_id,
+            worklist_id,
+            patient_id,
+            study_instance_uid,
+            accession_number,
+            patient_code,
+            state_type,
+            schema_version,
+            viewer_state,
+            measurements,
+            annotations,
+            segmentations,
+            labelmap_segmentations,
+            contour_segmentations,
+            surface_segmentations,
+            additional_findings,
+            presentation_state,
+            tool_state,
+            metadata,
+            payload_size_bytes,
+            payload_sha256,
+            version,
+            created_by,
+            modified_by,
+            is_active,
+            created_at,
+            modified_at
+        ) VALUES (
+            #{request.hospitalId},
+            #{request.modalityId},
+            #{request.studyId},
+            #{request.worklistId},
+            #{request.patientId},
+            #{request.studyInstanceUid},
+            #{request.accessionNumber},
+            #{request.patientCode},
+            #{request.stateType},
+            #{request.schemaVersion},
+            CAST(#{request.viewerStateJson} AS jsonb),
+            CAST(#{request.measurementsJson} AS jsonb),
+            CAST(#{request.annotationsJson} AS jsonb),
+            CAST(#{request.segmentationsJson} AS jsonb),
+            CAST(#{request.labelmapSegmentationsJson} AS jsonb),
+            CAST(#{request.contourSegmentationsJson} AS jsonb),
+            CAST(#{request.surfaceSegmentationsJson} AS jsonb),
+            CAST(#{request.additionalFindingsJson} AS jsonb),
+            CAST(#{request.presentationStateJson} AS jsonb),
+            CAST(#{request.toolStateJson} AS jsonb),
+            CAST(#{request.metadataJson} AS jsonb),
+            #{request.payloadSizeBytes},
+            #{request.payloadSha256},
+            1,
+            #{createdBy},
+            #{createdBy},
+            1,
+            NOW(),
+            NOW()
+        )
+        RETURNING id
+    </select>
+
+    <update id="updateViewerState">
+        UPDATE pacs_viewer_states
+        SET
+            modality_id = #{request.modalityId},
+            study_id = #{request.studyId},
+            worklist_id = #{request.worklistId},
+            patient_id = #{request.patientId},
+            study_instance_uid = #{request.studyInstanceUid},
+            accession_number = #{request.accessionNumber},
+            patient_code = #{request.patientCode},
+            schema_version = #{request.schemaVersion},
+            viewer_state = CAST(#{request.viewerStateJson} AS jsonb),
+            measurements = CAST(#{request.measurementsJson} AS jsonb),
+            annotations = CAST(#{request.annotationsJson} AS jsonb),
+            segmentations = CAST(#{request.segmentationsJson} AS jsonb),
+            labelmap_segmentations = CAST(#{request.labelmapSegmentationsJson} AS jsonb),
+            contour_segmentations = CAST(#{request.contourSegmentationsJson} AS jsonb),
+            surface_segmentations = CAST(#{request.surfaceSegmentationsJson} AS jsonb),
+            additional_findings = CAST(#{request.additionalFindingsJson} AS jsonb),
+            presentation_state = CAST(#{request.presentationStateJson} AS jsonb),
+            tool_state = CAST(#{request.toolStateJson} AS jsonb),
+            metadata = CAST(#{request.metadataJson} AS jsonb),
+            payload_size_bytes = #{request.payloadSizeBytes},
+            payload_sha256 = #{request.payloadSha256},
+            version = version + 1,
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{request.id}
+          AND hospital_id = #{request.hospitalId}
+          AND is_active = 1
+          AND (
+              payload_sha256 IS DISTINCT FROM #{request.payloadSha256}
+              OR modality_id IS DISTINCT FROM #{request.modalityId}
+              OR study_id IS DISTINCT FROM #{request.studyId}
+              OR worklist_id IS DISTINCT FROM #{request.worklistId}
+              OR patient_id IS DISTINCT FROM #{request.patientId}
+              OR study_instance_uid IS DISTINCT FROM #{request.studyInstanceUid}
+              OR accession_number IS DISTINCT FROM #{request.accessionNumber}
+              OR patient_code IS DISTINCT FROM #{request.patientCode}
+              OR schema_version IS DISTINCT FROM #{request.schemaVersion}
+          )
+    </update>
+
+    <update id="deactivateViewerState">
+        UPDATE pacs_viewer_states
+        SET
+            is_active = 2,
+            viewer_state = '{}'::jsonb,
+            measurements = '[]'::jsonb,
+            annotations = '[]'::jsonb,
+            segmentations = '[]'::jsonb,
+            labelmap_segmentations = '[]'::jsonb,
+            contour_segmentations = '[]'::jsonb,
+            surface_segmentations = '[]'::jsonb,
+            additional_findings = '[]'::jsonb,
+            presentation_state = '{}'::jsonb,
+            tool_state = '{}'::jsonb,
+            metadata = jsonb_build_object('deleted', true),
+            payload_size_bytes = 0,
+            payload_sha256 = NULL,
+            deleted_by = #{modifiedBy},
+            deleted_at = NOW(),
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE is_active = 1
+          AND hospital_id = #{request.hospitalId}
+          AND state_type = #{request.stateType}
+        <choose>
+            <when test="request.viewerStateKey != null and request.viewerStateKey != ''">
+                AND public_id = CAST(#{request.viewerStateKey} AS uuid)
+            </when>
+            <when test="request.worklistId != null and request.worklistId > 0">
+                AND worklist_id = #{request.worklistId}
+            </when>
+            <when test="request.studyId != null and request.studyId > 0">
+                AND study_id = #{request.studyId}
+            </when>
+            <when test="request.studyInstanceUid != null and request.studyInstanceUid != ''">
+                AND study_instance_uid = #{request.studyInstanceUid}
+            </when>
+            <otherwise>
+                AND accession_number = #{request.accessionNumber}
+            </otherwise>
+        </choose>
+    </update>
+</mapper>

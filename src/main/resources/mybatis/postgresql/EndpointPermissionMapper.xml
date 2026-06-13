@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.permission.EndpointPermissionMapper">
+
+    <select id="listActiveRules" resultType="com.ut.emrPacs.model.permission.EndpointPermissionRule">
+        SELECT
+            http_method AS httpMethod,
+            endpoint_pattern AS endpointPattern,
+            permission_code AS permissionCode,
+            required_scope AS requiredScope
+        FROM endpoint_permissions
+        WHERE is_active = 1
+    </select>
+
+</mapper>

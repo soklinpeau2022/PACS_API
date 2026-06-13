@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.auth.AuthMapper">
+
+    <select id="findUserDetails" resultType="com.ut.emrPacs.model.users.User">
+        SELECT id,
+               email,
+               username,
+               password,
+               first_name AS firstName,
+               last_name AS lastName,
+               telephone,
+               user_type AS userType,
+               expire_date AS expired,
+               is_active AS isActive,
+               permission_version AS permissionVersion
+        FROM users
+        WHERE username = #{username}
+          AND is_active = 1
+        LIMIT 1
+    </select>
+
+    <select id="findOneByEmail" resultType="com.ut.emrPacs.model.users.User">
+        SELECT id,
+               email,
+               username,
+               password,
+               first_name AS firstName,
+               last_name AS lastName,
+               telephone,
+               user_type AS userType,
+               expire_date AS expired,
+               is_active AS isActive,
+               permission_version AS permissionVersion
+        FROM users
+        WHERE email = #{email}
+          AND is_active = 1
+        LIMIT 1
+    </select>
+
+    <select id="findAuthUserById" resultType="com.ut.emrPacs.model.users.User">
+        SELECT id,
+               email,
+               username,
+               password,
+               first_name AS firstName,
+               last_name AS lastName,
+               telephone,
+               user_type AS userType,
+               expire_date AS expired,
+               is_active AS isActive,
+               permission_version AS permissionVersion
+        FROM users
+        WHERE id = #{userId}
+          AND is_active = 1
+        LIMIT 1
+    </select>
+
+    <select id="findDefaultHospitalIdByUserId" resultType="java.lang.Long">
+        SELECT hospital_id
+        FROM user_hospitals
+        WHERE user_id = #{userId}
+          AND is_active = 1
+        ORDER BY is_default DESC, id ASC
+        LIMIT 1
+    </select>
+
+    <select id="findHospitalCodeByHospitalId" resultType="java.lang.String">
+        SELECT code
+        FROM hospitals
+        WHERE id = #{hospitalId}
+        LIMIT 1
+    </select>
+
+    <select id="findPermissionVersionByUserId" resultType="java.lang.Long">
+        SELECT permission_version
+        FROM users
+        WHERE id = #{userId}
+        LIMIT 1
+    </select>
+
+</mapper>

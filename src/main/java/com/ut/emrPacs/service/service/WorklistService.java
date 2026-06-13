@@ -1,0 +1,50 @@
+package com.ut.emrPacs.service.service;
+
+import com.ut.emrPacs.model.base.BaseResult;
+import com.ut.emrPacs.model.base.ResponseMessage;
+import com.ut.emrPacs.model.base.filter.WorklistFilter;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistAssignRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistActionRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistReceivedStudyRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistRouteAvailabilityRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistRoutedModalityListRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistSendToPacsRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistUpdateRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistViewStudyRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistDicomWorklistUpdateRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.PublicViewerAuthorizeRequest;
+import jakarta.servlet.http.HttpServletRequest;
+import java.net.UnknownHostException;
+import java.util.Map;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+
+public interface WorklistService {
+    ResponseMessage<BaseResult> list(WorklistFilter filter, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> assignWorklist(WorklistAssignRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> findWorklistById(Long id, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> findWorklistById(Long id, Long hospitalId, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> updateWorklist(Long id, WorklistUpdateRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> listRoutedModalities(WorklistRoutedModalityListRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> checkRouteAvailability(WorklistRouteAvailabilityRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> sendToPacs(WorklistSendToPacsRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> listMachineRoutesForSend(WorklistSendToPacsRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> syncWorklistResult(WorklistActionRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> getWorklist(Long worklistId, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> updateWorklist(Long worklistId, WorklistDicomWorklistUpdateRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> deleteWorklist(Long worklistId, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> receivedStudy(WorklistReceivedStudyRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> getViewerInfo(Long worklistId, Long hospitalId, String mode, String viewerAccess, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> authorizePublicViewer(PublicViewerAuthorizeRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseMessage<BaseResult> viewStudy(WorklistViewStudyRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseEntity<byte[]> viewStudyPreview(Long worklistId, String instanceId, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseEntity<StreamingResponseBody> proxyViewerDicomWeb(String viewerToken, Long hospitalId, Long worklistId, HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseEntity<StreamingResponseBody> proxyViewerDicomWeb(HttpServletRequest httpServletRequest) throws UnknownHostException;
+    ResponseEntity<Map<String, Object>> authorizeViewerDicomWeb(Map<String, Object> request);
+    ResponseEntity<Void> authorizeViewerDicomWebProxy(HttpServletRequest request);
+    ResponseEntity<Map<String, Object>> decodeViewerDicomWeb(Map<String, Object> request);
+    ResponseEntity<Map<String, Object>> profileViewerDicomWeb(Map<String, Object> request);
+    ResponseEntity<Map<String, Object>> renewViewerDicomWeb(Map<String, Object> request);
+    ResponseEntity<Void> revokeViewerDicomWeb(Map<String, Object> request);
+    ResponseMessage<BaseResult> updateStatus(WorklistActionRequest request, String status, HttpServletRequest httpServletRequest) throws UnknownHostException;
+}

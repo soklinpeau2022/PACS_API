@@ -1,0 +1,288 @@
+package com.ut.emrPacs.service.serviceImpl;
+
+import com.ut.emrPacs.authentication.session.UserAuthSession;
+import com.ut.emrPacs.config.ApiConstants;
+import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
+import com.ut.emrPacs.helper.security.PublicEntityKeyResolver.Entity;
+import com.ut.emrPacs.mapper.pacs.DashboardMapper;
+import com.ut.emrPacs.model.base.BaseResult;
+import com.ut.emrPacs.model.base.MessageService;
+import com.ut.emrPacs.model.base.ResponseMessage;
+import com.ut.emrPacs.model.base.ResponseMessageUtils;
+import com.ut.emrPacs.model.components.pacs.dashboard.WorklistStatusCountRow;
+import com.ut.emrPacs.model.dto.request.dashboard.DashboardOverviewRequest;
+import com.ut.emrPacs.model.dto.response.dashboard.DashboardActionAlertResponse;
+import com.ut.emrPacs.model.dto.response.dashboard.DashboardOverviewResponse;
+import com.ut.emrPacs.model.dto.response.pacs.dicom.DicomServerHealthResponse;
+import com.ut.emrPacs.model.enums.WorklistStatus;
+import com.ut.emrPacs.service.service.ActivityLogService;
+import com.ut.emrPacs.service.service.DashboardService;
+import com.ut.emrPacs.service.service.DicomServerHealthService;
+import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.net.UnknownHostException;
+import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.List;
+
+@Service
+public class DashboardServiceImpl implements DashboardService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(DashboardServiceImpl.class);
+
+    @Autowired
+    private DashboardMapper dashboardMapper;
+
+    @Autowired
+    private MessageService messageService;
+
+    @Autowired
+    private ActivityLogService activityLogService;
+
+    @Autowired
+    private PublicEntityKeyResolver publicEntityKeyResolver;
+
+    @Autowired
+    private DicomServerHealthService dicomServerHealthService;
+
+    @Override
+    public ResponseMessage<BaseResult> getOverview(DashboardOverviewRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        LocalTime startDuration = LocalTime.now();
+        try {
+            Long requestedHospitalId = request == null
+                    ? null
+                    : publicEntityKeyResolver.resolve(Entity.HOSPITAL, request.getHospitalKey(), request.getHospitalId());
+            Long hospitalId = resolveScopedHospitalId(requestedHospitalId);
+            int snapshotLimit = sanitizeLimit(request == null ? null : request.getSnapshotLimit(), 8, 1, 20);
+            int waitingThresholdMinutes = sanitizeLimit(request == null ? null : request.getWaitingThresholdMinutes(), 30, 5, 240);
+            boolean includeTodayMetrics = request != null && Boolean.TRUE.equals(request.getIncludeTodayMetrics());
+
+            DashboardOverviewResponse response = new DashboardOverviewResponse();
+            response.setRecentPatients(nullSafeLong(dashboardMapper.countRecentPatients(hospitalId)));
+            response.setWorklistItems(nullSafeLong(dashboardMapper.countWorklistItems(hospitalId)));
+            response.setStudies(nullSafeLong(dashboardMapper.countStudies(hospitalId)));
+
+            response.setTotalDicomServers(nullSafeLong(dashboardMapper.countTotalDicomServers(hospitalId)));
+            response.setActiveDicomServers(nullSafeLong(dashboardMapper.countActiveDicomServers(hospitalId)));
+            response.setInactiveDicomServers(nullSafeLong(dashboardMapper.countInactiveDicomServers(hospitalId)));
+            List<DicomServerHealthResponse> dicomServerHealth = dicomServerHealthService.listHealth(hospitalId);
+            long onlineDicomServers = dicomServerHealth.stream().filter(item -> Boolean.TRUE.equals(item.getOnline())).count();
+            long offlineDicomServers = dicomServerHealth.stream().filter(item -> "OFFLINE".equalsIgnoreCase(item.getStatus())).count();
+            response.setOnlineDicomServers(onlineDicomServers);
+            response.setOfflineDicomServers(offlineDicomServers);
+            response.setDicomServerHealth(dicomServerHealth);
+            response.setSystemPulse(resolveSystemPulse(
+                    response.getActiveDicomServers(),
+                    onlineDicomServers,
+                    offlineDicomServers
+            ));
+
+            response.setMappedModalities(nullSafeLong(dashboardMapper.countMappedModalities(hospitalId)));
+            response.setUnmappedModalities(nullSafeLong(dashboardMapper.countUnmappedModalities(hospitalId)));
+
+            EnumMap<WorklistStatus, Long> worklistStatusMap = buildworklistStatusMap(
+                    dashboardMapper.listWorklistStatusCounts(hospitalId)
+            );
+            response.setWorklistWaiting(worklistStatusMap.getOrDefault(WorklistStatus.WAITING, 0L));
+            response.setWorklistInProgress(worklistStatusMap.getOrDefault(WorklistStatus.IN_PROGRESS, 0L));
+            response.setWorklistCancelled(worklistStatusMap.getOrDefault(WorklistStatus.CANCELLED, 0L));
+            response.setWorklistFailed(worklistStatusMap.getOrDefault(WorklistStatus.FAILED, 0L));
+
+            response.setLongWaitingWorklists(nullSafeLong(dashboardMapper.countLongWaitingWorklists(hospitalId, waitingThresholdMinutes)));
+            if (includeTodayMetrics) {
+                response.setTodayAssignedWorklists(nullSafeLong(dashboardMapper.countTodayAssignedWorklists(hospitalId)));
+                response.setTodayCancelledWorklists(nullSafeLong(dashboardMapper.countTodayCancelledWorklists(hospitalId)));
+            } else {
+                response.setTodayAssignedWorklists(0L);
+                response.setTodayCancelledWorklists(0L);
+            }
+
+            response.setWorklistSnapshot(dashboardMapper.listWorklistSnapshot(hospitalId, snapshotLimit));
+            response.setActionAlerts(buildActionAlerts(response, waitingThresholdMinutes, includeTodayMetrics));
+
+            LocalTime endDuration = LocalTime.now();
+            activityLogService.insert(
+                    ApiConstants.Dashboard.BASE_PATH + ApiConstants.Dashboard.OVERVIEW_PATH,
+                    null,
+                    null,
+                    "Dashboard",
+                    "Dashboard (View)",
+                    "View",
+                    1,
+                    "Success",
+                    startDuration,
+                    endDuration,
+                    httpServletRequest
+            );
+            return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(response), true));
+        } catch (Exception error) {
+            LocalTime endDuration = LocalTime.now();
+            Long errorLine = (error.getStackTrace() != null && error.getStackTrace().length > 0)
+                    ? (long) error.getStackTrace()[0].getLineNumber()
+                    : null;
+            activityLogService.insert(
+                    ApiConstants.Dashboard.BASE_PATH + ApiConstants.Dashboard.OVERVIEW_PATH,
+                    errorLine,
+                    error.toString(),
+                    "Dashboard",
+                    "Dashboard (View)",
+                    "View",
+                    2,
+                    "Error",
+                    startDuration,
+                    endDuration,
+                    httpServletRequest
+            );
+            return ResponseMessageUtils.makeResponse(false, messageService.message("An unexpected error occurred. Please try again.", null, false));
+        }
+    }
+
+    private Long resolveScopedHospitalId(Long requestedHospitalId) {
+        var principal = UserAuthSession.getCurrentUser();
+        if (principal == null) {
+            throw new IllegalStateException("User context not found in OAuth2 token claims.");
+        }
+        boolean isSuperAdmin = principal.userId() != null && principal.userId() == 1L;
+        if (requestedHospitalId != null && requestedHospitalId > 0 && isSuperAdmin) {
+            return requestedHospitalId;
+        }
+        if (principal.hospitalId() != null && principal.hospitalId() > 0) {
+            return principal.hospitalId();
+        }
+        // Super admin can read cross-hospital overview when hospital scope is not pinned in token.
+        if (isSuperAdmin) {
+            return requestedHospitalId;
+        }
+        throw new IllegalStateException("Hospital context not found in OAuth2 token claims.");
+    }
+
+    private static int sanitizeLimit(Integer value, int fallback, int min, int max) {
+        if (value == null) {
+            return fallback;
+        }
+        if (value < min) {
+            return min;
+        }
+        return Math.min(value, max);
+    }
+
+    private static long nullSafeLong(Long value) {
+        return value == null ? 0L : value;
+    }
+
+    private static String resolveSystemPulse(long activeServers, long onlineServers, long offlineServers) {
+        if (activeServers == 0L) {
+            return "No servers";
+        }
+        if (offlineServers > 0L) {
+            return "Degraded";
+        }
+        if (onlineServers >= activeServers) {
+            return "Live";
+        }
+        return "Checking";
+    }
+
+    private static EnumMap<WorklistStatus, Long> buildworklistStatusMap(List<WorklistStatusCountRow> rows) {
+        EnumMap<WorklistStatus, Long> counts = new EnumMap<>(WorklistStatus.class);
+        if (rows == null || rows.isEmpty()) {
+            return counts;
+        }
+        for (WorklistStatusCountRow row : rows) {
+            if (row == null || row.getStatusCode() == null) {
+                continue;
+            }
+            try {
+                WorklistStatus status = WorklistStatus.fromCode(row.getStatusCode());
+                counts.put(status, nullSafeLong(row.getTotal()));
+            } catch (Exception ex) {
+                LOGGER.debug("Skipping unknown WorklistStatus code '{}': {}", row.getStatusCode(), ex.getMessage());
+            }
+        }
+        return counts;
+    }
+
+    private static List<DashboardActionAlertResponse> buildActionAlerts(
+            DashboardOverviewResponse overview,
+            int waitingThresholdMinutes,
+            boolean includeTodayMetrics
+    ) {
+        List<DashboardActionAlertResponse> alerts = new ArrayList<>();
+
+        if (overview.getActiveDicomServers() == 0L) {
+            alerts.add(buildAlert(
+                    "NO_ACTIVE_DICOM_SERVER",
+                    "danger",
+                    "No active DICOM server",
+                    "No active DICOM server is configured for this hospital.",
+                    overview.getActiveDicomServers(),
+                    "/dicom-servers"
+            ));
+        }
+        if (overview.getOfflineDicomServers() != null && overview.getOfflineDicomServers() > 0L) {
+            alerts.add(buildAlert(
+                    "DICOM_SERVER_OFFLINE",
+                    "danger",
+                    "DICOM server offline",
+                    "One or more active DICOM servers are not responding.",
+                    overview.getOfflineDicomServers(),
+                    "/dicom-servers"
+            ));
+        }
+        if (overview.getUnmappedModalities() > 0L) {
+            alerts.add(buildAlert(
+                    "UNMAPPED_MODALITY",
+                    "warning",
+                    "Modality routing missing",
+                    "Some active modalities do not have DICOM routing yet.",
+                    overview.getUnmappedModalities(),
+                    "/dicom-routing"
+            ));
+        }
+        if (overview.getLongWaitingWorklists() > 0L) {
+            alerts.add(buildAlert(
+                    "Worklist_WAITING_TOO_LONG",
+                    "warning",
+                    "Worklists waiting too long",
+                    "Waiting Worklists exceeded " + waitingThresholdMinutes + " minutes.",
+                    overview.getLongWaitingWorklists(),
+                    "/worklist"
+            ));
+        }
+        if (includeTodayMetrics && overview.getTodayCancelledWorklists() > 0L) {
+            alerts.add(buildAlert(
+                    "TODAY_CANCELLED_Worklist",
+                    "warning",
+                    "Cancelled Worklists today",
+                    "There are cancelled Worklists today. Please review operational flow.",
+                    overview.getTodayCancelledWorklists(),
+                    "/worklist"
+            ));
+        }
+
+        return alerts;
+    }
+
+    private static DashboardActionAlertResponse buildAlert(
+            String code,
+            String tone,
+            String title,
+            String description,
+            Long value,
+            String path
+    ) {
+        DashboardActionAlertResponse alert = new DashboardActionAlertResponse();
+        alert.setCode(code);
+        alert.setTone(tone);
+        alert.setTitle(title);
+        alert.setDescription(description);
+        alert.setValue(value);
+        alert.setPath(path);
+        return alert;
+    }
+}

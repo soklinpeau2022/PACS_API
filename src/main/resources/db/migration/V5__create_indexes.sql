@@ -1,0 +1,10 @@
+CREATE INDEX idx_patients_hospital ON patients(hospital_id);
+CREATE INDEX idx_patients_hospital_active ON patients(hospital_id, is_active);
+CREATE INDEX idx_pacs_studies_hospital ON pacs_studies(hospital_id);
+CREATE INDEX idx_pacs_studies_hospital_patient ON pacs_studies(hospital_id, patient_id);
+CREATE INDEX idx_pacs_studies_study_uid ON pacs_studies(study_instance_uid);
+CREATE INDEX idx_pacs_studies_status ON pacs_studies(hospital_id, status);
+CREATE INDEX idx_pacs_queue_hospital_status ON pacs_patient_queue(hospital_id, status);
+CREATE INDEX idx_viewer_sessions_token ON pacs_viewer_sessions(token);
+CREATE INDEX idx_module_details_code ON module_details(code);
+CREATE INDEX idx_roles_hospital_id ON roles(hospital_id);

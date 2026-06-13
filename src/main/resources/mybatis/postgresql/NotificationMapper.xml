@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.notification.NotificationMapper">
+
+    <resultMap id="NotificationResponse" type="com.ut.emrPacs.model.dto.response.notification.NotificationResponse">
+        <id property="id" column="id"/>
+        <result property="referenceId" column="reference_id"/>
+        <result property="source" column="source"/>
+        <result property="type" column="type"/>
+        <result property="severity" column="severity"/>
+        <result property="title" column="title"/>
+        <result property="message" column="message"/>
+        <result property="module" column="module"/>
+        <result property="action" column="action"/>
+        <result property="username" column="username"/>
+        <result property="userName" column="user_name"/>
+        <result property="hospitalId" column="hospital_id"/>
+        <result property="hospitalPublicKey" column="hospital_public_key"/>
+        <result property="hospitalName" column="hospital_name"/>
+        <result property="patientId" column="patient_id"/>
+        <result property="patientPublicKey" column="patient_public_key"/>
+        <result property="patientName" column="patient_name"/>
+        <result property="patientUid" column="patient_uid"/>
+        <result property="worklistId" column="worklist_id"/>
+        <result property="worklistPublicKey" column="worklist_public_key"/>
+        <result property="studyId" column="study_id"/>
+        <result property="studyPublicKey" column="study_public_key"/>
+        <result property="visitCode" column="visit_code"/>
+        <result property="accessionNumber" column="accession_number"/>
+        <result property="modalityName" column="modality_name"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="endpoint" column="endpoint"/>
+        <result property="unread" column="unread"/>
+    </resultMap>
+
+    <sql id="USER_DISPLAY_NAME">
+        COALESCE(
+            NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''),
+            u.username
+        )
+    </sql>
+
+    <sql id="PATIENT_DISPLAY_NAME">
+        NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '')
+    </sql>
+
+    <sql id="NOTIFICATION_SOURCE">
+        (
+            SELECT
+                CONCAT('worklist-', q.id) AS id,
+                q.id AS reference_id,
+                'WORKLIST' AS source,
+                'WORKLIST_SENT' AS type,
+                'info' AS severity,
+                'Patient sent to worklist' AS title,
+                TRIM(CONCAT(
+                    COALESCE(<include refid="PATIENT_DISPLAY_NAME"/>, 'Patient'),
+                    CASE
+                        WHEN NULLIF(p.patient_uid, '') IS NOT NULL THEN CONCAT(' (', p.patient_uid, ')')
+                        ELSE ''
+                    END,
+                    ' was sent to ',
+                    COALESCE(NULLIF(m.name, ''), NULLIF(m.abbr, ''), 'a modality'),
+                    ' worklist',
+                    CASE
+                        WHEN NULLIF(q.visit_code, '') IS NOT NULL THEN CONCAT('. Visit ', q.visit_code)
+                        ELSE ''
+                    END,
+                    '.'
+                )) AS message,
+                'Worklist' AS module,
+                'Assign Worklist' AS action,
+                COALESCE(<include refid="USER_DISPLAY_NAME"/>, 'System') AS username,
+                COALESCE(<include refid="USER_DISPLAY_NAME"/>, 'System') AS user_name,
+                q.hospital_id,
+                h.public_id::text AS hospital_public_key,
+                h.name AS hospital_name,
+                q.patient_id,
+                p.public_id::text AS patient_public_key,
+                <include refid="PATIENT_DISPLAY_NAME"/> AS patient_name,
+                p.patient_uid,
+                q.id AS worklist_id,
+                q.public_id::text AS worklist_public_key,
+                NULL::BIGINT AS study_id,
+                NULL::TEXT AS study_public_key,
+                q.visit_code,
+                q.visit_code AS accession_number,
+                COALESCE(NULLIF(m.name, ''), NULLIF(m.abbr, ''), '') AS modality_name,
+                TO_CHAR(COALESCE(q.created_at, q.created), 'YYYY-MM-DD HH24:MI:SS') AS created_at,
+                COALESCE(q.created_at, q.created) AS created_at_sort,
+                '/worklist/worklist-list' AS endpoint,
+                FALSE AS unread
+            FROM pacs_worklists q
+            INNER JOIN hospitals h ON h.id = q.hospital_id
+            INNER JOIN patients p ON p.id = q.patient_id AND p.hospital_id = q.hospital_id
+            LEFT JOIN modalities m ON m.id = q.modality_id
+            LEFT JOIN users u ON u.id = q.created_by
+            WHERE COALESCE(q.created_at, q.created) IS NOT NULL
+            <if test="hospitalId != null and hospitalId > 0">
+                AND q.hospital_id = #{hospitalId}
+            </if>
+            <if test="days != null and days > 0">
+                AND COALESCE(q.created_at, q.created) >= NOW() - (#{days} * INTERVAL '1 day')
+            </if>
+
+            UNION ALL
+
+            SELECT
+                CONCAT('worklist-sent-', q.id) AS id,
+                q.id AS reference_id,
+                'WORKLIST' AS source,
+                'WORKLIST_SEND_TO_PACS' AS type,
+                'success' AS severity,
+                'Worklist sent to PACS' AS title,
+                TRIM(CONCAT(
+                    COALESCE(<include refid="PATIENT_DISPLAY_NAME"/>, 'Patient'),
+                    CASE
+                        WHEN NULLIF(p.patient_uid, '') IS NOT NULL THEN CONCAT(' (', p.patient_uid, ')')
+                        ELSE ''
+                    END,
+                    ' was sent to PACS',
+                    CASE
+                        WHEN NULLIF(q.visit_code, '') IS NOT NULL THEN CONCAT('. Visit ', q.visit_code)
+                        ELSE ''
+                    END,
+                    CASE
+                        WHEN NULLIF(machine.machine_ae_title, '') IS NOT NULL THEN CONCAT(' / ', machine.machine_ae_title)
+                        ELSE ''
+                    END,
+                    '.'
+                )) AS message,
+                'Worklist' AS module,
+                'Send To PACS' AS action,
+                COALESCE(<include refid="USER_DISPLAY_NAME"/>, 'System') AS username,
+                COALESCE(<include refid="USER_DISPLAY_NAME"/>, 'System') AS user_name,
+                q.hospital_id,
+                h.public_id::text AS hospital_public_key,
+                h.name AS hospital_name,
+                q.patient_id,
+                p.public_id::text AS patient_public_key,
+                <include refid="PATIENT_DISPLAY_NAME"/> AS patient_name,
+                p.patient_uid,
+                q.id AS worklist_id,
+                q.public_id::text AS worklist_public_key,
+                NULL::BIGINT AS study_id,
+                NULL::TEXT AS study_public_key,
+                q.visit_code,
+                q.visit_code AS accession_number,
+                COALESCE(NULLIF(m.name, ''), NULLIF(m.abbr, ''), '') AS modality_name,
+                TO_CHAR(q.sent_at, 'YYYY-MM-DD HH24:MI:SS') AS created_at,
+                q.sent_at AS created_at_sort,
+                '/worklist/worklist-send-to-pacs' AS endpoint,
+                FALSE AS unread
+            FROM pacs_worklists q
+            INNER JOIN hospitals h ON h.id = q.hospital_id
+            INNER JOIN patients p ON p.id = q.patient_id AND p.hospital_id = q.hospital_id
+            LEFT JOIN modalities m ON m.id = q.modality_id
+            LEFT JOIN users u ON u.id = q.modified_by
+            LEFT JOIN hospital_modality_server_routes r
+                ON r.id = q.dicom_route_id
+               AND r.hospital_id = q.hospital_id
+            LEFT JOIN hospital_dicom_machines machine
+                ON machine.id = r.machine_id
+               AND machine.hospital_id = r.hospital_id
+            WHERE q.sent_at IS NOT NULL
+            <if test="hospitalId != null and hospitalId > 0">
+                AND q.hospital_id = #{hospitalId}
+            </if>
+            <if test="days != null and days > 0">
+                AND q.sent_at >= NOW() - (#{days} * INTERVAL '1 day')
+            </if>
+
+            UNION ALL
+
+            SELECT
+                CONCAT('study-', s.id) AS id,
+                s.id AS reference_id,
+                'STUDY' AS source,
+                'IMAGE_RECEIVED' AS type,
+                'success' AS severity,
+                'Images received' AS title,
+                TRIM(CONCAT(
+                    'Images were received for ',
+                    COALESCE(<include refid="PATIENT_DISPLAY_NAME"/>, 'Patient'),
+                    CASE
+                        WHEN NULLIF(p.patient_uid, '') IS NOT NULL THEN CONCAT(' (', p.patient_uid, ')')
+                        ELSE ''
+                    END,
+                    CASE
+                        WHEN COALESCE(NULLIF(s.modality, ''), NULLIF(m.name, ''), NULLIF(m.abbr, '')) IS NOT NULL
+                            THEN CONCAT(' / ', COALESCE(NULLIF(s.modality, ''), NULLIF(m.name, ''), NULLIF(m.abbr, '')))
+                        ELSE ''
+                    END,
+                    CASE
+                        WHEN NULLIF(s.accession_number, '') IS NOT NULL THEN CONCAT('. Accession ', s.accession_number)
+                        ELSE ''
+                    END,
+                    '.'
+                )) AS message,
+                'Studies' AS module,
+                'Image Received' AS action,
+                'UDAYA_DICOM_SERVER' AS username,
+                'UDAYA_DICOM_SERVER' AS user_name,
+                s.hospital_id,
+                h.public_id::text AS hospital_public_key,
+                h.name AS hospital_name,
+                s.patient_id,
+                p.public_id::text AS patient_public_key,
+                <include refid="PATIENT_DISPLAY_NAME"/> AS patient_name,
+                p.patient_uid,
+                q.id AS worklist_id,
+                q.public_id::text AS worklist_public_key,
+                s.id AS study_id,
+                s.public_id::text AS study_public_key,
+                q.visit_code,
+                s.accession_number,
+                COALESCE(NULLIF(s.modality, ''), NULLIF(m.name, ''), NULLIF(m.abbr, ''), '') AS modality_name,
+                TO_CHAR(COALESCE(s.received_at, s.created), 'YYYY-MM-DD HH24:MI:SS') AS created_at,
+                COALESCE(s.received_at, s.created) AS created_at_sort,
+                '/study/study-list' AS endpoint,
+                FALSE AS unread
+            FROM pacs_studies s
+            INNER JOIN hospitals h ON h.id = s.hospital_id
+            INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+            LEFT JOIN pacs_worklist_study_links qsl
+                ON qsl.hospital_id = s.hospital_id
+               AND qsl.study_id = s.id
+               AND qsl.is_primary = 1
+            LEFT JOIN pacs_worklists q
+                ON q.id = qsl.worklist_id
+               AND q.hospital_id = s.hospital_id
+            LEFT JOIN modalities m ON m.id = q.modality_id
+            WHERE s.is_active = 1
+              AND COALESCE(s.received_at, s.created) IS NOT NULL
+            <if test="hospitalId != null and hospitalId > 0">
+                AND s.hospital_id = #{hospitalId}
+            </if>
+            <if test="days != null and days > 0">
+                AND COALESCE(s.received_at, s.created) >= NOW() - (#{days} * INTERVAL '1 day')
+            </if>
+        ) notifications
+    </sql>
+
+    <sql id="NOTIFICATION_WHERE">
+        WHERE 1 = 1
+        <choose>
+            <when test="sources != null and sources.size() > 0">
+                AND notifications.source IN
+                <foreach collection="sources" item="sourceItem" open="(" separator="," close=")">
+                    #{sourceItem}
+                </foreach>
+            </when>
+            <when test="source != null and source != ''">
+                AND LOWER(notifications.source) = LOWER(#{source})
+            </when>
+        </choose>
+        <if test="severity != null and severity != ''">
+            AND LOWER(notifications.severity) = LOWER(#{severity})
+        </if>
+        <if test="searchText != null and searchText != ''">
+            AND (
+                COALESCE(notifications.title, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.message, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.module, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.action, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.username, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.hospital_name, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.patient_name, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.patient_uid, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.visit_code, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.accession_number, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.modality_name, '') ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(notifications.endpoint, '') ILIKE '%' || #{searchText} || '%'
+            )
+        </if>
+    </sql>
+
+    <select id="listNotifications" parameterType="com.ut.emrPacs.model.base.filter.NotificationFilter" resultMap="NotificationResponse">
+        SELECT
+            notifications.id,
+            notifications.reference_id,
+            notifications.source,
+            notifications.type,
+            notifications.severity,
+            notifications.title,
+            notifications.message,
+            notifications.module,
+            notifications.action,
+            notifications.username,
+            notifications.user_name,
+            notifications.hospital_id,
+            notifications.hospital_public_key,
+            notifications.hospital_name,
+            notifications.patient_id,
+            notifications.patient_public_key,
+            notifications.patient_name,
+            notifications.patient_uid,
+            notifications.worklist_id,
+            notifications.worklist_public_key,
+            notifications.study_id,
+            notifications.study_public_key,
+            notifications.visit_code,
+            notifications.accession_number,
+            notifications.modality_name,
+            notifications.created_at,
+            notifications.endpoint,
+            notifications.unread
+        FROM
+        <include refid="NOTIFICATION_SOURCE"/>
+        <include refid="NOTIFICATION_WHERE"/>
+        ORDER BY notifications.created_at_sort DESC, notifications.reference_id DESC
+        <if test="page != null and rowsPerPage != null">LIMIT #{rowsPerPage} OFFSET #{page}</if>
+    </select>
+
+    <select id="countNotifications" parameterType="com.ut.emrPacs.model.base.filter.NotificationFilter" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM
+        <include refid="NOTIFICATION_SOURCE"/>
+        <include refid="NOTIFICATION_WHERE"/>
+    </select>
+</mapper>

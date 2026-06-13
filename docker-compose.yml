@@ -1,0 +1,213 @@
+name: ${API_COMPOSE_PROJECT_NAME:-udaya_pacs_api}
+
+x-api-common: &api-common
+  image: ${APP_IMAGE:-udaya_pacs_local_api:latest}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  init: true
+  read_only: true
+  cap_drop:
+    - ALL
+  stop_grace_period: 30s
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS http://localhost:8080/pacsApi/actuator/health || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 40s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  volumes:
+    - ${KEY_PATH:-./src/main/resources/key}:/app/config/key:ro
+    - ${HOSPITAL_IMAGE_HOST_PATH:-./runtime-image}:/var/ut-image
+
+x-redis-common: &redis-common
+  image: ${REDIS_IMAGE:-redis:7-alpine}
+  restart: unless-stopped
+  init: true
+  command: ["sh", "-c", "redis-server --requirepass \"$${REDIS_PASSWORD}\" --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-512mb} --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-allkeys-lru}"]
+  healthcheck:
+    test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 10s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  udaya_pacs_local_redis:
+    <<: *redis-common
+    container_name: ${LOCAL_REDIS_CONTAINER_NAME:-udaya_pacs_local_redis}
+    profiles: ["local"]
+    environment:
+      REDIS_PASSWORD: ${LOCAL_REDIS_PASSWORD:-}
+    ports:
+      - "127.0.0.1:${LOCAL_REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - udaya_pacs_local_redis_data:/data
+
+  udaya_pacs_local_api:
+    <<: *api-common
+    container_name: ${LOCAL_API_CONTAINER_NAME:-udaya_pacs_local_api}
+    profiles: ["local"]
+    depends_on:
+      udaya_pacs_local_redis:
+        condition: service_healthy
+    env_file:
+      - .env.local
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      APP_CACHE_PROVIDER: ${APP_CACHE_PROVIDER:-redis}
+      APP_CACHE_TTL_SECONDS: ${APP_CACHE_TTL_SECONDS:-600}
+      APP_CACHE_MAX_ENTRIES: ${APP_CACHE_MAX_ENTRIES:-5000}
+      APP_CACHE_REDIS_KEY_PREFIX: ${APP_CACHE_REDIS_KEY_PREFIX:-udaya_pacs_local}
+      APP_CACHE_REDIS_HEALTH_ENABLED: ${APP_CACHE_REDIS_HEALTH_ENABLED:-true}
+      REDIS_HOST: ${LOCAL_REDIS_CONTAINER_NAME:-udaya_pacs_local_redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${LOCAL_REDIS_PASSWORD:-}
+      REDIS_DATABASE: ${REDIS_DATABASE:-0}
+      REDIS_TIMEOUT: ${REDIS_TIMEOUT:-2s}
+      SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY: ${LOCAL_SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY:-}
+      API_AUTH_URL: ${LOCAL_API_AUTH_URL:-http://localhost:8080/pacsApi}
+      SPRINGDOC_SERVER_URL: ${LOCAL_SPRINGDOC_SERVER_URL:-}
+      HOSPITAL_IMAGE_ROOT_PATH: ${HOSPITAL_IMAGE_ROOT_PATH:-/var/ut-image}
+      PACS_RESULT_STATIC_AUTH_ENABLED: ${PACS_RESULT_STATIC_AUTH_ENABLED:-true}
+      PACS_RESULT_API_KEY: ${PACS_RESULT_API_KEY:-}
+      PACS_RESULT_UPLOAD_ROOT: ${PACS_RESULT_UPLOAD_ROOT:-/var/ut-image}
+      PACS_RESULT_MAX_IMAGE_BYTES: ${PACS_RESULT_MAX_IMAGE_BYTES:-10485760}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-false}
+      TZ: ${TZ:-Asia/Phnom_Penh}
+    ports:
+      - "${LOCAL_API_PORT:-8080}:8080"
+
+  udaya_pacs_qa_redis:
+    <<: *redis-common
+    container_name: ${QA_REDIS_CONTAINER_NAME:-udaya_pacs_qa_redis}
+    profiles: ["qa"]
+    environment:
+      REDIS_PASSWORD: ${QA_REDIS_PASSWORD:-}
+    ports:
+      - "127.0.0.1:${QA_REDIS_HOST_PORT:-6380}:6379"
+    volumes:
+      - udaya_pacs_qa_redis_data:/data
+
+  udaya_pacs_qa_api:
+    <<: *api-common
+    container_name: ${QA_API_CONTAINER_NAME:-udaya_pacs_qa_api}
+    profiles: ["qa"]
+    depends_on:
+      udaya_pacs_qa_redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: qa
+      APP_CACHE_PROVIDER: ${APP_CACHE_PROVIDER:-redis}
+      APP_CACHE_TTL_SECONDS: ${APP_CACHE_TTL_SECONDS:-600}
+      APP_CACHE_MAX_ENTRIES: ${APP_CACHE_MAX_ENTRIES:-5000}
+      APP_CACHE_REDIS_KEY_PREFIX: ${APP_CACHE_REDIS_KEY_PREFIX:-udaya_pacs_qa}
+      APP_CACHE_REDIS_HEALTH_ENABLED: ${APP_CACHE_REDIS_HEALTH_ENABLED:-true}
+      REDIS_HOST: ${QA_REDIS_CONTAINER_NAME:-udaya_pacs_qa_redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${QA_REDIS_PASSWORD:-}
+      REDIS_DATABASE: ${REDIS_DATABASE:-0}
+      REDIS_TIMEOUT: ${REDIS_TIMEOUT:-2s}
+      SPRING_DATASOURCE_URL: ${QA_SPRING_DATASOURCE_URL:-}
+      SPRING_DATASOURCE_USERNAME: ${QA_SPRING_DATASOURCE_USERNAME:-}
+      SPRING_DATASOURCE_PASSWORD: ${QA_SPRING_DATASOURCE_PASSWORD:-}
+      SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY: ${QA_SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY:-}
+      SECURITY_JWT_PRIVATE_KEY: ${SECURITY_JWT_PRIVATE_KEY:-}
+      SECURITY_JWT_PUBLIC_KEY: ${SECURITY_JWT_PUBLIC_KEY:-}
+      SECURITY_JWT_KEY_ID: ${SECURITY_JWT_KEY_ID:-}
+      HOSPITAL_IMAGE_ROOT_PATH: ${HOSPITAL_IMAGE_ROOT_PATH:-/var/ut-image}
+      PACS_RESULT_STATIC_AUTH_ENABLED: ${PACS_RESULT_STATIC_AUTH_ENABLED:-true}
+      PACS_RESULT_API_KEY: ${PACS_RESULT_API_KEY:-}
+      PACS_RESULT_UPLOAD_ROOT: ${PACS_RESULT_UPLOAD_ROOT:-/var/ut-image}
+      PACS_RESULT_MAX_IMAGE_BYTES: ${PACS_RESULT_MAX_IMAGE_BYTES:-10485760}
+      SPRING_MAIL_USERNAME: ${QA_SPRING_MAIL_USERNAME:-}
+      SPRING_MAIL_PASSWORD: ${QA_SPRING_MAIL_PASSWORD:-}
+      API_AUTH_URL: ${QA_API_AUTH_URL:-}
+      SPRINGDOC_SERVER_URL: ${QA_SPRINGDOC_SERVER_URL:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-false}
+      APP_SECURITY_CLIENT_ALLOW_PATHS: ${APP_SECURITY_CLIENT_ALLOW_PATHS:-/worklist/worklist-received-study}
+      APP_SECURITY_CLIENT_ALLOW_CLIENT_IDS: ${APP_SECURITY_CLIENT_ALLOW_CLIENT_IDS:-}
+      TELEGRAM_CHAT_ID: ${QA_TELEGRAM_CHAT_ID:-}
+      TELEGRAM_API_TOKEN: ${QA_TELEGRAM_API_TOKEN:-}
+      TZ: ${TZ:-Asia/Phnom_Penh}
+    ports:
+      - "${QA_API_PORT:-8081}:8080"
+
+  udaya_pacs_prod_redis:
+    <<: *redis-common
+    container_name: ${PROD_REDIS_CONTAINER_NAME:-udaya_pacs_prod_redis}
+    profiles: ["prod"]
+    environment:
+      REDIS_PASSWORD: ${PROD_REDIS_PASSWORD:-}
+    ports:
+      - "127.0.0.1:${PROD_REDIS_HOST_PORT:-6381}:6379"
+    volumes:
+      - udaya_pacs_prod_redis_data:/data
+
+  udaya_pacs_prod_api:
+    <<: *api-common
+    container_name: ${PROD_API_CONTAINER_NAME:-udaya_pacs_prod_api}
+    profiles: ["prod"]
+    depends_on:
+      udaya_pacs_prod_redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      APP_CACHE_PROVIDER: ${APP_CACHE_PROVIDER:-redis}
+      APP_CACHE_TTL_SECONDS: ${APP_CACHE_TTL_SECONDS:-600}
+      APP_CACHE_MAX_ENTRIES: ${APP_CACHE_MAX_ENTRIES:-5000}
+      APP_CACHE_REDIS_KEY_PREFIX: ${APP_CACHE_REDIS_KEY_PREFIX:-udaya_pacs_prod}
+      APP_CACHE_REDIS_HEALTH_ENABLED: ${APP_CACHE_REDIS_HEALTH_ENABLED:-true}
+      REDIS_HOST: ${PROD_REDIS_CONTAINER_NAME:-udaya_pacs_prod_redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${PROD_REDIS_PASSWORD:-}
+      REDIS_DATABASE: ${REDIS_DATABASE:-0}
+      REDIS_TIMEOUT: ${REDIS_TIMEOUT:-2s}
+      SPRING_DATASOURCE_URL: ${PROD_SPRING_DATASOURCE_URL:-}
+      SPRING_DATASOURCE_USERNAME: ${PROD_SPRING_DATASOURCE_USERNAME:-}
+      SPRING_DATASOURCE_PASSWORD: ${PROD_SPRING_DATASOURCE_PASSWORD:-}
+      SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY: ${PROD_SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY:-}
+      SECURITY_JWT_PRIVATE_KEY: ${SECURITY_JWT_PRIVATE_KEY:-}
+      SECURITY_JWT_PUBLIC_KEY: ${SECURITY_JWT_PUBLIC_KEY:-}
+      SECURITY_JWT_KEY_ID: ${SECURITY_JWT_KEY_ID:-}
+      HOSPITAL_IMAGE_ROOT_PATH: ${HOSPITAL_IMAGE_ROOT_PATH:-/var/ut-image}
+      PACS_RESULT_STATIC_AUTH_ENABLED: ${PACS_RESULT_STATIC_AUTH_ENABLED:-true}
+      PACS_RESULT_API_KEY: ${PACS_RESULT_API_KEY:-}
+      PACS_RESULT_UPLOAD_ROOT: ${PACS_RESULT_UPLOAD_ROOT:-/var/ut-image}
+      PACS_RESULT_MAX_IMAGE_BYTES: ${PACS_RESULT_MAX_IMAGE_BYTES:-10485760}
+      SPRING_MAIL_USERNAME: ${PROD_SPRING_MAIL_USERNAME:-}
+      SPRING_MAIL_PASSWORD: ${PROD_SPRING_MAIL_PASSWORD:-}
+      API_AUTH_URL: ${PROD_API_AUTH_URL:-}
+      SPRINGDOC_SERVER_URL: ${PROD_SPRINGDOC_SERVER_URL:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-false}
+      APP_SECURITY_CLIENT_ALLOW_PATHS: ${APP_SECURITY_CLIENT_ALLOW_PATHS:-/worklist/worklist-received-study}
+      APP_SECURITY_CLIENT_ALLOW_CLIENT_IDS: ${APP_SECURITY_CLIENT_ALLOW_CLIENT_IDS:-}
+      TELEGRAM_CHAT_ID: ${PROD_TELEGRAM_CHAT_ID:-}
+      TELEGRAM_API_TOKEN: ${PROD_TELEGRAM_API_TOKEN:-}
+      TZ: ${TZ:-Asia/Phnom_Penh}
+    ports:
+      - "${PROD_API_PORT:-8082}:8080"
+
+volumes:
+  udaya_pacs_local_redis_data:
+  udaya_pacs_qa_redis_data:
+  udaya_pacs_prod_redis_data:
+

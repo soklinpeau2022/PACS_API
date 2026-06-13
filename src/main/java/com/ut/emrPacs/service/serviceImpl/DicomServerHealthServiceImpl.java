@@ -1,0 +1,432 @@
+package com.ut.emrPacs.service.serviceImpl;
+
+import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
+import com.ut.emrPacs.model.dto.response.pacs.dicom.DicomServerHealthResponse;
+import com.ut.emrPacs.model.dto.response.pacs.dicom.DicomServerHealthSettingsResponse;
+import com.ut.emrPacs.model.dto.response.pacs.dicom.DicomServerHealthSummaryResponse;
+import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
+import com.ut.emrPacs.service.service.DicomServerHealthService;
+import static com.ut.emrPacs.helper.FunctionHelper.trimToNull;
+import org.springframework.dao.DataAccessException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Service
+public class DicomServerHealthServiceImpl implements DicomServerHealthService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(DicomServerHealthServiceImpl.class);
+    private static final String STATUS_ONLINE = "ONLINE";
+    private static final String STATUS_OFFLINE = "OFFLINE";
+    private static final String STATUS_UNKNOWN = "UNKNOWN";
+    private static final String STATUS_INACTIVE = "INACTIVE";
+    private static final String SUMMARY_DISABLED = "DISABLED";
+    private static final String SUMMARY_NO_SERVERS = "NO_SERVERS";
+    private static final String SUMMARY_DEGRADED = "DEGRADED";
+    private static final String SUMMARY_LIVE = "LIVE";
+    private static final String SUMMARY_CHECKING = "CHECKING";
+    private static final String SETTING_HEALTH_ENABLED = "dicom.server.health.enabled";
+    private static final String SETTING_HEALTH_INTERVAL = "dicom.server.health.poll_interval_seconds";
+    private static final int DEFAULT_POLL_INTERVAL_SECONDS = 5;
+    private static final int MIN_POLL_INTERVAL_SECONDS = 5;
+    private static final int MAX_POLL_INTERVAL_SECONDS = 300;
+    private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault());
+
+    private final DicomServerMapper dicomServerMapper;
+    private final JdbcTemplate jdbcTemplate;
+    private final HttpClient httpClient;
+    private final Map<Long, HealthSnapshot> snapshots = new ConcurrentHashMap<>();
+    private volatile HealthProbeSettings cachedSettings;
+    private volatile Instant settingsCacheUntil = Instant.EPOCH;
+    private volatile Instant nextProbeAt = Instant.EPOCH;
+
+    @Value("${dicom.server.health.timeout-ms:1500}")
+    private long timeoutMs;
+
+    public DicomServerHealthServiceImpl(DicomServerMapper dicomServerMapper, JdbcTemplate jdbcTemplate) {
+        this.dicomServerMapper = dicomServerMapper;
+        this.jdbcTemplate = jdbcTemplate;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(2))
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
+    }
+
+    @Scheduled(
+            initialDelayString = "${dicom.server.health.initial-delay-ms:1000}",
+            fixedDelayString = "${dicom.server.health.scheduler-tick-ms:1000}"
+    )
+    public void probeActiveDicomServers() {
+        HealthProbeSettings settings = loadSettings();
+        if (!settings.enabled()) {
+            return;
+        }
+        Instant now = Instant.now();
+        if (now.isBefore(nextProbeAt)) {
+            return;
+        }
+        nextProbeAt = now.plusSeconds(settings.pollIntervalSeconds());
+        List<HospitalDicomServerResponse> servers = safeActiveServers(null);
+        if (servers.isEmpty()) {
+            return;
+        }
+        servers.parallelStream().forEach(this::probeAndStore);
+    }
+
+    @Override
+    public void enrichDicomServerRows(List<HospitalDicomServerResponse> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        for (HospitalDicomServerResponse row : rows) {
+            applySnapshot(row);
+        }
+    }
+
+    @Override
+    public List<DicomServerHealthResponse> listHealth(Long hospitalId) {
+        return safeActiveServers(hospitalId).stream()
+                .map(this::toHealthResponse)
+                .toList();
+    }
+
+    @Override
+    public DicomServerHealthSummaryResponse getSummary(Long hospitalId) {
+        HealthProbeSettings settings = loadSettings();
+        List<DicomServerHealthResponse> rows = listHealth(hospitalId);
+        int total = rows.size();
+        int online = (int) rows.stream().filter(row -> Boolean.TRUE.equals(row.getOnline())).count();
+        int offline = (int) rows.stream().filter(row -> STATUS_OFFLINE.equalsIgnoreCase(row.getStatus())).count();
+        int unknown = Math.max(0, total - online - offline);
+
+        DicomServerHealthSummaryResponse response = new DicomServerHealthSummaryResponse();
+        response.setEnabled(settings.enabled());
+        response.setPollIntervalSeconds(settings.pollIntervalSeconds());
+        response.setTotalServers(total);
+        response.setOnlineServers(online);
+        response.setOfflineServers(offline);
+        response.setUnknownServers(unknown);
+        response.setCheckedAt(rows.stream()
+                .map(DicomServerHealthResponse::getCheckedAt)
+                .filter(value -> value != null && !value.isBlank())
+                .max(String::compareTo)
+                .orElse(null));
+        if (!settings.enabled()) {
+            response.setStatus(SUMMARY_DISABLED);
+        } else if (total == 0) {
+            response.setStatus(SUMMARY_NO_SERVERS);
+        } else if (offline > 0) {
+            response.setStatus(SUMMARY_DEGRADED);
+        } else if (unknown > 0) {
+            response.setStatus(SUMMARY_CHECKING);
+        } else {
+            response.setStatus(SUMMARY_LIVE);
+        }
+        return response;
+    }
+
+    @Override
+    public DicomServerHealthSettingsResponse getSettings() {
+        HealthProbeSettings settings = loadSettings();
+        DicomServerHealthSettingsResponse response = new DicomServerHealthSettingsResponse();
+        response.setEnabled(settings.enabled());
+        response.setPollIntervalSeconds(settings.pollIntervalSeconds());
+        return response;
+    }
+
+    @Override
+    public DicomServerHealthSettingsResponse updateSettings(Boolean enabled, Integer pollIntervalSeconds, Long modifiedBy) {
+        boolean normalizedEnabled = enabled == null || enabled;
+        int normalizedInterval = normalizePollInterval(pollIntervalSeconds);
+        upsertSetting(SETTING_HEALTH_ENABLED, Boolean.toString(normalizedEnabled), modifiedBy);
+        upsertSetting(SETTING_HEALTH_INTERVAL, Integer.toString(normalizedInterval), modifiedBy);
+        cachedSettings = new HealthProbeSettings(normalizedEnabled, normalizedInterval);
+        settingsCacheUntil = Instant.now().plusSeconds(5);
+        if (normalizedEnabled) {
+            nextProbeAt = Instant.EPOCH;
+        }
+        return getSettings();
+    }
+
+    private List<HospitalDicomServerResponse> safeActiveServers(Long hospitalId) {
+        try {
+            List<HospitalDicomServerResponse> rows = dicomServerMapper.listActiveDicomServersForHealth(hospitalId);
+            return rows == null ? Collections.emptyList() : rows;
+        } catch (Exception error) {
+            LOGGER.debug("Unable to read active DICOM servers for health probe: {}", error.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    private void probeAndStore(HospitalDicomServerResponse server) {
+        if (server == null || server.getId() == null) {
+            return;
+        }
+        HealthSnapshot previous = snapshots.get(server.getId());
+        HealthSnapshot next = probe(server, previous);
+        snapshots.put(server.getId(), next);
+    }
+
+    private HealthSnapshot probe(HospitalDicomServerResponse server, HealthSnapshot previous) {
+        Instant checkedAt = Instant.now();
+        long started = System.nanoTime();
+        try {
+            String healthUrl = buildHealthUrl(server);
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
+                    .uri(URI.create(healthUrl))
+                    .timeout(Duration.ofMillis(Math.max(300L, timeoutMs)))
+                    .GET()
+                    .header("Accept", "application/json");
+            String username = trimToNull(server.getUsername());
+            String password = trimToNull(server.getPassword());
+            if (username != null && password != null) {
+                String token = Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
+                builder.header("Authorization", "Basic " + token);
+            }
+            HttpResponse<Void> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.discarding());
+            long responseTimeMs = elapsedMs(started);
+            int statusCode = response.statusCode();
+            boolean online = isReachableStatus(statusCode);
+            return buildSnapshot(online, checkedAt, previous, responseTimeMs);
+        } catch (Exception error) {
+            long responseTimeMs = elapsedMs(started);
+            LOGGER.debug("DICOM server health probe failed for {}: {}", server.getName(), error.getMessage());
+            return buildSnapshot(false, checkedAt, previous, responseTimeMs);
+        }
+    }
+
+    private HealthSnapshot buildSnapshot(
+            boolean online,
+            Instant checkedAt,
+            HealthSnapshot previous,
+            Long responseTimeMs
+    ) {
+        Instant lastOnlineAt = online
+                ? checkedAt
+                : previous == null ? null : previous.lastOnlineAt();
+        Instant offlineSince = online
+                ? null
+                : previous != null && !previous.online() && previous.offlineSince() != null
+                        ? previous.offlineSince()
+                        : checkedAt;
+        return new HealthSnapshot(
+                online ? STATUS_ONLINE : STATUS_OFFLINE,
+                online,
+                checkedAt,
+                lastOnlineAt,
+                offlineSince,
+                responseTimeMs
+        );
+    }
+
+    private void applySnapshot(HospitalDicomServerResponse row) {
+        if (row == null) {
+            return;
+        }
+        if (row.getIsActive() != null && row.getIsActive() != 1L) {
+            row.setHealthStatus(STATUS_INACTIVE);
+            row.setHealthOnline(false);
+            return;
+        }
+        HealthSnapshot snapshot = row.getId() == null ? null : snapshots.get(row.getId());
+        if (snapshot == null) {
+            row.setHealthStatus(STATUS_UNKNOWN);
+            row.setHealthOnline(false);
+            return;
+        }
+        row.setHealthStatus(snapshot.status());
+        row.setHealthOnline(snapshot.online());
+        row.setHealthCheckedAt(formatInstant(snapshot.checkedAt()));
+        row.setHealthLastOnlineAt(formatInstant(snapshot.lastOnlineAt()));
+        row.setHealthOfflineSince(formatInstant(snapshot.offlineSince()));
+        row.setHealthOfflineSeconds(offlineSeconds(snapshot));
+        row.setHealthResponseTimeMs(snapshot.responseTimeMs());
+    }
+
+    private DicomServerHealthResponse toHealthResponse(HospitalDicomServerResponse server) {
+        DicomServerHealthResponse response = new DicomServerHealthResponse();
+        response.setPublicKey(server.getPublicKey());
+        response.setName(server.getName());
+        response.setHospitalPublicKey(server.getHospitalPublicKey());
+        response.setHospitalName(server.getHospitalName());
+        response.setIpAddress(server.getIpAddress());
+        response.setPublicHealthCheckUrl(server.getPublicHealthCheckUrl());
+        response.setPort(server.getPort());
+        response.setDicomPort(server.getDicomPort());
+        response.setAeTitle(server.getAeTitle());
+        HealthSnapshot snapshot = server.getId() == null ? null : snapshots.get(server.getId());
+        if (snapshot == null) {
+            response.setStatus(STATUS_UNKNOWN);
+            response.setOnline(false);
+            return response;
+        }
+        response.setStatus(snapshot.status());
+        response.setOnline(snapshot.online());
+        response.setCheckedAt(formatInstant(snapshot.checkedAt()));
+        response.setLastOnlineAt(formatInstant(snapshot.lastOnlineAt()));
+        response.setOfflineSince(formatInstant(snapshot.offlineSince()));
+        response.setOfflineSeconds(offlineSeconds(snapshot));
+        response.setResponseTimeMs(snapshot.responseTimeMs());
+        return response;
+    }
+
+    private HealthProbeSettings loadSettings() {
+        Instant now = Instant.now();
+        HealthProbeSettings settings = cachedSettings;
+        if (settings != null && now.isBefore(settingsCacheUntil)) {
+            return settings;
+        }
+        synchronized (this) {
+            settings = cachedSettings;
+            if (settings != null && now.isBefore(settingsCacheUntil)) {
+                return settings;
+            }
+            settings = readSettingsFromDb();
+            cachedSettings = settings;
+            settingsCacheUntil = now.plusSeconds(5);
+            return settings;
+        }
+    }
+
+    private HealthProbeSettings readSettingsFromDb() {
+        try {
+            String enabledValue = readSetting(SETTING_HEALTH_ENABLED, "true");
+            String intervalValue = readSetting(SETTING_HEALTH_INTERVAL, Integer.toString(DEFAULT_POLL_INTERVAL_SECONDS));
+            boolean enabled = !"false".equalsIgnoreCase(enabledValue);
+            int interval = normalizePollInterval(parseInteger(intervalValue, DEFAULT_POLL_INTERVAL_SECONDS));
+            return new HealthProbeSettings(enabled, interval);
+        } catch (Exception error) {
+            LOGGER.debug("DICOM server health settings fallback applied: {}", error.getMessage());
+            return new HealthProbeSettings(true, DEFAULT_POLL_INTERVAL_SECONDS);
+        }
+    }
+
+    private String readSetting(String key, String fallback) {
+        try {
+            String value = jdbcTemplate.queryForObject(
+                    "SELECT setting_value FROM pacs_system_settings WHERE setting_key = ?",
+                    String.class,
+                    key
+            );
+            String trimmed = trimToNull(value);
+            return trimmed == null ? fallback : trimmed;
+        } catch (DataAccessException error) {
+            return fallback;
+        }
+    }
+
+    private void upsertSetting(String key, String value, Long modifiedBy) {
+        jdbcTemplate.update("""
+                INSERT INTO pacs_system_settings (setting_key, setting_value, modified_by, modified_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (setting_key) DO UPDATE SET
+                    setting_value = EXCLUDED.setting_value,
+                    modified_by = EXCLUDED.modified_by,
+                    modified_at = CURRENT_TIMESTAMP
+                """, key, value, modifiedBy);
+    }
+
+    private static int parseInteger(String value, int fallback) {
+        try {
+            return Integer.parseInt(value);
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static int normalizePollInterval(Integer value) {
+        int normalized = value == null ? DEFAULT_POLL_INTERVAL_SECONDS : value;
+        if (normalized < MIN_POLL_INTERVAL_SECONDS) {
+            return MIN_POLL_INTERVAL_SECONDS;
+        }
+        return Math.min(normalized, MAX_POLL_INTERVAL_SECONDS);
+    }
+
+    private static boolean isReachableStatus(int statusCode) {
+        return (statusCode >= 200 && statusCode < 400) || statusCode == 401 || statusCode == 403;
+    }
+
+    private static String buildHealthUrl(HospitalDicomServerResponse server) {
+        String configuredHealthUrl = trimToNull(server.getPublicHealthCheckUrl());
+        if (configuredHealthUrl != null) {
+            return normalizeHealthUrl(configuredHealthUrl);
+        }
+
+        String baseUrl = trimToNull(server.getBaseUrl());
+        if (baseUrl == null) {
+            String host = trimToNull(server.getIpAddress());
+            if (host == null) {
+                throw new IllegalArgumentException("DICOM server host is not configured.");
+            }
+            String scheme = Boolean.TRUE.equals(server.getSslEnabled()) ? "https" : "http";
+            int port = server.getPort() == null || server.getPort() <= 0 ? 8042 : server.getPort();
+            baseUrl = scheme + "://" + host + ":" + port;
+        }
+        return normalizeHealthUrl(baseUrl);
+    }
+
+    private static String normalizeHealthUrl(String value) {
+        String normalized = value.trim();
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        try {
+            URI uri = URI.create(normalized);
+            String path = uri.getPath();
+            if (path == null || path.isBlank() || "/".equals(path)) {
+                return normalized + "/system";
+            }
+        } catch (Exception ignored) {
+            return normalized + "/system";
+        }
+        return normalized;
+    }
+
+    private static Long offlineSeconds(HealthSnapshot snapshot) {
+        if (snapshot == null || snapshot.online() || snapshot.offlineSince() == null) {
+            return 0L;
+        }
+        return Math.max(0L, Duration.between(snapshot.offlineSince(), Instant.now()).getSeconds());
+    }
+
+    private static String formatInstant(Instant instant) {
+        return instant == null ? null : DATE_TIME_FORMATTER.format(instant);
+    }
+
+    private static long elapsedMs(long started) {
+        return Math.max(0L, Duration.ofNanos(System.nanoTime() - started).toMillis());
+    }
+
+    private record HealthSnapshot(
+            String status,
+            boolean online,
+            Instant checkedAt,
+            Instant lastOnlineAt,
+            Instant offlineSince,
+            Long responseTimeMs
+    ) {
+    }
+
+    private record HealthProbeSettings(
+            boolean enabled,
+            int pollIntervalSeconds
+    ) {
+    }
+}

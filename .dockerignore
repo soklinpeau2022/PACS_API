@@ -1,0 +1,14 @@
+.git
+.idea
+target
+dist
+runtime-image
+*.iml
+*.ipr
+*.iws
+.env
+.env.*
+README.md
+*.log
+**/logs
+**/upload

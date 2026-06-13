@@ -1,0 +1,288 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.modality.ModalityMapper">
+    <resultMap id="ModalityResponse" type="com.ut.emrPacs.model.dto.response.systemSettings.modality.ModalityResponse" autoMapping="true"/>
+    <resultMap id="HospitalModalityFlatRow" type="com.ut.emrPacs.model.dto.response.systemSettings.modality.HospitalModalityFlatRow" autoMapping="true"/>
+
+    <sql id="MODALITY_WHERE">
+        WHERE m.is_active != 2
+        <if test="searchText != null and searchText != ''">
+            AND (
+                m.name ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(m.abbr, '') ILIKE '%' || #{searchText} || '%'
+            )
+        </if>
+    </sql>
+
+    <select id="countModality" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM modalities m
+        <include refid="MODALITY_WHERE"/>
+    </select>
+
+    <select id="listModality" resultMap="ModalityResponse">
+        SELECT
+            m.id AS id,
+            m.public_id::text AS publicKey,
+            m.abbr AS abbr,
+            m.name AS name,
+            m.is_active AS isActive,
+            m.created_by AS createdById,
+            COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(uc.first_name, ''), ' ', COALESCE(uc.last_name, ''))), ''),
+                uc.username,
+                ''
+            ) AS createdBy,
+            TO_CHAR(m.created_at, 'DD-Mon-YYYY HH24:MI') AS created,
+            m.modified_by AS modifiedById,
+            COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(um.first_name, ''), ' ', COALESCE(um.last_name, ''))), ''),
+                um.username,
+                ''
+            ) AS modifiedBy,
+            TO_CHAR(m.modified_at, 'DD-Mon-YYYY HH24:MI') AS modified
+        FROM modalities m
+        LEFT JOIN users uc ON uc.id = m.created_by
+        LEFT JOIN users um ON um.id = m.modified_by
+        <include refid="MODALITY_WHERE"/>
+        ORDER BY m.id DESC
+        <if test="page != null and rowsPerPage != null">
+            LIMIT #{rowsPerPage}
+            OFFSET #{page}
+        </if>
+    </select>
+
+    <select id="getModalityById" resultMap="ModalityResponse">
+        SELECT
+            m.id AS id,
+            m.public_id::text AS publicKey,
+            m.abbr AS abbr,
+            m.name AS name,
+            m.is_active AS isActive,
+            m.created_by AS createdById,
+            COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(uc.first_name, ''), ' ', COALESCE(uc.last_name, ''))), ''),
+                uc.username,
+                ''
+            ) AS createdBy,
+            TO_CHAR(m.created_at, 'DD-Mon-YYYY HH24:MI') AS created,
+            m.modified_by AS modifiedById,
+            COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(um.first_name, ''), ' ', COALESCE(um.last_name, ''))), ''),
+                um.username,
+                ''
+            ) AS modifiedBy,
+            TO_CHAR(m.modified_at, 'DD-Mon-YYYY HH24:MI') AS modified
+        FROM modalities m
+        LEFT JOIN users uc ON uc.id = m.created_by
+        LEFT JOIN users um ON um.id = m.modified_by
+        WHERE m.id = #{id}
+          AND m.is_active != 2
+        LIMIT 1
+    </select>
+
+    <insert id="createModality" parameterType="com.ut.emrPacs.model.components.systemSettings.modality.Modality" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO modalities (
+            name,
+            abbr,
+            is_active,
+            created_by,
+            modified_by,
+            created_at,
+            modified_at
+        ) VALUES (
+            #{name},
+            #{abbr},
+            #{isActive},
+            #{createdBy},
+            #{modifiedBy},
+            NOW(),
+            NOW()
+        )
+    </insert>
+
+    <update id="updateModality">
+        UPDATE modalities
+        SET
+            <if test="name != null and name != ''">name = #{name},</if>
+            <if test="abbr != null and abbr != ''">abbr = #{abbr},</if>
+            <if test="isActive != null">is_active = #{isActive},</if>
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND is_active != 2
+          AND NOT EXISTS (
+              SELECT 1
+              FROM hospital_modality_server_routes route
+              WHERE route.modality_id = modalities.id
+                AND route.is_active = 1
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM hospital_dicom_machines machine
+              WHERE machine.modality_id = modalities.id
+                AND machine.is_active = 1
+          )
+    </update>
+
+    <update id="deleteModality">
+        UPDATE modalities
+        SET
+            is_active = 2,
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND is_active != 2
+    </update>
+
+    <select id="listActiveDicomRouteUsageByModalityId" resultType="java.lang.String">
+        SELECT DISTINCT CONCAT(
+            COALESCE(NULLIF(BTRIM(h.abbr), ''), h.name, 'Hospital #' || h.id::text),
+            ' / ',
+            COALESCE(NULLIF(BTRIM(machine.machine_name), ''), 'Machine #' || machine.id::text),
+            ' -> ',
+            COALESCE(NULLIF(BTRIM(server.name), ''), 'DICOM Server #' || server.id::text)
+        ) AS usage
+        FROM hospital_modality_server_routes route
+        INNER JOIN hospital_dicom_routing_configs cfg
+                ON cfg.id = route.routing_config_id
+               AND cfg.hospital_id = route.hospital_id
+               AND cfg.is_active = 1
+        INNER JOIN hospitals h ON h.id = route.hospital_id
+        INNER JOIN hospital_dicom_servers server ON server.id = cfg.dicom_server_id
+        INNER JOIN hospital_dicom_machines machine ON machine.id = route.machine_id
+        WHERE route.modality_id = #{id}
+          AND route.is_active = 1
+        ORDER BY usage ASC
+        LIMIT 12
+    </select>
+
+    <select id="listActiveMachineUsageByModalityId" resultType="java.lang.String">
+        SELECT DISTINCT CONCAT(
+            COALESCE(NULLIF(BTRIM(h.abbr), ''), h.name, 'Hospital #' || h.id::text),
+            ' / ',
+            COALESCE(NULLIF(BTRIM(machine.machine_name), ''), 'Machine #' || machine.id::text),
+            ' (',
+            COALESCE(NULLIF(BTRIM(machine.machine_ae_title), ''), 'AE not set'),
+            ')'
+        ) AS usage
+        FROM hospital_dicom_machines machine
+        INNER JOIN hospitals h ON h.id = machine.hospital_id
+        WHERE machine.modality_id = #{id}
+          AND machine.is_active = 1
+        ORDER BY usage ASC
+        LIMIT 12
+    </select>
+
+    <select id="countActiveModalityByName" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM modalities
+        WHERE is_active = 1
+          AND LOWER(name) = LOWER(#{name})
+        <if test="excludeId != null">
+            AND id != #{excludeId}
+        </if>
+    </select>
+
+    <select id="countActiveModalityByAbbr" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM modalities
+        WHERE is_active = 1
+          AND LOWER(abbr) = LOWER(#{abbr})
+        <if test="excludeId != null">
+            AND id != #{excludeId}
+        </if>
+    </select>
+
+    <select id="countActiveModalitiesByIds" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT id)
+        FROM modalities
+        WHERE is_active = 1
+          AND id IN
+        <foreach collection="modalityIds" item="modalityId" open="(" separator="," close=")">
+            #{modalityId}
+        </foreach>
+    </select>
+
+    <select id="findActiveModalityNamesByIds" resultType="java.lang.String">
+        SELECT CONCAT(COALESCE(NULLIF(abbr, ''), 'OT'), '_', name)
+        FROM modalities
+        WHERE is_active = 1
+          AND id IN
+        <foreach collection="modalityIds" item="modalityId" open="(" separator="," close=")">
+            #{modalityId}
+        </foreach>
+        ORDER BY id ASC
+    </select>
+
+    <select id="countActiveHospitalModality" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_modalities hm
+        INNER JOIN modalities m ON m.id = hm.modality_id
+        WHERE hm.hospital_id = #{hospitalId}
+          AND hm.modality_id = #{modalityId}
+          AND hm.is_active = 1
+          AND m.is_active = 1
+    </select>
+    <update id="deactivateHospitalModalityByHospitalId">
+        UPDATE hospital_modalities
+        SET
+            is_active = 2,
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND is_active = 1
+    </update>
+
+    <insert id="insertHospitalModalitiesBatch">
+        INSERT INTO hospital_modalities (
+            hospital_id,
+            modality_id,
+            is_active,
+            created_by,
+            modified_by,
+            created_at,
+            modified_at
+        ) VALUES
+        <foreach collection="relations" item="relation" separator=",">
+            (
+                #{relation.hospitalId},
+                #{relation.modalityId},
+                1,
+                #{relation.createdBy},
+                #{relation.modifiedBy},
+                NOW(),
+                NOW()
+            )
+        </foreach>
+        ON CONFLICT (hospital_id, modality_id) DO UPDATE
+        SET
+            is_active = 1,
+            modified_by = EXCLUDED.modified_by,
+            modified_at = NOW()
+    </insert>
+
+    <select id="listHospitalModalityByUserId" resultMap="HospitalModalityFlatRow">
+        SELECT
+            h.id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            m.id AS modalityId,
+            m.public_id::text AS modalityPublicKey,
+            m.name AS modalityName
+        FROM user_hospitals uh
+        INNER JOIN hospitals h
+            ON h.id = uh.hospital_id
+           AND h.is_active = 1
+        LEFT JOIN hospital_modalities hm
+            ON hm.hospital_id = h.id
+           AND hm.is_active = 1
+        LEFT JOIN modalities m
+            ON m.id = hm.modality_id
+           AND m.is_active = 1
+        WHERE uh.user_id = #{userId}
+          AND uh.is_active = 1
+        ORDER BY h.id ASC, m.id ASC
+    </select>
+
+</mapper>

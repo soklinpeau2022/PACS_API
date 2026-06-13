@@ -1,0 +1,605 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.pacs.WorklistMapper">
+
+    <resultMap id="WorklistListResponse" type="com.ut.emrPacs.model.dto.response.pacs.worklist.WorklistListResponse" autoMapping="true"/>
+    <resultMap id="WorklistDetailRow" type="com.ut.emrPacs.model.dto.response.pacs.worklist.WorklistDetailRow" autoMapping="true"/>
+    <sql id="Worklist_STATUS_NAME">
+        CASE q.status
+            WHEN 1 THEN 'WAITING'
+            WHEN 2 THEN 'IN_PROGRESS'
+            WHEN 3 THEN 'CANCELLED'
+            WHEN 4 THEN 'FAILED'
+            ELSE NULL
+        END
+    </sql>
+
+    <sql id="Worklist_SELECT_COLUMNS">
+            q.id AS id,
+            q.public_id::text AS publicKey,
+            q.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.code AS hospitalCode,
+            h.name AS hospitalName,
+            q.patient_id AS patientId,
+            p.public_id::text AS patientPublicKey,
+            p.patient_uid AS patientUid,
+            NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '') AS patientName,
+            p.date_of_birth AS dob,
+            p.gender AS sex,
+            q.modality_id AS modalityId,
+            m.public_id::text AS modalityPublicKey,
+            COALESCE(m.name, '') AS modalityName,
+            COALESCE(selected_cfg.dicom_server_id, s.dicom_server_id) AS dicomServerId,
+            selected_route.id AS dicomRouteId,
+            q.visit_code AS visitCode,
+            COALESCE(s.accession_number, q.visit_code) AS accessionNumber,
+            COALESCE(NULLIF(m.abbr, ''), NULLIF(s.modality, ''), NULLIF(m.name, ''), '') AS modalityCode,
+            selected_machine.machine_ae_title AS machineAeTitle,
+            q.study_description AS studyDescription,
+            q.scheduled_date AS scheduledDate,
+            q.scheduled_time AS scheduledTime,
+            q.study_id AS studyId,
+            s.public_id::text AS studyPublicKey,
+            s.study_instance_uid AS studyUuid,
+            q.dicom_server_worklist_id AS dicomServerWorklistId,
+            q.dicom_server_worklist_path AS dicomServerWorklistPath,
+            s.dicom_server_study_id AS dicomServerStudyId,
+            s.study_instance_uid AS studyInstanceUid,
+            s.dicom_server_patient_id AS dicomServerPatientId,
+            s.dicom_server_series_id AS dicomServerSeriesId,
+            NULL::TEXT AS viewerUrl,
+            q.error_message AS errorMessage,
+            TO_CHAR(q.sent_at, 'YYYY-MM-DD HH24:MI:SS') AS sentAt,
+            TO_CHAR(q.received_at, 'YYYY-MM-DD HH24:MI:SS') AS receivedAt,
+            TO_CHAR(q.started_at, 'YYYY-MM-DD HH24:MI:SS') AS startedAt,
+            TO_CHAR(COALESCE(q.image_received_at, q.received_at), 'YYYY-MM-DD HH24:MI:SS') AS imageReceivedAt,
+            TO_CHAR(q.cancelled_at, 'YYYY-MM-DD HH24:MI:SS') AS cancelledAt,
+            <include refid="Worklist_STATUS_NAME"/> AS status,
+            q.created_by AS createdBy,
+            TO_CHAR(COALESCE(q.created_at, q.created), 'YYYY-MM-DD HH24:MI:SS') AS createdAt
+    </sql>
+
+    <sql id="ACTIVE_WORKLIST_ONLY">
+          AND q.study_id IS NULL
+          AND COALESCE(q.image_received_at, q.received_at) IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM pacs_worklist_study_links active_qsl
+              WHERE active_qsl.hospital_id = q.hospital_id
+                AND active_qsl.worklist_id = q.id
+                AND active_qsl.is_primary = 1
+          )
+    </sql>
+
+    <sql id="Worklist_STUDY_JOINS">
+        LEFT JOIN pacs_worklist_study_links qsl
+            ON qsl.hospital_id = q.hospital_id
+           AND qsl.worklist_id = q.id
+           AND qsl.is_primary = 1
+        LEFT JOIN pacs_studies s
+            ON s.hospital_id = q.hospital_id
+           AND s.id = COALESCE(q.study_id, qsl.study_id)
+           AND s.is_active = 1
+        LEFT JOIN hospital_modality_server_routes selected_route
+            ON selected_route.id = q.dicom_route_id
+           AND selected_route.hospital_id = q.hospital_id
+           AND selected_route.modality_id = q.modality_id
+        LEFT JOIN hospital_dicom_routing_configs selected_cfg
+            ON selected_cfg.id = selected_route.routing_config_id
+           AND selected_cfg.hospital_id = selected_route.hospital_id
+           AND selected_cfg.is_active = 1
+        LEFT JOIN hospital_dicom_machines selected_machine
+            ON selected_machine.id = selected_route.machine_id
+           AND selected_machine.hospital_id = selected_route.hospital_id
+           AND selected_machine.modality_id = selected_route.modality_id
+           AND selected_machine.is_active = 1
+    </sql>
+
+    <sql id="Worklist_FILTER_WHERE">
+        WHERE 1 = 1
+          <include refid="ACTIVE_WORKLIST_ONLY"/>
+          <if test="hospitalId != null and hospitalId > 0">
+              AND q.hospital_id = #{hospitalId}
+          </if>
+          <if test="filter != null and filter.lastWorklistId != null and filter.lastWorklistId > 0">
+              AND q.id &lt; #{filter.lastWorklistId}
+          </if>
+          <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+              AND (
+                  LOWER(q.visit_code) = LOWER(#{filter.searchText})
+                  OR LOWER(p.patient_uid) = LOWER(#{filter.searchText})
+                  OR
+                  p.first_name ILIKE '%' || #{filter.searchText} || '%'
+                  OR p.last_name ILIKE '%' || #{filter.searchText} || '%'
+                  OR TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(p.phone_number, '') ILIKE '%' || #{filter.searchText} || '%'
+                  OR p.patient_uid ILIKE '%' || #{filter.searchText} || '%'
+                  OR q.visit_code ILIKE '%' || #{filter.searchText} || '%'
+              )
+          </if>
+          <if test="filter != null and filter.patientCode != null and filter.patientCode != ''">
+              AND LOWER(p.patient_uid) = LOWER(#{filter.patientCode})
+          </if>
+          <if test="filter != null and filter.patientName != null and filter.patientName != ''">
+              AND TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.patientName} || '%'
+          </if>
+          <if test="filter != null and filter.phoneNumber != null and filter.phoneNumber != ''">
+              AND LOWER(COALESCE(p.phone_number, '')) = LOWER(#{filter.phoneNumber})
+          </if>
+          <if test="filter != null and filter.visitCode != null and filter.visitCode != ''">
+              AND LOWER(q.visit_code) = LOWER(#{filter.visitCode})
+          </if>
+          <if test="filter != null and filter.worklistNumber != null and filter.worklistNumber != ''">
+              AND LOWER(q.visit_code) = LOWER(#{filter.worklistNumber})
+          </if>
+          <if test="filter != null and filter.accessionNumber != null and filter.accessionNumber != ''">
+              AND LOWER(q.visit_code) = LOWER(#{filter.accessionNumber})
+          </if>
+          <if test="filter != null and filter.modalityId != null">
+              AND q.modality_id = #{filter.modalityId}
+          </if>
+          <choose>
+              <when test="filter != null and filter.statusCode != null">
+                  AND q.status = #{filter.statusCode}
+              </when>
+              <when test="filter != null and filter.statusCodes != null and filter.statusCodes.size() > 0">
+                  AND q.status IN
+                  <foreach collection="filter.statusCodes" item="statusCode" open="(" separator="," close=")">
+                      #{statusCode}
+                  </foreach>
+              </when>
+          </choose>
+          <if test="filter != null and filter.dateFrom != null">
+              AND COALESCE(q.scheduled_date, CAST(q.created_at AS DATE), CAST(q.created AS DATE)) >= CAST(#{filter.dateFrom} AS DATE)
+          </if>
+          <if test="filter != null and filter.dateTo != null">
+              AND COALESCE(q.scheduled_date, CAST(q.created_at AS DATE), CAST(q.created AS DATE)) &lt;= CAST(#{filter.dateTo} AS DATE)
+          </if>
+    </sql>
+
+    <select id="countList" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_worklists q
+        <if test="filter != null and (
+            (filter.searchText != null and filter.searchText != '')
+            or (filter.patientCode != null and filter.patientCode != '')
+            or (filter.patientName != null and filter.patientName != '')
+            or (filter.phoneNumber != null and filter.phoneNumber != '')
+        )">
+            INNER JOIN patients p ON p.id = q.patient_id
+        </if>
+        <include refid="Worklist_FILTER_WHERE"/>
+    </select>
+
+    <select id="list" resultMap="WorklistListResponse">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        <include refid="Worklist_FILTER_WHERE"/>
+        ORDER BY q.id DESC
+        <choose>
+            <when test="filter != null and filter.lastWorklistId != null and filter.lastWorklistId > 0 and filter.rowsPerPage != null">
+                LIMIT #{filter.rowsPerPage}
+            </when>
+            <when test="filter != null and filter.page != null and filter.rowsPerPage != null">
+                LIMIT #{filter.rowsPerPage}
+                OFFSET #{filter.page}
+            </when>
+        </choose>
+    </select>
+
+    <select id="nextVisitSequence" resultType="java.lang.Long">
+        INSERT INTO pacs_visit_sequences (
+            hospital_id,
+            sequence_date,
+            last_sequence,
+            modified_at
+        ) VALUES (
+            #{hospitalId},
+            #{sequenceKey},
+            1,
+            NOW()
+        )
+        ON CONFLICT (hospital_id, sequence_date) DO UPDATE
+        SET
+            last_sequence = pacs_visit_sequences.last_sequence + 1,
+            modified_at = NOW()
+        RETURNING last_sequence
+    </select>
+
+    <insert id="assignWorklist">
+        INSERT INTO pacs_worklists (
+            hospital_id,
+            patient_id,
+            modality_id,
+            visit_code,
+            status,
+            study_description,
+            scheduled_date,
+            scheduled_time,
+            notes,
+            created_by,
+            modified_by,
+            created_at,
+            modified_at,
+            created,
+            modified
+        ) VALUES (
+            #{hospitalId},
+            #{request.patientId},
+            #{request.modalityId},
+            #{visitCode},
+            1,
+            #{request.studyDescription},
+            #{request.scheduledDate},
+            #{request.scheduledTime},
+            #{request.notes},
+            #{createdBy},
+            #{createdBy},
+            NOW(),
+            NOW(),
+            NOW(),
+            NOW()
+        )
+    </insert>
+
+    <select id="countPatientModalityActiveWorklist" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_worklists q
+        WHERE q.hospital_id = #{hospitalId}
+          AND q.patient_id = #{patientId}
+          AND q.modality_id = #{modalityId}
+          AND q.status IN (1, 2, 4)
+          <include refid="ACTIVE_WORKLIST_ONLY"/>
+    </select>
+
+    <select id="findStatusCodeById" resultType="java.lang.Integer">
+        SELECT status
+        FROM pacs_worklists
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{id}
+        LIMIT 1
+    </select>
+
+    <select id="findWorklistById" resultMap="WorklistDetailRow">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        WHERE q.hospital_id = #{hospitalId}
+          AND q.id = #{id}
+        LIMIT 1
+    </select>
+
+    <select id="findWorklistByIdAnyHospital" resultMap="WorklistDetailRow">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        WHERE q.id = #{id}
+        LIMIT 1
+    </select>
+
+    <select id="findWorklistByVisitCode" resultMap="WorklistDetailRow">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        WHERE q.hospital_id = #{hospitalId}
+          AND LOWER(q.visit_code) = LOWER(#{visitCode})
+        LIMIT 1
+    </select>
+
+    <select id="findWorklistByVisitCodeAnyHospital" resultMap="WorklistDetailRow">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        WHERE LOWER(q.visit_code) = LOWER(#{visitCode})
+        LIMIT 1
+    </select>
+
+    <update id="updateStatus">
+        UPDATE pacs_worklists
+        SET status = #{statusCode},
+            notes = COALESCE(#{request.notes}, notes),
+            modified_by = NULL,
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{request.id}
+    </update>
+
+    <update id="updateWorklistStatusById">
+        UPDATE pacs_worklists
+        SET
+            status = #{statusCode},
+            error_message = NULL,
+            modified_by = #{modifiedBy},
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{id}
+    </update>
+
+    <update id="updateWorklistWorkflowStatusById">
+        UPDATE pacs_worklists
+        SET
+            status = #{statusCode},
+            error_message = #{errorMessage},
+            started_at = CASE WHEN #{statusCode} = 2 THEN COALESCE(started_at, NOW()) ELSE started_at END,
+            cancelled_at = CASE WHEN #{statusCode} = 3 THEN COALESCE(cancelled_at, NOW()) ELSE cancelled_at END,
+            modified_by = #{modifiedBy},
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{id}
+    </update>
+
+    <update id="updateWorklistSentToPacsById">
+        UPDATE pacs_worklists
+        SET
+            status = #{statusCode},
+            dicom_route_id = #{dicomRouteId},
+            study_description = #{studyDescription},
+            scheduled_date = #{scheduledDate},
+            scheduled_time = #{scheduledTime},
+            dicom_server_worklist_id = #{worklistId},
+            dicom_server_worklist_path = #{worklistPath},
+            error_message = NULL,
+            sent_at = NOW(),
+            started_at = COALESCE(started_at, NOW()),
+            modified_by = #{modifiedBy},
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{id}
+          AND status IN (1, 4)
+    </update>
+
+    <update id="updateWorklistEditableFieldsById">
+        UPDATE pacs_worklists
+        SET
+            modality_id = #{request.modalityId},
+            notes = #{request.notes},
+            study_description = #{studyDescription},
+            scheduled_date = #{scheduledDate},
+            scheduled_time = #{scheduledTime},
+            error_message = NULL,
+            modified_by = #{modifiedBy},
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{id}
+          AND status IN (1, 4)
+    </update>
+
+    <update id="updateWorklistDicomWorklistFieldsById">
+        UPDATE pacs_worklists
+        SET
+            modality_id = COALESCE(#{modalityId}, modality_id),
+            study_description = #{studyDescription},
+            scheduled_date = #{scheduledDate},
+            scheduled_time = #{scheduledTime},
+            dicom_server_worklist_id = #{worklistId},
+            dicom_server_worklist_path = #{worklistPath},
+            modified_by = #{modifiedBy},
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{id}
+    </update>
+
+    <update id="updateWorklistDicomRouteIdById">
+        UPDATE pacs_worklists
+        SET
+            dicom_route_id = #{dicomRouteId},
+            modified_by = #{modifiedBy},
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{id}
+          AND (dicom_route_id IS NULL OR dicom_route_id != #{dicomRouteId})
+    </update>
+
+    <update id="updateWorklistReceivedByVisitCode">
+        UPDATE pacs_worklists
+        SET
+            study_id = #{studyId},
+            status = #{statusCode},
+            error_message = NULL,
+            received_at = COALESCE(CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            image_received_at = COALESCE(CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            modified_by = #{modifiedBy},
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND LOWER(visit_code) = LOWER(#{visitCode})
+    </update>
+
+    <update id="updateWorklistReceivedById">
+        UPDATE pacs_worklists
+        SET
+            study_id = #{studyId},
+            status = #{statusCode},
+            error_message = NULL,
+            received_at = COALESCE(CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            image_received_at = COALESCE(CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            modified_by = #{modifiedBy},
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{id}
+          AND status = 2
+    </update>
+
+    <update id="updateWorklistReceivedFromCallbackById">
+        UPDATE pacs_worklists
+        SET
+            study_id = #{studyId},
+            status = #{statusCode},
+            error_message = NULL,
+            received_at = COALESCE(received_at, CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            image_received_at = COALESCE(image_received_at, CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            modified_by = #{modifiedBy},
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{id}
+    </update>
+
+    <update id="updateWorklistViewerStudyIdentifiers">
+        UPDATE pacs_worklists
+        SET
+            study_id = COALESCE(#{studyId}, study_id),
+            modified_by = #{modifiedBy},
+            modified_at = NOW(),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{id}
+    </update>
+
+    <update id="upsertWorklistStudyLink">
+        INSERT INTO pacs_worklist_study_links (
+            hospital_id,
+            worklist_id,
+            study_id,
+            is_primary,
+            linked_at,
+            created_by
+        ) VALUES (
+            #{hospitalId},
+            #{worklistId},
+            #{studyId},
+            1,
+            NOW(),
+            #{createdBy}
+        )
+        ON CONFLICT (hospital_id, worklist_id, study_id) DO UPDATE
+        SET
+            is_primary = 1,
+            linked_at = NOW()
+    </update>
+
+    <insert id="insertHistory">
+        INSERT INTO pacs_worklist_histories (
+            hospital_id,
+            worklist_id,
+            patient_id,
+            from_status,
+            to_status,
+            action,
+            reason,
+            created,
+            created_by
+        )
+        SELECT
+            #{hospitalId},
+            pq.id,
+            pq.patient_id,
+            #{fromStatusCode},
+            #{toStatusCode},
+            #{action},
+            #{reason},
+            NOW(),
+            #{createdBy}
+        FROM pacs_worklists pq
+        WHERE pq.hospital_id = #{hospitalId}
+          AND pq.id = #{worklistId}
+    </insert>
+
+    <select id="findWorklistByAccessionNumber" resultMap="WorklistDetailRow">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        WHERE LOWER(q.visit_code) = LOWER(#{accessionNumber})
+           OR LOWER(s.accession_number) = LOWER(#{accessionNumber})
+        ORDER BY q.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findWorklistByAccessionNumberAndHospital" resultMap="WorklistDetailRow">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        WHERE q.hospital_id = #{hospitalId}
+          AND (
+              LOWER(q.visit_code) = LOWER(#{accessionNumber})
+              OR LOWER(s.accession_number) = LOWER(#{accessionNumber})
+          )
+        ORDER BY q.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findWorklistByStudyIdentifiers" resultMap="WorklistDetailRow">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        WHERE (
+            (#{studyInstanceUid} IS NOT NULL AND #{studyInstanceUid} != '' AND LOWER(s.study_instance_uid) = LOWER(#{studyInstanceUid}))
+            OR (#{dicomServerStudyId} IS NOT NULL AND #{dicomServerStudyId} != '' AND LOWER(s.dicom_server_study_id) = LOWER(#{dicomServerStudyId}))
+        )
+        ORDER BY q.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="listWaitingWorklistForAutoSend" resultMap="WorklistDetailRow">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        WHERE q.status = 1
+        ORDER BY q.id ASC
+        <if test="limit != null and limit > 0">
+            LIMIT #{limit}
+        </if>
+    </select>
+
+    <select id="listPendingPacsSyncWorklist" resultMap="WorklistDetailRow">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        WHERE q.status = 2
+          AND q.visit_code IS NOT NULL
+          AND q.visit_code != ''
+          <include refid="ACTIVE_WORKLIST_ONLY"/>
+        ORDER BY q.id ASC
+    </select>
+
+</mapper>

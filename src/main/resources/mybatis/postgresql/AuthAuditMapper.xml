@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.auth.AuthAuditMapper">
+
+    <select id="countExpiredUser" resultType="java.lang.Long">
+        SELECT COUNT(id)
+        FROM users
+        WHERE id = #{userId}
+          AND expire_date IS NOT NULL
+          AND expire_date &lt; CURRENT_DATE;
+    </select>
+
+    <update id="updateUserLoginAudit">
+        UPDATE users SET
+            modified = NOW(),
+            modified_by = #{userId}
+        WHERE id = #{userId};
+    </update>
+
+    <update id="clearUserLoginAudit">
+        UPDATE users SET
+            modified = NOW(),
+            modified_by = #{userId}
+        WHERE id = #{userId};
+    </update>
+
+    <insert id="insertUserLog">
+        INSERT INTO user_logs (
+            user_id,
+            type,
+            http_user_agent,
+            remote_addr,
+            created
+        ) VALUES (
+            #{userId},
+            #{type},
+            #{httpUserAgent},
+            #{remoteAddr},
+            NOW()
+        );
+    </insert>
+
+</mapper>

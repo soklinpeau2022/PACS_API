@@ -1,0 +1,262 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.pacs.StudyMapper">
+    <sql id="Worklist_STATUS_NAME">
+        CASE q.status
+            WHEN 1 THEN 'WAITING'
+            WHEN 2 THEN 'IN_PROGRESS'
+            WHEN 3 THEN 'CANCELLED'
+            WHEN 4 THEN 'FAILED'
+            ELSE NULL
+        END
+    </sql>
+
+    <sql id="STUDY_STATUS_NAME">
+        CASE s.status
+            WHEN 1 THEN 'IMAGE_RECEIVED'
+            WHEN 2 THEN 'COMPLETED'
+            ELSE NULL
+        END
+    </sql>
+
+    <sql id="STUDY_FILTER_WHERE">
+        WHERE s.hospital_id = #{hospitalId}
+          AND s.is_active = 1
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+            AND (
+                p.first_name ILIKE '%' || #{filter.searchText} || '%'
+                OR p.last_name ILIKE '%' || #{filter.searchText} || '%'
+                OR TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.searchText} || '%'
+                OR p.patient_uid ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(s.study_description, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(s.accession_number, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(s.modality, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR EXISTS (
+                    SELECT 1
+                    FROM pacs_worklist_study_links search_qsl
+                    INNER JOIN pacs_worklists search_q
+                            ON search_q.id = search_qsl.worklist_id
+                           AND search_q.hospital_id = search_qsl.hospital_id
+                    WHERE search_qsl.hospital_id = s.hospital_id
+                      AND search_qsl.study_id = s.id
+                      AND search_qsl.is_primary = 1
+                      AND COALESCE(search_q.visit_code, '') ILIKE '%' || #{filter.searchText} || '%'
+                )
+            )
+        </if>
+        <if test="filter != null and filter.patientName != null and filter.patientName != ''">
+            AND TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.patientName} || '%'
+        </if>
+        <if test="filter != null and filter.mrn != null and filter.mrn != ''">
+            AND p.patient_uid ILIKE '%' || #{filter.mrn} || '%'
+        </if>
+        <if test="filter != null and filter.modalityId != null and filter.modalityId > 0">
+            AND (
+                EXISTS (
+                    SELECT 1
+                    FROM pacs_worklist_study_links modality_qsl
+                    INNER JOIN pacs_worklists modality_q
+                            ON modality_q.id = modality_qsl.worklist_id
+                           AND modality_q.hospital_id = modality_qsl.hospital_id
+                    WHERE modality_qsl.hospital_id = s.hospital_id
+                      AND modality_qsl.study_id = s.id
+                      AND modality_qsl.is_primary = 1
+                      AND modality_q.modality_id = #{filter.modalityId}
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM modalities modality_filter
+                    WHERE modality_filter.id = #{filter.modalityId}
+                      AND modality_filter.is_active = 1
+                      AND (
+                          UPPER(COALESCE(s.modality, '')) = UPPER(COALESCE(modality_filter.abbr, ''))
+                          OR UPPER(COALESCE(s.modality, '')) = UPPER(COALESCE(modality_filter.name, ''))
+                      )
+                )
+            )
+        </if>
+        <if test="filter != null and filter.accessionNumber != null and filter.accessionNumber != ''">
+            AND COALESCE(s.accession_number, '') ILIKE '%' || #{filter.accessionNumber} || '%'
+        </if>
+        <if test="filter != null and filter.accessionNumberExact != null and filter.accessionNumberExact != ''">
+            AND LOWER(s.accession_number) = LOWER(#{filter.accessionNumberExact})
+        </if>
+        <if test="filter != null and filter.startDate != null and filter.startDate != ''">
+            AND COALESCE(s.study_date, CAST(s.received_at AS DATE), CAST(s.created AS DATE)) >= CAST(#{filter.startDate} AS DATE)
+        </if>
+        <if test="filter != null and filter.endDate != null and filter.endDate != ''">
+            AND COALESCE(s.study_date, CAST(s.received_at AS DATE), CAST(s.created AS DATE)) &lt;= CAST(#{filter.endDate} AS DATE)
+        </if>
+        <if test="filter != null and filter.statusCode != null">
+            AND s.status = #{filter.statusCode}
+        </if>
+    </sql>
+
+    <select id="upsertFromWorklist" resultType="java.lang.Long">
+        INSERT INTO pacs_studies (
+            hospital_id,
+            patient_id,
+            study_instance_uid,
+            accession_number,
+            modality,
+            study_date,
+            study_description,
+            dicom_server_id,
+            status,
+            dicom_server_study_id,
+            dicom_server_patient_id,
+            dicom_server_series_id,
+            received_at,
+            is_active,
+            created,
+            modified
+        ) VALUES (
+            #{hospitalId},
+            #{patientId},
+            #{studyInstanceUid},
+            #{accessionNumber},
+            #{modality},
+            #{studyDate},
+            #{studyDescription},
+            #{dicomServerId},
+            #{statusCode},
+            #{dicomServerStudyId},
+            #{dicomServerPatientId},
+            #{dicomServerSeriesId},
+            COALESCE(CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            1,
+            NOW(),
+            NOW()
+        )
+        ON CONFLICT (study_instance_uid) DO UPDATE
+        SET
+            accession_number = COALESCE(EXCLUDED.accession_number, pacs_studies.accession_number),
+            modality = COALESCE(EXCLUDED.modality, pacs_studies.modality),
+            study_date = COALESCE(EXCLUDED.study_date, pacs_studies.study_date),
+            study_description = COALESCE(EXCLUDED.study_description, pacs_studies.study_description),
+            dicom_server_id = COALESCE(EXCLUDED.dicom_server_id, pacs_studies.dicom_server_id),
+            status = CASE
+                WHEN pacs_studies.status = 2 THEN pacs_studies.status
+                ELSE EXCLUDED.status
+            END,
+            dicom_server_study_id = COALESCE(EXCLUDED.dicom_server_study_id, pacs_studies.dicom_server_study_id),
+            dicom_server_patient_id = COALESCE(EXCLUDED.dicom_server_patient_id, pacs_studies.dicom_server_patient_id),
+            dicom_server_series_id = COALESCE(EXCLUDED.dicom_server_series_id, pacs_studies.dicom_server_series_id),
+            received_at = COALESCE(EXCLUDED.received_at, pacs_studies.received_at),
+            modified = NOW()
+        RETURNING id
+    </select>
+
+    <update id="updateStatusById">
+        UPDATE pacs_studies
+        SET status = #{statusCode},
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{studyId}
+          AND is_active = 1
+    </update>
+
+    <update id="updateStatusByWorklistId">
+        UPDATE pacs_studies s
+        SET status = #{statusCode},
+            modified = NOW()
+        FROM pacs_worklist_study_links qsl
+        WHERE qsl.hospital_id = #{hospitalId}
+          AND qsl.worklist_id = #{worklistId}
+          AND qsl.study_id = s.id
+          AND qsl.is_primary = 1
+          AND s.hospital_id = qsl.hospital_id
+          AND s.is_active = 1
+    </update>
+
+    <sql id="STUDY_SELECT_COLUMNS">
+        s.id,
+        s.public_id::text AS publicKey,
+        s.hospital_id AS hospitalId,
+        h.public_id::text AS hospitalPublicKey,
+        s.patient_id AS patientId,
+        NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '') AS patientName,
+        p.patient_uid AS mrn,
+        s.study_instance_uid AS studyInstanceUid,
+        s.accession_number AS accessionNumber,
+        s.modality,
+        s.study_date AS studyDate,
+        TO_CHAR(COALESCE(s.study_date::timestamp, s.received_at, s.created), 'DD-Mon-YYYY HH12:MI AM') AS studyDateTime,
+        s.study_description AS studyDescription,
+        s.study_description AS description,
+        s.dicom_server_id AS dicomServerId,
+        <include refid="STUDY_STATUS_NAME"/> AS status,
+        NULL::INTEGER AS instances,
+        s.dicom_server_study_id AS dicomServerStudyId,
+        s.dicom_server_patient_id AS dicomServerPatientId,
+        s.dicom_server_series_id AS dicomServerSeriesId,
+        NULL::TEXT AS viewerUrl,
+        q.id AS worklistId,
+        q.public_id::text AS worklistPublicKey,
+        q.visit_code AS worklistVisitCode,
+        <include refid="Worklist_STATUS_NAME"/> AS worklistStatus,
+        TO_CHAR(COALESCE(q.image_received_at, q.received_at), 'YYYY-MM-DD HH24:MI:SS') AS imageReceivedAt
+    </sql>
+
+    <select id="list" resultType="com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse">
+        SELECT
+            <include refid="STUDY_SELECT_COLUMNS"/>
+        FROM pacs_studies s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+        LEFT JOIN LATERAL (
+            SELECT linked_q.*
+            FROM pacs_worklist_study_links linked_qsl
+            INNER JOIN pacs_worklists linked_q
+                    ON linked_q.id = linked_qsl.worklist_id
+                   AND linked_q.hospital_id = linked_qsl.hospital_id
+            WHERE linked_qsl.hospital_id = s.hospital_id
+              AND linked_qsl.study_id = s.id
+              AND linked_qsl.is_primary = 1
+            ORDER BY linked_qsl.linked_at DESC, linked_qsl.id DESC
+            LIMIT 1
+        ) q ON TRUE
+        <include refid="STUDY_FILTER_WHERE"/>
+        ORDER BY COALESCE(s.study_date, CAST(s.received_at AS DATE), CAST(s.created AS DATE)) DESC, s.id DESC
+        <choose>
+            <when test="filter != null and filter.page != null and filter.rowsPerPage != null">
+                LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+            </when>
+            <otherwise>
+                LIMIT 20
+            </otherwise>
+        </choose>
+    </select>
+
+    <select id="count" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_studies s
+        INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+        <include refid="STUDY_FILTER_WHERE"/>
+    </select>
+
+    <select id="findById" resultType="com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse">
+        SELECT
+            <include refid="STUDY_SELECT_COLUMNS"/>
+        FROM pacs_studies s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+        LEFT JOIN LATERAL (
+            SELECT linked_q.*
+            FROM pacs_worklist_study_links linked_qsl
+            INNER JOIN pacs_worklists linked_q
+                    ON linked_q.id = linked_qsl.worklist_id
+                   AND linked_q.hospital_id = linked_qsl.hospital_id
+            WHERE linked_qsl.hospital_id = s.hospital_id
+              AND linked_qsl.study_id = s.id
+              AND linked_qsl.is_primary = 1
+            ORDER BY linked_qsl.linked_at DESC, linked_qsl.id DESC
+            LIMIT 1
+        ) q ON TRUE
+        WHERE s.hospital_id = #{hospitalId}
+          AND s.id = #{id}
+          AND s.is_active = 1
+        LIMIT 1
+    </select>
+
+</mapper>

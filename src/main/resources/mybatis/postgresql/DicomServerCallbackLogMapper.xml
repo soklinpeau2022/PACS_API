@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.pacs.DicomServerCallbackLogMapper">
+
+    <insert id="insertCallbackLog">
+        INSERT INTO dicom_server_callback_log (
+            event,
+            accession_number,
+            dicom_server_study_id,
+            dicom_server_patient_id,
+            dicom_server_series_ids,
+            payload,
+            success,
+            error_message,
+            warning_message,
+            received_at,
+            created_at
+        ) VALUES (
+            #{event},
+            #{accessionNumber},
+            #{dicomServerStudyId},
+            #{dicomServerPatientId},
+            CAST(COALESCE(#{dicomServerSeriesIdsJson}, '[]') AS JSONB),
+            CAST(COALESCE(#{payloadJson}, '{}') AS JSONB),
+            COALESCE(#{success}, false),
+            #{errorMessage},
+            #{warningMessage},
+            COALESCE(CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            NOW()
+        )
+    </insert>
+</mapper>

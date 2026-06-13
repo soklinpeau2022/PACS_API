@@ -1,0 +1,370 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.user.UserMapper">
+    <resultMap id="UserResponse" type="com.ut.emrPacs.model.dto.response.authentication.user.UserResponse" autoMapping="true"/>
+    <resultMap id="User" type="com.ut.emrPacs.model.users.User" autoMapping="true"/>
+    <resultMap id="UserGroupList" type="com.ut.emrPacs.model.users.UserGroupList" autoMapping="true"/>
+    <resultMap id="UserHospital" type="com.ut.emrPacs.model.users.UserHospital" autoMapping="true"/>
+    <select id="listUser" resultMap="UserResponse">
+        SELECT
+        u.id AS id,
+        u.public_id::text AS publicKey,
+        COALESCE(u.user_type, 0) AS userType,
+        COALESCE(u.first_name, '') AS firstName,
+        COALESCE(u.last_name, '') AS lastName,
+        COALESCE(u.username, '') AS username,
+        COALESCE(u.email, '') AS email,
+        COALESCE(u.telephone, '') AS telephone,
+        COALESCE(TO_CHAR(u.expire_date, 'YYYY-MM-DD'), '') AS expireDate,
+        u.created_by AS createdById,
+        COALESCE(
+            MAX(
+                COALESCE(
+                    NULLIF(TRIM(CONCAT(COALESCE(uc.first_name, ''), ' ', COALESCE(uc.last_name, ''))), ''),
+                    uc.username
+                )
+            ),
+            ''
+        ) AS createdBy,
+        COALESCE(TO_CHAR(COALESCE(u.created_at, u.created), 'YYYY-MM-DD HH24:MI:SS'), '') AS created,
+        u.modified_by AS modifiedById,
+        COALESCE(
+            MAX(
+                COALESCE(
+                    NULLIF(TRIM(CONCAT(COALESCE(um.first_name, ''), ' ', COALESCE(um.last_name, ''))), ''),
+                    um.username
+                )
+            ),
+            ''
+        ) AS modifiedBy,
+        COALESCE(TO_CHAR(COALESCE(u.modified_at, u.modified), 'YYYY-MM-DD HH24:MI:SS'), '') AS modified,
+        COALESCE(STRING_AGG(DISTINCT h.name, ', '), '') AS hospitalName
+        FROM users
+        u
+        LEFT JOIN user_hospitals uh ON uh.user_id = u.id AND uh.is_active = 1
+        LEFT JOIN hospitals h ON h.id = uh.hospital_id AND h.is_active = 1
+        LEFT JOIN users uc ON uc.id = u.created_by
+        LEFT JOIN users um ON um.id = u.modified_by
+        WHERE u.is_active = 1
+
+        <if test="hospitalId != null">
+            AND uh.hospital_id = #{hospitalId}
+        </if>
+
+        <if test="searchText != null and searchText != ''">
+            AND (
+            u.username ILIKE '%' || #{searchText} || '%' OR
+            u.telephone ILIKE '%' || #{searchText} || '%' OR
+            u.email ILIKE '%' || #{searchText} || '%' OR
+            u.first_name ILIKE '%' || #{searchText} || '%' OR
+            u.last_name ILIKE '%' || #{searchText} || '%' OR
+            h.name ILIKE '%' || #{searchText} || '%'
+            )
+        </if>
+
+        GROUP BY
+        u.id,
+        u.user_type,
+        u.first_name,
+        u.last_name,
+        u.username,
+        u.email,
+        u.telephone,
+        u.expire_date,
+        u.created_by,
+        u.created_at,
+        u.created,
+        u.modified_by,
+        u.modified_at,
+        u.modified
+
+        ORDER BY
+        <choose>
+            <when test="orderBy != null and orderBy != ''">
+                ${orderBy}
+            </when>
+            <otherwise>
+                u.id DESC
+            </otherwise>
+        </choose>
+
+        <if test="page != null and rowsPerPage != null">
+            LIMIT #{rowsPerPage} OFFSET #{page}
+        </if>
+    </select>
+
+    <select id="countList" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT u.id)
+        FROM users u
+        LEFT JOIN user_hospitals uh ON uh.user_id = u.id AND uh.is_active = 1
+        LEFT JOIN hospitals h ON h.id = uh.hospital_id AND h.is_active = 1
+        WHERE u.is_active = 1
+
+        <if test="hospitalId != null">
+            AND uh.hospital_id = #{hospitalId}
+        </if>
+
+        <if test="searchText != null and searchText != ''">
+            AND (
+            u.username ILIKE '%' || #{searchText} || '%' OR
+            u.telephone ILIKE '%' || #{searchText} || '%' OR
+            u.email ILIKE '%' || #{searchText} || '%' OR
+            u.first_name ILIKE '%' || #{searchText} || '%' OR
+            u.last_name ILIKE '%' || #{searchText} || '%' OR
+            h.name ILIKE '%' || #{searchText} || '%'
+            )
+        </if>
+    </select>
+
+    <insert id="createUser" parameterType="com.ut.emrPacs.model.users.User" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO users (
+            username,
+            email,
+            first_name,
+            last_name,
+            password,
+            created,
+            created_at
+        ) VALUES (
+                     #{username},
+                     #{email},
+                     #{firstName},
+                     #{lastName},
+                     #{password},
+                     NOW(),
+                     NOW()
+                 );
+    </insert>
+
+    <update id="updateUser" parameterType="com.ut.emrPacs.model.dto.request.authentication.user.UserUpdateRequest">
+        UPDATE users SET
+        <if test="username != null">username = #{username},</if>
+        <if test="firstName != null">first_name = #{firstName},</if>
+        <if test="lastName != null">last_name = #{lastName},</if>
+        <if test="telephone != null">telephone = #{telephone},</if>
+        <if test="email != null">email = #{email},</if>
+        <if test="signature != null">signature_photo = #{signature},</if>
+        <if test="isActive != null">is_active = #{isActive},</if>
+        modified = NOW(),
+        modified_at = NOW(),
+        modified_by = 1
+        WHERE id = #{id}
+    </update>
+
+    <select id="getOneByUserId" resultMap="UserResponse">
+        SELECT
+            u.id AS id,
+            u.public_id::text AS publicKey,
+            COALESCE(u.signature_photo, '') AS signaturePhoto,
+            COALESCE(u.user_type, 0) AS userType,
+            COALESCE(u.first_name, '') AS firstName,
+            COALESCE(u.last_name, '') AS lastName,
+            COALESCE(u.username, '') AS username,
+            COALESCE(u.password, '') AS password,
+            COALESCE(u.email, '') AS email,
+            COALESCE(u.telephone, '') AS telephone,
+            COALESCE(TO_CHAR(u.expire_date, 'YYYY-MM-DD'), '') AS expireDate,
+            primary_h.hospital_id AS hospitalId,
+            primary_h.hospital_public_key AS hospitalPublicKey,
+            COALESCE(primary_h.hospital_code, '') AS hospitalCode,
+            COALESCE(primary_h.hospital_name, '') AS hospitalName,
+            u.created_by AS createdById,
+            COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(uc.first_name, ''), ' ', COALESCE(uc.last_name, ''))), ''),
+                uc.username,
+                ''
+            ) AS createdBy,
+            COALESCE(TO_CHAR(COALESCE(u.created_at, u.created), 'YYYY-MM-DD HH24:MI:SS'), '') AS created,
+            u.modified_by AS modifiedById,
+            COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(um.first_name, ''), ' ', COALESCE(um.last_name, ''))), ''),
+                um.username,
+                ''
+            ) AS modifiedBy,
+            COALESCE(TO_CHAR(COALESCE(u.modified_at, u.modified), 'YYYY-MM-DD HH24:MI:SS'), '') AS modified
+        FROM users
+        u
+        LEFT JOIN LATERAL (
+            SELECT
+                h.id AS hospital_id,
+                h.public_id::text AS hospital_public_key,
+                h.code AS hospital_code,
+                h.name AS hospital_name
+            FROM user_hospitals uh
+            INNER JOIN hospitals h ON h.id = uh.hospital_id AND h.is_active = 1
+            WHERE uh.user_id = u.id
+              AND uh.is_active = 1
+            ORDER BY uh.is_default DESC, uh.hospital_id ASC
+            LIMIT 1
+        ) primary_h ON true
+        LEFT JOIN users uc ON uc.id = u.created_by
+        LEFT JOIN users um ON um.id = u.modified_by
+        WHERE u.is_active = 1 AND u.id = #{userId}
+    </select>
+
+    <select id="getOneByUsername" parameterType="java.lang.String" resultMap="User">
+        SELECT id AS id,
+               email AS email,
+               username AS username,
+               password AS password
+        FROM users
+        WHERE is_active = 1 AND username = #{username} LIMIT 01
+    </select>
+
+    <select id="checkDuplicate" resultType="java.lang.Long">
+        SELECT COUNT(id)
+        FROM users
+        WHERE is_active = 1 AND username = #{username}
+    </select>
+
+    <select id="checkDuplicateForUpdate" resultType="java.lang.Long">
+        SELECT COUNT(id)
+        FROM users
+        WHERE is_active = 1
+          AND username = #{username}
+          AND id != #{id}
+    </select>
+
+    <select id="checkDuplicateEmail" resultType="java.lang.Long">
+        SELECT COUNT(id)
+        FROM users
+        WHERE is_active = 1 AND email = #{email}
+    </select>
+
+    <update id="updatePassword">
+        UPDATE users
+        SET
+            password = #{password}
+        WHERE id = #{id};
+    </update>
+
+    <update id="editProfile" parameterType="com.ut.emrPacs.model.dto.request.authentication.user.EditProfileRequest">
+        UPDATE users SET
+        <if test="userType != null">user_type = #{userType},</if>
+        <if test="firstName != null">first_name = #{firstName},</if>
+        <if test="lastName != null">last_name = #{lastName},</if>
+        <if test="telephone != null">telephone = #{telephone},</if>
+        modified = NOW(),
+        modified_at = NOW(),
+        modified_by = #{modifiedBy}
+        WHERE id = #{id};
+    </update>
+
+    <delete id="deleteUserHospital">
+        DELETE FROM user_hospitals WHERE user_id = #{userId};
+    </delete>
+
+    <insert id="insertUserHospital">
+        INSERT INTO user_hospitals (user_id, hospital_id, is_default, is_active, created, created_at)
+        VALUES (#{userId}, #{hospitalId}, #{isDefault}, 1, NOW(), NOW())
+        ON CONFLICT (user_id, hospital_id) DO UPDATE
+        SET is_default = #{isDefault},
+            is_active = 1,
+            modified = NOW(),
+            modified_at = NOW();
+    </insert>
+
+    <select id="findAllActiveHospitalIds" resultType="java.lang.Long">
+        SELECT id
+        FROM hospitals
+        WHERE is_active = 1
+        ORDER BY id ASC
+    </select>
+
+    <delete id="deleteUser">
+        UPDATE users SET
+                        modified = NOW(),
+                        modified_at = NOW(),
+                        modified_by = 1,
+                        is_active = 2
+        WHERE id = #{id}
+    </delete>
+
+    <select id="getOneUserGroupList" parameterType="java.lang.Long" resultMap="UserGroupList">
+        SELECT DISTINCT
+            r.id AS id,
+            r.public_id::text AS publicKey,
+            NULL AS sys_code,
+            r.name AS name,
+            COALESCE(r.created_at, r.created) AS created,
+            r.created_by AS created_by,
+            COALESCE(r.modified_at, r.modified) AS modified,
+            r.modified_by AS modified_by,
+            r.is_active AS is_active
+        FROM roles r
+        INNER JOIN user_groups ug ON ug.role_id = r.id
+        WHERE r.is_active = 1
+          AND ug.is_active = 1
+          AND ug.user_id = #{id}
+        ORDER BY r.id DESC;
+    </select>
+
+    <select id="getHospitalIdByUserId" parameterType="java.lang.Long" resultMap="UserHospital">
+        SELECT
+            h.id AS id,
+            h.public_id::text AS publicKey,
+            uh.user_id AS userId,
+            COALESCE(NULLIF(h.code, ''), '') AS code,
+            COALESCE(NULLIF(h.abbr, ''), '') AS abbr,
+            h.name AS name,
+            uh.is_default AS isDefault
+        FROM user_hospitals uh
+                 INNER JOIN hospitals h ON uh.hospital_id = h.id
+        WHERE uh.user_id = #{userId}
+          AND uh.is_active = 1
+          AND h.is_active = 1
+        ORDER BY uh.is_default DESC, h.id ASC
+    </select>
+
+    <select id="countCrossHospitalScopeRoleByUserId" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM user_groups ug
+        JOIN roles r ON r.id = ug.role_id
+        WHERE ug.user_id = #{userId}
+          AND ug.is_active = 1
+          AND r.is_active = 1
+          AND UPPER(COALESCE(r.code, '')) = UPPER(#{roleCode})
+    </select>
+
+    <select id="countActiveUserInHospital" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM users u
+        JOIN user_hospitals uh ON uh.user_id = u.id
+        WHERE u.id = #{userId}
+          AND u.is_active = 1
+          AND uh.is_active = 1
+          AND uh.hospital_id = #{hospitalId}
+    </select>
+
+    <select id="findPrimaryHospitalIdByUserId" resultType="java.lang.Long">
+        SELECT uh.hospital_id
+        FROM user_hospitals uh
+        WHERE uh.user_id = #{userId}
+          AND uh.is_active = 1
+        ORDER BY uh.is_default DESC, uh.hospital_id ASC
+        LIMIT 1
+    </select>
+
+    <select id="getMemberDropdownByHospital" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
+        SELECT
+            u.id AS value,
+            TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''), CASE WHEN COALESCE(u.username, '') = '' THEN '' ELSE ' (' || u.username || ')' END)) AS label
+        FROM users u
+        JOIN user_hospitals uh ON uh.user_id = u.id
+        WHERE u.is_active = 1
+          AND uh.is_active = 1
+          AND uh.hospital_id = #{hospitalId}
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+            AND (
+                u.username ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR u.first_name ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR u.last_name ILIKE CONCAT('%', #{filter.searchText}, '%')
+            )
+        </if>
+        ORDER BY u.id DESC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+</mapper>

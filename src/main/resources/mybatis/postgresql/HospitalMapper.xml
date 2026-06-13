@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.hospital.HospitalMapper">
+    <resultMap id="HospitalResponse" type="com.ut.emrPacs.model.dto.response.systemSettings.hospital.HospitalResponse" autoMapping="true"/>
+    <resultMap id="HospitalResponseDetail" type="com.ut.emrPacs.model.dto.response.systemSettings.hospital.HospitalResponseDetail" autoMapping="true"/>
+    <resultMap id="UserNameResponse" type="com.ut.emrPacs.model.dto.response.systemSettings.hospital.UserNameResponse" autoMapping="true"/>
+    <resultMap id="HospitalUserList" type="com.ut.emrPacs.model.dto.response.systemSettings.hospital.HospitalUserList" autoMapping="true"/>
+
+    <select id="listHospital" resultMap="HospitalResponse">
+        SELECT
+            h.id AS id,
+            h.public_id::text AS publicKey,
+            h.code,
+            h.abbr,
+            h.name,
+            h.name_other AS nameKhmer,
+            h.timezone,
+            h.logo_file_name AS logoFileName,
+            h.logo_file_type AS logoFileType,
+            h.logo_file_size AS logoFileSize,
+            CASE WHEN NULLIF(TRIM(COALESCE(h.logo_path, '')), '') IS NOT NULL THEN TRUE ELSE FALSE END AS logoAvailable,
+            h.created_by AS createdById,
+            COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(uc.first_name, ''), ' ', COALESCE(uc.last_name, ''))), ''),
+                uc.username,
+                ''
+            ) AS createdBy,
+            TO_CHAR(COALESCE(h.created_at, h.created), 'DD-Mon-YYYY HH24:MI') AS created,
+            h.modified_by AS modifiedById,
+            COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(um.first_name, ''), ' ', COALESCE(um.last_name, ''))), ''),
+                um.username,
+                ''
+            ) AS modifiedBy,
+            TO_CHAR(COALESCE(h.modified_at, h.modified), 'DD-Mon-YYYY HH24:MI') AS modified
+
+        FROM hospitals h
+        LEFT JOIN users uc ON uc.id = h.created_by
+        LEFT JOIN users um ON um.id = h.modified_by
+        WHERE h.is_active = 1
+        <if test="searchText != null and searchText != ''">
+            AND (
+                h.name ILIKE '%' || #{searchText} || '%'
+                OR h.code ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(h.abbr, '') ILIKE '%' || #{searchText} || '%'
+            )
+        </if>
+        ORDER BY h.id DESC
+        <if test="page != null and rowsPerPage != null">LIMIT #{rowsPerPage} OFFSET #{page}</if>
+    </select>
+
+    <select id="getHospitalById" resultMap="HospitalResponseDetail">
+        SELECT 
+            h.id AS id,
+            h.public_id::text AS publicKey,
+            h.code,
+            h.abbr,
+            h.name AS hospitalName,
+            h.name_other AS nameInKhmer,
+            h.timezone,
+            h.logo_path AS logoPath,
+            h.logo_file_name AS logoFileName,
+            h.logo_file_type AS logoFileType,
+            h.logo_file_size AS logoFileSize,
+            CASE WHEN NULLIF(TRIM(COALESCE(h.logo_path, '')), '') IS NOT NULL THEN TRUE ELSE FALSE END AS logoAvailable
+        FROM hospitals h
+        WHERE h.is_active = 1 AND h.id = #{id} LIMIT 1
+    </select>
+
+    <select id="getUserName" parameterType="java.lang.Long" resultMap="UserNameResponse">
+        SELECT DISTINCT
+        uh.user_id AS userId,
+        u.public_id::text AS publicKey,
+        TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS userName
+        FROM user_hospitals uh
+        LEFT JOIN users u ON uh.user_id = u.id
+        WHERE uh.hospital_id = #{hospitalId}
+          AND uh.is_active = 1
+          AND u.is_active = 1
+    </select>
+
+    <select id="getHospitalUserList" resultMap="HospitalUserList">
+        SELECT
+            uh.user_id AS userId,
+            u.public_id::text AS publicKey,
+            COALESCE(
+                NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''),
+                u.username,
+                ''
+            ) AS userName
+        FROM user_hospitals uh
+        INNER JOIN users u ON u.id = uh.user_id AND u.is_active = 1
+        WHERE uh.hospital_id = #{hospitalId}
+          AND uh.is_active = 1;
+    </select>
+
+    <select id="countHospitalCode" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospitals
+        WHERE is_active = 1
+          AND LOWER(code) = LOWER(#{code})
+        <if test="excludeId != null">
+            AND id != #{excludeId}
+        </if>
+    </select>
+
+    <select id="countHospitalAbbr" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospitals
+        WHERE is_active = 1
+          AND LOWER(abbr) = LOWER(#{abbr})
+        <if test="excludeId != null">
+            AND id != #{excludeId}
+        </if>
+    </select>
+
+    <select id="countHospitalVisitToken" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospitals
+        WHERE is_active = 1
+          AND public.hospital_visit_code_token(abbr) = #{visitToken}
+        <if test="excludeId != null">
+            AND id != #{excludeId}
+        </if>
+    </select>
+
+    <insert id="createHospital" parameterType="com.ut.emrPacs.model.components.systemSettings.hospital.Hospital" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO hospitals (
+            code,
+            abbr,
+            name,
+            name_other,
+            timezone,
+            is_active,
+            created_by,
+            modified_by,
+            created,
+            modified,
+            created_at,
+            modified_at
+        ) VALUES (
+            #{code},
+            #{abbr},
+            #{name},
+            #{nameOther},
+            COALESCE(#{timezone}, 'Asia/Phnom_Penh'),
+            1,
+            #{createdBy},
+            #{modifiedBy},
+            NOW(),
+            NOW(),
+            NOW(),
+            NOW()
+        )
+    </insert>
+
+    <update id="updateHospital">
+        UPDATE hospitals SET
+        <if test="code != null and code != ''">code = #{code},</if>
+        <if test="abbr != null and abbr != ''">abbr = #{abbr},</if>
+        <if test="name != null and name != ''">name = #{name},</if>
+        <if test="nameOther != null and nameOther != ''">name_other = #{nameOther},</if>
+        <if test="timezone != null and timezone != ''">timezone = #{timezone},</if>
+        modified = NOW(),
+        modified_at = NOW(),
+        modified_by = #{modifiedBy}
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateHospitalLogo">
+        UPDATE hospitals SET
+            logo_path = #{logoPath},
+            logo_file_name = #{logoFileName},
+            logo_file_type = #{logoFileType},
+            logo_file_size = #{logoFileSize},
+            logo_updated_at = CASE WHEN #{logoPath} IS NULL THEN NULL ELSE NOW() END,
+            modified = NOW(),
+            modified_at = NOW(),
+            modified_by = #{modifiedBy}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteHospitalUser">
+        UPDATE user_hospitals
+        SET is_active = 2,
+            modified = NOW(),
+            modified_at = NOW()
+        WHERE hospital_id = #{hospitalId};
+    </delete>
+
+    <insert id="insertHospitalUser">
+        INSERT INTO user_hospitals (user_id, hospital_id, is_default, is_active, created, created_at)
+        VALUES (#{userId}, #{hospitalId}, FALSE, 1, NOW(), NOW())
+        ON CONFLICT (user_id, hospital_id) DO UPDATE
+        SET is_active = 1,
+            modified = NOW(),
+            modified_at = NOW();
+    </insert>
+
+</mapper>

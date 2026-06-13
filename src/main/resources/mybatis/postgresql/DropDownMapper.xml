@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.dropDown.DropDownMapper">
+
+    <select id="getListCountries" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
+        SELECT id AS value, name AS label
+        FROM countries
+        <where>
+            <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+                name ILIKE CONCAT('%', #{filter.searchText}, '%')
+            </if>
+        </where>
+        ORDER BY id ASC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="getListHospitalsByUserId" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
+        SELECT h.id AS value,
+               h.public_id::text AS publicKey,
+               CONCAT(COALESCE(NULLIF(h.abbr, ''), h.code), ' - ', h.name) AS label
+        FROM user_hospitals uh
+        INNER JOIN hospitals h ON h.id = uh.hospital_id
+        WHERE uh.user_id = #{userId}
+          AND uh.is_active = 1
+          AND h.is_active = 1
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+            AND (
+                h.name ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR h.code ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR COALESCE(h.abbr, '') ILIKE CONCAT('%', #{filter.searchText}, '%')
+            )
+        </if>
+        ORDER BY uh.is_default DESC, h.id ASC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+<select id="getListModalitiesByHospitalId" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
+        SELECT m.id AS value,
+               m.public_id::text AS publicKey,
+               CONCAT(COALESCE(NULLIF(m.abbr, ''), 'OT'), ' - ', m.name) AS label
+        FROM hospital_modalities hm
+        INNER JOIN modalities m ON m.id = hm.modality_id
+        WHERE hm.hospital_id = #{hospitalId}
+          AND hm.is_active = 1
+          AND m.is_active = 1
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+            AND m.name ILIKE CONCAT('%', #{filter.searchText}, '%')
+        </if>
+        ORDER BY m.id ASC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="getListModalityCatalog" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
+        SELECT m.id AS value,
+               m.public_id::text AS publicKey,
+               CONCAT(COALESCE(NULLIF(m.abbr, ''), 'OT'), ' - ', m.name) AS label
+        FROM modalities m
+        WHERE m.is_active = 1
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+            AND (
+                m.name ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR COALESCE(m.abbr, '') ILIKE CONCAT('%', #{filter.searchText}, '%')
+            )
+        </if>
+        ORDER BY COALESCE(NULLIF(m.abbr, ''), m.name) ASC, m.name ASC, m.id ASC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="getListDicomServersByHospitalId" resultType="com.ut.emrPacs.model.dto.response.dropDown.DicomServerDropDownResponse">
+        SELECT
+            s.id AS value,
+            s.id AS id,
+            s.public_id::text AS publicKey,
+            s.name AS label,
+            s.name AS name,
+            s.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) AS dicomServerBaseUrl,
+            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) AS dicomServerUiBaseUrl,
+            ((CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) || COALESCE(NULLIF(BTRIM(s.dicomweb_path), ''), '/dicom-web')) AS dicomwebBaseUrl,
+            COALESCE(NULLIF(BTRIM(s.dicomweb_path), ''), '/dicom-web') AS dicomwebPath,
+            s.viewer_base_url AS viewerBaseUrl,
+            s.ae_title AS aeTitle,
+            s.username AS username,
+            s.is_active AS isActive
+        FROM hospital_dicom_servers s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        WHERE s.hospital_id = #{hospitalId}
+          AND s.is_active != 2
+        <if test="filter != null and filter.unusedRoutingOnly != null and filter.unusedRoutingOnly">
+            AND (
+                NOT EXISTS (
+                    SELECT 1
+                    FROM hospital_dicom_routing_configs cfg
+                    WHERE cfg.hospital_id = s.hospital_id
+                      AND cfg.dicom_server_id = s.id
+                      AND cfg.is_active = 1
+                )
+                <if test="filter.includeDicomServerId != null and filter.includeDicomServerId > 0">
+                    OR s.id = #{filter.includeDicomServerId}
+                </if>
+            )
+        </if>
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+            AND (
+                s.name ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR COALESCE(s.ip_address, '') ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR s.port::text ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR COALESCE(s.dicom_port, 4242)::text ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR COALESCE(s.viewer_base_url, '') ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR COALESCE(s.ae_title, '') ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR COALESCE(s.username, '') ILIKE CONCAT('%', #{filter.searchText}, '%')
+            )
+        </if>
+        ORDER BY s.is_active DESC, s.name ASC, s.id ASC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="getListUsers" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
+        SELECT DISTINCT
+            u.id AS value,
+            u.public_id::text AS publicKey,
+            COALESCE(
+                NULLIF(
+                    TRIM(
+                        CONCAT(
+                            COALESCE(u.first_name, ''),
+                            ' ',
+                            COALESCE(u.last_name, ''),
+                            CASE WHEN COALESCE(u.username, '') = '' THEN '' ELSE ' (' || u.username || ')' END
+                        )
+                    ),
+                    ''
+                ),
+                u.username
+            ) AS label
+        FROM users u
+        LEFT JOIN user_hospitals uh ON uh.user_id = u.id AND uh.is_active = 1
+        WHERE u.is_active = 1
+        <if test="hospitalId != null">
+            AND uh.hospital_id = #{hospitalId}
+        </if>
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+            AND (
+                u.username ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR u.first_name ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR u.last_name ILIKE CONCAT('%', #{filter.searchText}, '%')
+            )
+        </if>
+        ORDER BY label ASC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="getListPatientsByHospitalId" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
+        SELECT
+            p.id AS value,
+            p.public_id::text AS publicKey,
+            CONCAT(
+                COALESCE(p.patient_uid, ''),
+                ' - ',
+                COALESCE(NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), ''), '')
+            ) AS label
+        FROM patients p
+        WHERE p.is_active = 1
+          AND p.hospital_id = #{hospitalId}
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+            AND (
+                p.patient_uid ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR p.first_name ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR p.last_name ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR COALESCE(p.phone_number, '') ILIKE CONCAT('%', #{filter.searchText}, '%')
+            )
+        </if>
+        ORDER BY p.id DESC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="getListUserGroups" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
+        SELECT DISTINCT
+            r.id AS value,
+            r.public_id::text AS publicKey,
+            r.name AS label
+        FROM user_groups ug
+        INNER JOIN roles r ON r.id = ug.role_id
+        LEFT JOIN user_hospitals uh ON uh.user_id = ug.user_id AND uh.is_active = 1
+        LEFT JOIN hospitals h ON h.id = uh.hospital_id AND h.is_active = 1
+        WHERE ug.is_active = 1
+          AND r.is_active = 1
+          <if test="hospitalId != null">
+              AND uh.hospital_id = #{hospitalId}
+          </if>
+          <if test="hospitalId == null and includeAllHospitals != null and includeAllHospitals == false">
+              AND uh.hospital_id = #{actorHospitalId}
+          </if>
+          <if test="hospitalId == null and includeAllHospitals != null and includeAllHospitals == true">
+              AND (
+                  uh.hospital_id IS NOT NULL
+                  OR NOT EXISTS (
+                      SELECT 1
+                      FROM user_hospitals uh_scope
+                      WHERE uh_scope.user_id = ug.user_id
+                        AND uh_scope.is_active = 1
+                  )
+              )
+          </if>
+          <if test="includeCrossScope == null or includeCrossScope == false">
+              AND UPPER(COALESCE(r.code, '')) &lt;&gt; 'USER_HOSPITAL_SCOPE_ALL'
+          </if>
+          <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+              AND r.name ILIKE CONCAT('%', #{filter.searchText}, '%')
+          </if>
+        ORDER BY r.name ASC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="getListRoleGroups" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
+        SELECT
+            r.id AS value,
+            r.public_id::text AS publicKey,
+            r.name AS label
+        FROM roles r
+        WHERE r.is_active = 1
+          <if test="includeCrossScope == null or includeCrossScope == false">
+              AND UPPER(COALESCE(r.code, '')) &lt;&gt; 'USER_HOSPITAL_SCOPE_ALL'
+          </if>
+          <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+              AND r.name ILIKE CONCAT('%', #{filter.searchText}, '%')
+          </if>
+        ORDER BY r.name ASC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+</mapper>

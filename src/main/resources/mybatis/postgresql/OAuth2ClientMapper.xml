@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.auth.OAuth2ClientMapper">
+
+    <select id="findByClientId" resultType="com.ut.emrPacs.model.auth.OAuth2ClientRow">
+        SELECT
+            id,
+            client_id           AS clientId,
+            client_name         AS clientName,
+            client_secret_hash  AS clientSecretHash,
+            client_type         AS clientType,
+            allowed_grant_types AS allowedGrantTypes,
+            allowed_scopes      AS allowedScopes,
+            access_token_lifetime_ms  AS accessTokenLifetimeMs,
+            refresh_token_lifetime_ms AS refreshTokenLifetimeMs,
+            dicom_server_id     AS dicomServerId,
+            is_active           AS isActive
+        FROM oauth2_clients
+        WHERE client_id = #{clientId}
+          AND is_active = TRUE
+        LIMIT 1
+    </select>
+
+    <select id="isActiveDicomServerCallbackClient" resultType="java.lang.Boolean">
+        SELECT EXISTS (
+            SELECT 1
+            FROM oauth2_clients c
+            INNER JOIN hospital_dicom_servers s
+                ON s.id = c.dicom_server_id
+               AND s.is_active = 1
+            WHERE c.client_id = #{clientId}
+              AND c.client_type = 'CONFIDENTIAL'
+              AND c.is_active = TRUE
+              AND c.dicom_server_id IS NOT NULL
+              AND POSITION('client_credentials' IN c.allowed_grant_types) > 0
+              AND POSITION('pacs.api' IN c.allowed_scopes) > 0
+        )
+    </select>
+
+    <insert id="upsertDicomServerCallbackClient">
+        INSERT INTO oauth2_clients (
+            client_id,
+            client_name,
+            client_secret_hash,
+            client_type,
+            allowed_grant_types,
+            allowed_scopes,
+            access_token_lifetime_ms,
+            refresh_token_lifetime_ms,
+            dicom_server_id,
+            is_active,
+            created,
+            modified
+        ) VALUES (
+            #{clientId},
+            #{clientName},
+            #{clientSecretHash},
+            'CONFIDENTIAL',
+            'client_credentials',
+            'pacs.api',
+            900000,
+            2592000000,
+            #{dicomServerId},
+            TRUE,
+            NOW(),
+            NOW()
+        )
+        ON CONFLICT (client_id) DO UPDATE
+        SET
+            client_name = EXCLUDED.client_name,
+            client_secret_hash = EXCLUDED.client_secret_hash,
+            client_type = EXCLUDED.client_type,
+            allowed_grant_types = EXCLUDED.allowed_grant_types,
+            allowed_scopes = EXCLUDED.allowed_scopes,
+            access_token_lifetime_ms = EXCLUDED.access_token_lifetime_ms,
+            refresh_token_lifetime_ms = EXCLUDED.refresh_token_lifetime_ms,
+            dicom_server_id = EXCLUDED.dicom_server_id,
+            is_active = TRUE,
+            modified = NOW()
+    </insert>
+
+</mapper>

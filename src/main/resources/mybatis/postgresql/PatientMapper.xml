@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.pacs.PatientMapper">
+
+    <select id="list" resultType="com.ut.emrPacs.model.dto.response.pacs.patient.PatientResponse">
+        SELECT
+            p.id,
+            p.public_id::text AS publicKey,
+            p.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.code AS hospitalCode,
+            h.name AS hospitalName,
+            p.patient_uid AS patientCode,
+            p.first_name AS firstName,
+            p.last_name AS lastName,
+            p.phone_number AS phoneNumber,
+            p.gender,
+            p.date_of_birth AS dateOfBirth
+        FROM patients p
+        INNER JOIN hospitals h ON h.id = p.hospital_id
+        WHERE p.is_active = 1
+        <if test="hospitalId != null and hospitalId > 0">
+          AND p.hospital_id = #{hospitalId}
+        </if>
+        <if test="filter != null and filter.lastPatientId != null and filter.lastPatientId > 0">
+          AND p.id &lt; #{filter.lastPatientId}
+        </if>
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+          AND (
+            LOWER(p.patient_uid) = LOWER(#{filter.searchText})
+            OR LOWER(COALESCE(p.phone_number, '')) = LOWER(#{filter.searchText})
+            OR p.patient_uid ILIKE '%' || #{filter.searchText} || '%'
+            OR p.first_name ILIKE '%' || #{filter.searchText} || '%'
+            OR p.last_name ILIKE '%' || #{filter.searchText} || '%'
+            OR TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.searchText} || '%'
+            OR COALESCE(p.phone_number, '') ILIKE '%' || #{filter.searchText} || '%'
+            OR COALESCE(h.name, '') ILIKE '%' || #{filter.searchText} || '%'
+            OR COALESCE(h.code, '') ILIKE '%' || #{filter.searchText} || '%'
+          )
+        </if>
+        <if test="filter != null and filter.patientCode != null and filter.patientCode != ''">
+          AND LOWER(p.patient_uid) = LOWER(#{filter.patientCode})
+        </if>
+        <if test="filter != null and filter.firstName != null and filter.firstName != ''">
+          AND p.first_name ILIKE '%' || #{filter.firstName} || '%'
+        </if>
+        <if test="filter != null and filter.lastName != null and filter.lastName != ''">
+          AND p.last_name ILIKE '%' || #{filter.lastName} || '%'
+        </if>
+        <if test="filter != null and filter.phoneNumber != null and filter.phoneNumber != ''">
+          AND LOWER(COALESCE(p.phone_number, '')) = LOWER(#{filter.phoneNumber})
+        </if>
+        <if test="filter != null and filter.gender != null and filter.gender != ''">
+          AND p.gender = #{filter.gender}
+        </if>
+        ORDER BY p.id DESC
+        <choose>
+            <when test="filter != null and filter.lastPatientId != null and filter.lastPatientId > 0">
+                LIMIT #{filter.rowsPerPage}
+            </when>
+            <otherwise>
+                LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+            </otherwise>
+        </choose>
+    </select>
+
+    <select id="count" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM patients p
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+          INNER JOIN hospitals h ON h.id = p.hospital_id
+        </if>
+        WHERE p.is_active = 1
+        <if test="hospitalId != null and hospitalId > 0">
+          AND p.hospital_id = #{hospitalId}
+        </if>
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+          AND (
+            LOWER(p.patient_uid) = LOWER(#{filter.searchText})
+            OR LOWER(COALESCE(p.phone_number, '')) = LOWER(#{filter.searchText})
+            OR p.patient_uid ILIKE '%' || #{filter.searchText} || '%'
+            OR p.first_name ILIKE '%' || #{filter.searchText} || '%'
+            OR p.last_name ILIKE '%' || #{filter.searchText} || '%'
+            OR TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.searchText} || '%'
+            OR COALESCE(p.phone_number, '') ILIKE '%' || #{filter.searchText} || '%'
+            OR COALESCE(h.name, '') ILIKE '%' || #{filter.searchText} || '%'
+            OR COALESCE(h.code, '') ILIKE '%' || #{filter.searchText} || '%'
+          )
+        </if>
+        <if test="filter != null and filter.patientCode != null and filter.patientCode != ''">
+          AND LOWER(p.patient_uid) = LOWER(#{filter.patientCode})
+        </if>
+        <if test="filter != null and filter.firstName != null and filter.firstName != ''">
+          AND p.first_name ILIKE '%' || #{filter.firstName} || '%'
+        </if>
+        <if test="filter != null and filter.lastName != null and filter.lastName != ''">
+          AND p.last_name ILIKE '%' || #{filter.lastName} || '%'
+        </if>
+        <if test="filter != null and filter.phoneNumber != null and filter.phoneNumber != ''">
+          AND LOWER(COALESCE(p.phone_number, '')) = LOWER(#{filter.phoneNumber})
+        </if>
+        <if test="filter != null and filter.gender != null and filter.gender != ''">
+          AND p.gender = #{filter.gender}
+        </if>
+    </select>
+
+    <select id="findById" resultType="com.ut.emrPacs.model.dto.response.pacs.patient.PatientResponse">
+        SELECT
+            p.id,
+            p.public_id::text AS publicKey,
+            p.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.code AS hospitalCode,
+            h.name AS hospitalName,
+            p.patient_uid AS patientCode,
+            p.first_name AS firstName,
+            p.last_name AS lastName,
+            p.phone_number AS phoneNumber,
+            p.gender,
+            p.date_of_birth AS dateOfBirth
+        FROM patients p
+        INNER JOIN hospitals h ON h.id = p.hospital_id
+        WHERE p.id = #{id}
+          AND p.is_active = 1
+        <if test="hospitalId != null and hospitalId > 0">
+          AND p.hospital_id = #{hospitalId}
+        </if>
+        LIMIT 1
+    </select>
+
+    <select id="countDuplicatePatientCode" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM patients
+        WHERE is_active = 1
+          AND LOWER(patient_uid) = LOWER(#{patientCode})
+        <if test="excludeId != null">
+          AND id != #{excludeId}
+        </if>
+    </select>
+
+    <select id="existsPatientSequenceTable" resultType="java.lang.Boolean">
+        SELECT TO_REGCLASS('public.pacs_patient_sequences') IS NOT NULL
+    </select>
+
+    <select id="nextPatientSequenceByYear" resultType="java.lang.Long">
+        INSERT INTO pacs_patient_sequences (
+            hospital_id,
+            sequence_year,
+            last_sequence,
+            modified_at
+        ) VALUES (
+            #{hospitalId},
+            #{yearPrefix},
+            1,
+            NOW()
+        )
+        ON CONFLICT (hospital_id, sequence_year) DO UPDATE
+        SET
+            last_sequence = pacs_patient_sequences.last_sequence + 1,
+            modified_at = NOW()
+        RETURNING last_sequence
+    </select>
+
+    <select id="maxPatientSequenceByYear" resultType="java.lang.Long">
+        SELECT COALESCE(MAX(CAST(RIGHT(patient_uid, 7) AS BIGINT)), 0)
+        FROM patients
+        WHERE hospital_id = #{hospitalId}
+          AND (
+            patient_uid ~ ('^' || #{yearPrefix} || 'P[0-9]{7}$')
+            OR patient_uid ~ ('^' || #{yearPrefix} || '-' || #{hospitalToken} || '-P[0-9]{7}$')
+          )
+    </select>
+
+    <select id="create" resultType="java.lang.Long">
+        INSERT INTO patients (hospital_id, patient_uid, first_name, last_name, phone_number, gender, date_of_birth, is_active, created)
+        VALUES (
+            #{hospitalId},
+            #{request.patientCode},
+            #{request.firstName},
+            #{request.lastName},
+            #{request.phoneNumber},
+            #{request.gender},
+            #{request.dateOfBirth},
+            1,
+            NOW()
+        )
+        RETURNING id
+    </select>
+
+    <update id="update">
+        UPDATE patients
+        SET patient_uid = COALESCE(#{request.patientCode}, patient_uid),
+            first_name = COALESCE(#{request.firstName}, first_name),
+            last_name = COALESCE(#{request.lastName}, last_name),
+            phone_number = COALESCE(#{request.phoneNumber}, phone_number),
+            gender = COALESCE(#{request.gender}, gender),
+            date_of_birth = COALESCE(#{request.dateOfBirth}, date_of_birth),
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{request.id}
+          AND is_active = 1
+    </update>
+
+</mapper>

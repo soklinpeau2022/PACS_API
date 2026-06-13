@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.user.ModuleTypeMapper">
+
+    <select id="listModuleType" parameterType="com.ut.emrPacs.model.base.filter.ModuleTypeFilter" resultType="com.ut.emrPacs.model.dto.response.authentication.module.ModuleType">
+        SELECT
+            id,
+            public_id::text AS publicKey,
+            code,
+            name,
+            name_other AS nameOther,
+            menu_group_code AS groupCode,
+            menu_group_name AS groupName,
+            menu_group_order AS groupOrderNo
+        FROM module_types
+        WHERE is_active = 1
+          AND EXISTS (
+              SELECT 1
+              FROM modules m
+              JOIN module_details md
+                ON md.module_id = m.id
+               AND md.is_active = 1
+              WHERE m.module_type_id = module_types.id
+                AND m.is_active = 1
+          )
+          <if test="searchText != null and searchText != ''">
+              AND name ILIKE '%' || #{searchText} || '%'
+          </if>
+        ORDER BY
+        <choose>
+            <when test="orderBy != null and orderBy != ''">
+                ${orderBy}
+            </when>
+            <otherwise>
+                display_order ASC, id ASC
+            </otherwise>
+        </choose>
+        <if test="rowsPerPage != null and page != null">
+            LIMIT #{rowsPerPage}
+            OFFSET #{page}
+        </if>
+    </select>
+
+    <select id="countList" parameterType="com.ut.emrPacs.model.base.filter.ModuleTypeFilter" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM module_types
+        WHERE is_active = 1
+          AND EXISTS (
+              SELECT 1
+              FROM modules m
+              JOIN module_details md
+                ON md.module_id = m.id
+               AND md.is_active = 1
+              WHERE m.module_type_id = module_types.id
+                AND m.is_active = 1
+          )
+          <if test="searchText != null and searchText != ''">
+              AND name ILIKE '%' || #{searchText} || '%'
+          </if>
+    </select>
+
+    <select id="getModuleTypeById" parameterType="java.lang.Long" resultType="com.ut.emrPacs.model.dto.response.authentication.module.ModuleType">
+        SELECT
+            id,
+            public_id::text AS publicKey,
+            code,
+            name,
+            name_other AS nameOther,
+            menu_group_code AS groupCode,
+            menu_group_name AS groupName,
+            menu_group_order AS groupOrderNo
+        FROM module_types
+        WHERE is_active = 1
+          AND id = #{id}
+    </select>
+
+    <select id="getAllActiveModuleTreeFlat" resultType="com.ut.emrPacs.model.dto.response.permission.RolePermissionTreeResponse">
+        SELECT
+            mt.id            AS moduleTypeId,
+            mt.public_id::text AS moduleTypePublicKey,
+            mt.code          AS moduleTypeCode,
+            mt.name          AS moduleTypeName,
+            mt.name_other    AS moduleTypeNameOther,
+            mt.display_order AS moduleTypeOrder,
+            m.id             AS moduleId,
+            m.public_id::text AS modulePublicKey,
+            m.code           AS moduleCode,
+            m.name           AS moduleName,
+            m.display_order  AS moduleOrder,
+            md.id            AS moduleDetailId,
+            md.public_id::text AS moduleDetailPublicKey,
+            md.code          AS code,
+            md.action_key    AS "actionKey",
+            md.display_order AS "orderNo",
+            md.name          AS moduleDetailName,
+            md.name_other    AS moduleDetailNameOther,
+            md.type          AS moduleDetailType,
+            CASE WHEN up.module_detail_id IS NULL THEN FALSE ELSE TRUE END AS checked
+        FROM module_types mt
+        JOIN modules m ON m.module_type_id = mt.id AND m.is_active = 1
+        JOIN module_details md ON md.module_id = m.id AND md.is_active = 1
+        LEFT JOIN (
+            SELECT DISTINCT rmd.module_detail_id
+            FROM user_groups ug
+            JOIN roles r ON r.id = ug.role_id AND r.is_active = 1
+            JOIN role_module_details rmd ON rmd.role_id = r.id
+            WHERE ug.user_id = #{userId}
+              AND ug.is_active = 1
+        ) up ON up.module_detail_id = md.id
+        WHERE mt.is_active = 1
+        ORDER BY mt.display_order, mt.id, m.display_order, m.id, md.display_order, md.id
+    </select>
+
+</mapper>

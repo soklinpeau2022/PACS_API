@@ -1,0 +1,4 @@
+pydicom>=3.0.1,<4
+pynetdicom>=3.0.4,<4
+numpy>=2.0,<3
+requests>=2.32,<3

@@ -1,0 +1,302 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.user.RoleMapper">
+    <resultMap id="RoleResponse" type="com.ut.emrPacs.model.dto.response.authentication.role.RoleResponse" autoMapping="true"/>
+    <resultMap id="RoleUser" type="com.ut.emrPacs.model.role.RoleUser" autoMapping="true"/>
+    <resultMap id="ModuleType" type="com.ut.emrPacs.model.dto.response.authentication.module.ModuleType" autoMapping="true"/>
+    <resultMap id="UserList" type="com.ut.emrPacs.model.users.UserList" autoMapping="true"/>
+
+    <sql id="BASE_COLUMNS">
+        r.id,
+        r.public_id::text AS "publicKey",
+        NULL::BIGINT AS "hospitalId",
+        'Global' AS "hospitalName",
+        COALESCE(r.is_system_role, FALSE) AS "isSystemRole",
+        r.name,
+        COALESCE(TO_CHAR(COALESCE(r.created_at, r.created), 'YYYY-MM-DD HH24:MI:SS'), '') AS "createdDate",
+        COALESCE(TO_CHAR(COALESCE(r.modified_at, r.modified), 'YYYY-MM-DD HH24:MI:SS'), '') AS "modifiedDate",
+        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(uc.first_name, ''), ' ', COALESCE(uc.last_name, ''))), ''), uc.username, '') AS "createdBy",
+        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(um.first_name, ''), ' ', COALESCE(um.last_name, ''))), ''), um.username, '') AS "modifiedBy"
+    </sql>
+
+    <sql id="BASE_FROM">
+        FROM roles r
+        LEFT JOIN users uc ON uc.id = r.created_by
+        LEFT JOIN users um ON um.id = r.modified_by
+    </sql>
+
+    <sql id="BASE_WHERE">
+        WHERE r.is_active = 1
+          <if test="filter != null and filter.hideCrossHospitalScopeGroup != null and filter.hideCrossHospitalScopeGroup">
+              AND UPPER(COALESCE(r.code, '')) &lt;&gt; 'USER_HOSPITAL_SCOPE_ALL'
+          </if>
+          <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+              AND (
+                   COALESCE(r.name, '') ILIKE '%' || #{filter.searchText} || '%'
+              )
+          </if>
+    </sql>
+
+    <select id="listRole" resultMap="RoleResponse">
+        SELECT
+        <include refid="BASE_COLUMNS"/>
+        <include refid="BASE_FROM"/>
+        <include refid="BASE_WHERE"/>
+        ORDER BY
+        <choose>
+            <when test="filter != null and filter.orderBy != null and filter.orderBy != ''">
+                ${filter.orderBy}
+            </when>
+            <otherwise>
+                r.id DESC
+            </otherwise>
+        </choose>
+        <if test="filter != null and filter.rowsPerPage != null and filter.page != null">
+            LIMIT #{filter.rowsPerPage}
+            OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="countList" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT r.id)
+        <include refid="BASE_FROM"/>
+        <include refid="BASE_WHERE"/>
+    </select>
+
+    <select id="getRoleById" resultMap="RoleResponse">
+        SELECT
+        <include refid="BASE_COLUMNS"/>
+        <include refid="BASE_FROM"/>
+        WHERE r.is_active = 1
+          AND r.id = #{id}
+        LIMIT 1
+    </select>
+
+    <select id="getRoleByIdAnyHospital" resultMap="RoleResponse">
+        SELECT
+        <include refid="BASE_COLUMNS"/>
+        <include refid="BASE_FROM"/>
+        WHERE r.is_active = 1
+          AND r.id = #{id}
+        LIMIT 1
+    </select>
+
+    <select id="countRoleByIdAndCode" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM roles
+        WHERE id = #{id}
+          AND is_active = 1
+          AND UPPER(COALESCE(code, '')) = UPPER(#{code})
+    </select>
+
+    <select id="getUser" resultMap="RoleUser">
+        SELECT DISTINCT
+            u.id AS id,
+            u.public_id::text AS "publicKey",
+            TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS username
+        FROM users u
+        JOIN user_groups ug ON ug.user_id = u.id
+        WHERE u.is_active = 1
+          AND ug.is_active = 1
+          AND ug.role_id = #{id}
+        ORDER BY u.id DESC
+    </select>
+
+    <select id="getUserAllHospitals" resultMap="RoleUser">
+        SELECT DISTINCT
+            u.id AS id,
+            u.public_id::text AS "publicKey",
+            TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS username
+        FROM users u
+        JOIN user_groups ug ON ug.user_id = u.id
+        WHERE u.is_active = 1
+          AND ug.is_active = 1
+          AND ug.role_id = #{id}
+        ORDER BY u.id DESC
+    </select>
+
+    <sql id="USER_GROUP_BASE_WHERE">
+        WHERE r.is_active = 1
+          <if test="!includeScopeGroup">
+              AND UPPER(COALESCE(r.code, '')) &lt;&gt; 'USER_HOSPITAL_SCOPE_ALL'
+          </if>
+          <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+              AND (
+                   r.name ILIKE '%' || #{filter.searchText} || '%'
+              )
+          </if>
+    </sql>
+
+    <select id="listUserGroups" resultMap="RoleResponse">
+        SELECT
+        <include refid="BASE_COLUMNS"/>
+        <include refid="BASE_FROM"/>
+        <include refid="USER_GROUP_BASE_WHERE"/>
+        ORDER BY
+        <choose>
+            <when test="filter != null and filter.orderBy != null and filter.orderBy != ''">
+                ${filter.orderBy}
+            </when>
+            <otherwise>
+                r.id DESC
+            </otherwise>
+        </choose>
+        <if test="filter != null and filter.rowsPerPage != null and filter.page != null">
+            LIMIT #{filter.rowsPerPage}
+            OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="countUserGroups" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT r.id)
+        <include refid="BASE_FROM"/>
+        <include refid="USER_GROUP_BASE_WHERE"/>
+    </select>
+
+    <select id="checkDuplicate" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM roles
+        WHERE is_active = 1
+          AND LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM(#{name}))
+          <if test="id != null">AND id != #{id}</if>
+    </select>
+
+    <insert id="createRole" parameterType="com.ut.emrPacs.model.role.Role" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO roles (
+            code, name, is_system_role, is_active, created_by, created, created_at
+        ) VALUES (
+            MD5(CAST(clock_timestamp() AS text)),
+            TRIM(#{name}),
+            FALSE,
+            #{isActive},
+            #{createdBy},
+            NOW(),
+            NOW()
+        )
+    </insert>
+
+    <insert id="insertRoleUser">
+        INSERT INTO user_groups (user_id, role_id, is_active, created, created_at)
+        VALUES (#{userId}, #{roleId}, 1, NOW(), NOW())
+        ON CONFLICT (user_id, role_id) DO UPDATE SET
+            is_active = 1,
+            modified = NOW(),
+            modified_at = NOW()
+    </insert>
+
+    <select id="listActiveRoleIds" resultType="java.lang.Long">
+        SELECT id
+        FROM roles
+        WHERE is_active = 1
+        ORDER BY id ASC
+    </select>
+
+    <select id="countActiveUsersByIds" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM users u
+        WHERE u.is_active = 1
+          AND u.id IN
+          <foreach item="id" collection="userIds" open="(" separator="," close=")">
+              #{id}
+          </foreach>
+    </select>
+
+    <select id="countActiveUsersByIdsInHospital" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT u.id)
+        FROM users u
+        INNER JOIN user_hospitals uh ON uh.user_id = u.id
+        WHERE u.is_active = 1
+          AND uh.is_active = 1
+          AND uh.hospital_id = #{hospitalId}
+          AND u.id IN
+          <foreach item="id" collection="userIds" open="(" separator="," close=")">
+              #{id}
+          </foreach>
+    </select>
+
+    <delete id="deleteRoleUser">
+        UPDATE user_groups
+        SET is_active = 2,
+            modified = NOW(),
+            modified_at = NOW()
+        WHERE user_id = #{userId}
+    </delete>
+
+    <delete id="deleteUserRoleByRoleId">
+        UPDATE user_groups
+        SET is_active = 2,
+            modified = NOW(),
+            modified_at = NOW()
+        WHERE role_id = #{roleId}
+    </delete>
+
+    <update id="updateRole">
+        UPDATE roles
+        SET
+        <if test="name != null">name = #{name},</if>
+        <if test="isActive != null">is_active = #{isActive},</if>
+        modified = NOW(),
+        modified_at = NOW(),
+        modified_by = #{modifiedBy}
+        WHERE id = #{id}
+    </update>
+
+    <update id="deleteRole">
+        UPDATE roles
+        SET is_active = 2,
+            modified = NOW(),
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND is_system_role = FALSE
+    </update>
+
+    <update id="deleteRoleByIdForSuperAdmin">
+        UPDATE roles
+        SET is_active = 2,
+            modified = NOW(),
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND UPPER(COALESCE(code, '')) &lt;&gt; 'USER_HOSPITAL_SCOPE_ALL'
+    </update>
+
+    <delete id="deleteRolePermissions">
+        DELETE FROM role_module_details
+        WHERE role_id = #{id}
+    </delete>
+
+    <select id="getModule" resultMap="ModuleType">
+        SELECT DISTINCT
+            mt.id,
+            mt.public_id::text AS "publicKey",
+            mt.code,
+            mt.name,
+            mt.name_other AS "nameOther",
+            mt.menu_group_code AS "groupCode",
+            mt.menu_group_name AS "groupName",
+            mt.menu_group_order AS "groupOrderNo",
+            mt.display_order AS "displayOrder"
+        FROM user_groups ug
+        JOIN roles r ON r.id = ug.role_id
+        JOIN role_module_details rmd ON rmd.role_id = r.id
+        JOIN module_details md ON md.id = rmd.module_detail_id AND md.is_active = 1
+        JOIN modules m ON m.id = md.module_id AND m.is_active = 1
+        JOIN module_types mt ON mt.id = m.module_type_id AND mt.is_active = 1
+        WHERE ug.user_id = #{userId}
+          AND ug.is_active = 1
+          AND r.is_active = 1
+        ORDER BY mt.display_order ASC, mt.id ASC
+    </select>
+
+    <select id="getUserByGroupName" resultMap="UserList">
+        SELECT DISTINCT
+            u.id AS "userId",
+            u.username
+        FROM roles r
+        JOIN user_groups ug ON ug.role_id = r.id AND ug.is_active = 1
+        JOIN users u ON u.id = ug.user_id AND u.is_active = 1
+        WHERE LOWER(TRIM(COALESCE(r.name, ''))) = LOWER(TRIM(#{name}))
+          AND r.is_active = 1
+        ORDER BY u.id DESC
+    </select>
+
+</mapper>

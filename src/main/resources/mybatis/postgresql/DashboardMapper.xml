@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.pacs.DashboardMapper">
+
+    <sql id="Worklist_STATUS_NAME">
+        CASE UPPER(CAST(q.status AS TEXT))
+            WHEN '1' THEN 'WAITING'
+            WHEN 'WAITING' THEN 'WAITING'
+            WHEN '2' THEN 'IN_PROGRESS'
+            WHEN 'IN_PROGRESS' THEN 'IN_PROGRESS'
+            WHEN '3' THEN 'CANCELLED'
+            WHEN 'CANCELLED' THEN 'CANCELLED'
+            WHEN '4' THEN 'FAILED'
+            WHEN 'FAILED' THEN 'FAILED'
+            ELSE NULL
+        END
+    </sql>
+
+    <sql id="ACTIVE_WORKLIST_ONLY">
+          AND q.study_id IS NULL
+          AND COALESCE(q.image_received_at, q.received_at) IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM pacs_worklist_study_links active_qsl
+              WHERE active_qsl.hospital_id = q.hospital_id
+                AND active_qsl.worklist_id = q.id
+                AND active_qsl.is_primary = 1
+          )
+    </sql>
+
+    <select id="countRecentPatients" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM patients p
+        WHERE 1 = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND p.hospital_id = #{hospitalId}
+          </if>
+          AND p.is_active = 1
+          AND COALESCE(p.created, NOW()) >= (NOW() - INTERVAL '30 days')
+    </select>
+
+    <select id="countWorklistItems" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_worklists q
+        WHERE 1 = 1
+          <include refid="ACTIVE_WORKLIST_ONLY"/>
+          <if test="hospitalId != null and hospitalId > 0">
+              AND q.hospital_id = #{hospitalId}
+          </if>
+    </select>
+
+    <select id="countStudies" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_studies s
+        WHERE 1 = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND s.hospital_id = #{hospitalId}
+          </if>
+          AND s.is_active = 1
+    </select>
+
+    <select id="countTotalDicomServers" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_dicom_servers s
+        WHERE 1 = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND s.hospital_id = #{hospitalId}
+          </if>
+          AND s.is_active != 2
+    </select>
+
+    <select id="countActiveDicomServers" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_dicom_servers s
+        WHERE 1 = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND s.hospital_id = #{hospitalId}
+          </if>
+          AND s.is_active = 1
+    </select>
+
+    <select id="countInactiveDicomServers" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_dicom_servers s
+        WHERE 1 = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND s.hospital_id = #{hospitalId}
+          </if>
+          AND s.is_active != 1
+          AND s.is_active != 2
+    </select>
+
+    <select id="countMappedModalities" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT hm.modality_id)
+        FROM hospital_modalities hm
+        WHERE 1 = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND hm.hospital_id = #{hospitalId}
+          </if>
+          AND hm.is_active = 1
+          AND EXISTS (
+              SELECT 1
+              FROM hospital_modality_server_routes r
+              WHERE r.hospital_id = hm.hospital_id
+                AND r.modality_id = hm.modality_id
+                AND r.is_active = 1
+          )
+    </select>
+
+    <select id="countUnmappedModalities" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospital_modalities hm
+        WHERE 1 = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND hm.hospital_id = #{hospitalId}
+          </if>
+          AND hm.is_active = 1
+          AND NOT EXISTS (
+              SELECT 1
+              FROM hospital_modality_server_routes r
+              WHERE r.hospital_id = hm.hospital_id
+                AND r.modality_id = hm.modality_id
+                AND r.is_active = 1
+          )
+    </select>
+
+    <select id="listWorklistStatusCounts" resultType="com.ut.emrPacs.model.components.pacs.dashboard.WorklistStatusCountRow">
+        SELECT
+            CASE UPPER(CAST(q.status AS TEXT))
+                WHEN '1' THEN 1
+                WHEN 'WAITING' THEN 1
+                WHEN '2' THEN 2
+                WHEN 'IN_PROGRESS' THEN 2
+                WHEN '3' THEN 3
+                WHEN 'CANCELLED' THEN 3
+                WHEN '4' THEN 4
+                WHEN 'FAILED' THEN 4
+                ELSE NULL
+            END AS statusCode,
+            COUNT(1) AS total
+        FROM pacs_worklists q
+        WHERE 1 = 1
+          <include refid="ACTIVE_WORKLIST_ONLY"/>
+          <if test="hospitalId != null and hospitalId > 0">
+              AND q.hospital_id = #{hospitalId}
+          </if>
+        GROUP BY
+            CASE UPPER(CAST(q.status AS TEXT))
+                WHEN '1' THEN 1
+                WHEN 'WAITING' THEN 1
+                WHEN '2' THEN 2
+                WHEN 'IN_PROGRESS' THEN 2
+                WHEN '3' THEN 3
+                WHEN 'CANCELLED' THEN 3
+                WHEN '4' THEN 4
+                WHEN 'FAILED' THEN 4
+                ELSE NULL
+            END
+    </select>
+
+    <select id="countLongWaitingWorklists" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_worklists q
+        WHERE 1 = 1
+          <include refid="ACTIVE_WORKLIST_ONLY"/>
+          <if test="hospitalId != null and hospitalId > 0">
+              AND q.hospital_id = #{hospitalId}
+          </if>
+          AND UPPER(CAST(q.status AS TEXT)) IN ('1', 'WAITING')
+          AND COALESCE(q.created_at, q.created, NOW()) &lt;= (NOW() - (#{thresholdMinutes} * INTERVAL '1 minute'))
+    </select>
+
+    <select id="countTodayAssignedWorklists" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_worklists q
+        WHERE 1 = 1
+          <include refid="ACTIVE_WORKLIST_ONLY"/>
+          <if test="hospitalId != null and hospitalId > 0">
+              AND q.hospital_id = #{hospitalId}
+          </if>
+          AND DATE(COALESCE(q.created_at, q.created, NOW())) = CURRENT_DATE
+    </select>
+
+    <select id="countTodayCancelledWorklists" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_worklist_histories h
+        WHERE 1 = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND h.hospital_id = #{hospitalId}
+          </if>
+          AND UPPER(CAST(h.to_status AS TEXT)) IN ('3', 'CANCELLED')
+          AND DATE(COALESCE(h.created, NOW())) = CURRENT_DATE
+    </select>
+
+    <select id="listWorklistSnapshot" resultType="com.ut.emrPacs.model.dto.response.dashboard.DashboardWorklistSnapshotItemResponse">
+        SELECT
+            q.public_id::text AS publicKey,
+            q.visit_code AS visitCode,
+            NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '') AS patientName,
+            <include refid="Worklist_STATUS_NAME"/> AS status
+        FROM pacs_worklists q
+        INNER JOIN patients p ON p.id = q.patient_id
+        WHERE 1 = 1
+          <include refid="ACTIVE_WORKLIST_ONLY"/>
+          <if test="hospitalId != null and hospitalId > 0">
+              AND q.hospital_id = #{hospitalId}
+          </if>
+        ORDER BY COALESCE(q.modified_at, q.created_at, q.created) DESC, q.id DESC
+        LIMIT #{limit}
+    </select>
+
+</mapper>

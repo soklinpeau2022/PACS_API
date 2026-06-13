@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.auth.RevokedTokenMapper">
+
+    <select id="countByJti" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM revoked_tokens
+        WHERE jti = #{jti};
+    </select>
+
+    <insert id="revokeToken">
+        INSERT INTO revoked_tokens (
+            jti,
+            user_id,
+            hospital_id,
+            expires_at,
+            revoked_at,
+            reason
+        ) VALUES (
+            #{jti},
+            #{userId},
+            NULL,
+            #{expiresAt},
+            NOW(),
+            'LOGOUT_OR_ROTATION'
+        )
+        ON CONFLICT (jti) DO UPDATE SET
+            user_id = EXCLUDED.user_id,
+            expires_at = EXCLUDED.expires_at,
+            revoked_at = NOW();
+    </insert>
+    <delete id="deleteExpired">
+        DELETE FROM revoked_tokens
+        WHERE expires_at &lt; #{now}
+    </delete>
+
+</mapper>

@@ -1,0 +1,115 @@
+name: ${API_COMPOSE_PROJECT_NAME:-udaya_pacs_api}
+
+x-api-common: &api-common
+  image: ${APP_IMAGE:-udaya_pacs_local_api:latest}
+  restart: unless-stopped
+  init: true
+  read_only: true
+  cap_drop:
+    - ALL
+  stop_grace_period: 30s
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS http://localhost:8080/pacsApi/actuator/health || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 40s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  volumes:
+    - ${KEY_PATH:-./key}:/app/config/key:ro
+    - ${HOSPITAL_IMAGE_HOST_PATH:-./runtime-image}:/var/ut-image
+
+services:
+  udaya_pacs_local_api:
+    <<: *api-common
+    container_name: ${LOCAL_API_CONTAINER_NAME:-udaya_pacs_local_api}
+    profiles: ["local"]
+    env_file:
+      - .env.local
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY: ${LOCAL_SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY:-}
+      API_AUTH_URL: ${LOCAL_API_AUTH_URL:-http://localhost:8080/pacsApi}
+      SPRINGDOC_SERVER_URL: ${LOCAL_SPRINGDOC_SERVER_URL:-}
+      HOSPITAL_IMAGE_ROOT_PATH: ${HOSPITAL_IMAGE_ROOT_PATH:-/var/ut-image}
+      PACS_RESULT_STATIC_AUTH_ENABLED: ${PACS_RESULT_STATIC_AUTH_ENABLED:-true}
+      PACS_RESULT_API_KEY: ${PACS_RESULT_API_KEY:-}
+      PACS_RESULT_UPLOAD_ROOT: ${PACS_RESULT_UPLOAD_ROOT:-/var/ut-image/uploads/pacs-results}
+      PACS_RESULT_MAX_IMAGE_BYTES: ${PACS_RESULT_MAX_IMAGE_BYTES:-10485760}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-false}
+      TZ: ${TZ:-Asia/Phnom_Penh}
+    ports:
+      - "${LOCAL_API_PORT:-8080}:8080"
+
+  udaya_pacs_qa_api:
+    <<: *api-common
+    container_name: ${QA_API_CONTAINER_NAME:-udaya_pacs_qa_api}
+    profiles: ["qa"]
+    environment:
+      SPRING_PROFILES_ACTIVE: qa
+      SPRING_DATASOURCE_URL: ${QA_SPRING_DATASOURCE_URL:-}
+      SPRING_DATASOURCE_USERNAME: ${QA_SPRING_DATASOURCE_USERNAME:-}
+      SPRING_DATASOURCE_PASSWORD: ${QA_SPRING_DATASOURCE_PASSWORD:-}
+      SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY: ${QA_SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY:-}
+      SECURITY_JWT_PRIVATE_KEY: ${SECURITY_JWT_PRIVATE_KEY:-}
+      SECURITY_JWT_PUBLIC_KEY: ${SECURITY_JWT_PUBLIC_KEY:-}
+      SECURITY_JWT_KEY_ID: ${SECURITY_JWT_KEY_ID:-}
+      HOSPITAL_IMAGE_ROOT_PATH: ${HOSPITAL_IMAGE_ROOT_PATH:-/var/ut-image}
+      PACS_RESULT_STATIC_AUTH_ENABLED: ${PACS_RESULT_STATIC_AUTH_ENABLED:-true}
+      PACS_RESULT_API_KEY: ${PACS_RESULT_API_KEY:-}
+      PACS_RESULT_UPLOAD_ROOT: ${PACS_RESULT_UPLOAD_ROOT:-/var/ut-image/uploads/pacs-results}
+      PACS_RESULT_MAX_IMAGE_BYTES: ${PACS_RESULT_MAX_IMAGE_BYTES:-10485760}
+      SPRING_MAIL_USERNAME: ${QA_SPRING_MAIL_USERNAME:-}
+      SPRING_MAIL_PASSWORD: ${QA_SPRING_MAIL_PASSWORD:-}
+      API_AUTH_URL: ${QA_API_AUTH_URL:-}
+      SPRINGDOC_SERVER_URL: ${QA_SPRINGDOC_SERVER_URL:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-false}
+      APP_SECURITY_CLIENT_ALLOW_PATHS: ${APP_SECURITY_CLIENT_ALLOW_PATHS:-/worklist/worklist-received-study}
+      APP_SECURITY_CLIENT_ALLOW_CLIENT_IDS: ${APP_SECURITY_CLIENT_ALLOW_CLIENT_IDS:-}
+      TELEGRAM_CHAT_ID: ${QA_TELEGRAM_CHAT_ID:-}
+      TELEGRAM_API_TOKEN: ${QA_TELEGRAM_API_TOKEN:-}
+      TZ: ${TZ:-Asia/Phnom_Penh}
+    ports:
+      - "${QA_API_PORT:-8081}:8080"
+
+  udaya_pacs_prod_api:
+    <<: *api-common
+    container_name: ${PROD_API_CONTAINER_NAME:-udaya_pacs_prod_api}
+    profiles: ["prod"]
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: ${PROD_SPRING_DATASOURCE_URL:-}
+      SPRING_DATASOURCE_USERNAME: ${PROD_SPRING_DATASOURCE_USERNAME:-}
+      SPRING_DATASOURCE_PASSWORD: ${PROD_SPRING_DATASOURCE_PASSWORD:-}
+      SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY: ${PROD_SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY:-}
+      SECURITY_JWT_PRIVATE_KEY: ${SECURITY_JWT_PRIVATE_KEY:-}
+      SECURITY_JWT_PUBLIC_KEY: ${SECURITY_JWT_PUBLIC_KEY:-}
+      SECURITY_JWT_KEY_ID: ${SECURITY_JWT_KEY_ID:-}
+      HOSPITAL_IMAGE_ROOT_PATH: ${HOSPITAL_IMAGE_ROOT_PATH:-/var/ut-image}
+      PACS_RESULT_STATIC_AUTH_ENABLED: ${PACS_RESULT_STATIC_AUTH_ENABLED:-true}
+      PACS_RESULT_API_KEY: ${PACS_RESULT_API_KEY:-}
+      PACS_RESULT_UPLOAD_ROOT: ${PACS_RESULT_UPLOAD_ROOT:-/var/ut-image/uploads/pacs-results}
+      PACS_RESULT_MAX_IMAGE_BYTES: ${PACS_RESULT_MAX_IMAGE_BYTES:-10485760}
+      SPRING_MAIL_USERNAME: ${PROD_SPRING_MAIL_USERNAME:-}
+      SPRING_MAIL_PASSWORD: ${PROD_SPRING_MAIL_PASSWORD:-}
+      API_AUTH_URL: ${PROD_API_AUTH_URL:-}
+      SPRINGDOC_SERVER_URL: ${PROD_SPRINGDOC_SERVER_URL:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-false}
+      APP_SECURITY_CLIENT_ALLOW_PATHS: ${APP_SECURITY_CLIENT_ALLOW_PATHS:-/worklist/worklist-received-study}
+      APP_SECURITY_CLIENT_ALLOW_CLIENT_IDS: ${APP_SECURITY_CLIENT_ALLOW_CLIENT_IDS:-}
+      TELEGRAM_CHAT_ID: ${PROD_TELEGRAM_CHAT_ID:-}
+      TELEGRAM_API_TOKEN: ${PROD_TELEGRAM_API_TOKEN:-}
+      TZ: ${TZ:-Asia/Phnom_Penh}
+    ports:
+      - "${PROD_API_PORT:-8082}:8080"

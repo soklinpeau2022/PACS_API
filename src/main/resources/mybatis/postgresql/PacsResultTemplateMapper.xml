@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.pacs.PacsResultTemplateMapper">
+    <resultMap id="PacsResultTemplateResponse" type="com.ut.emrPacs.model.dto.response.pacs.result.PacsResultTemplateResponse" autoMapping="true"/>
+
+    <sql id="TEMPLATE_COLUMNS">
+        rt.id,
+        rt.public_id::text AS publicKey,
+        rt.public_id::text AS templateKey,
+        rt.hospital_id AS hospitalId,
+        h.public_id::text AS hospitalKey,
+        h.code AS hospitalCode,
+        h.name AS hospitalName,
+        rt.modality_id AS modalityId,
+        m.public_id::text AS modalityKey,
+        m.abbr AS modalityCode,
+        m.name AS modalityName,
+        rt.template_name AS templateName,
+        rt.template_content AS templateContent,
+        rt.is_active = 1 AS active,
+        TO_CHAR(rt.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+        TO_CHAR(rt.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS updatedAt,
+        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(uc.first_name, ''), ' ', COALESCE(uc.last_name, ''))), ''), uc.username, '') AS createdBy,
+        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(um.first_name, ''), ' ', COALESCE(um.last_name, ''))), ''), um.username, '') AS modifiedBy
+    </sql>
+
+    <sql id="TEMPLATE_JOINS">
+        INNER JOIN hospitals h ON h.id = rt.hospital_id AND h.is_active = 1
+        INNER JOIN modalities m ON m.id = rt.modality_id AND m.is_active = 1
+        LEFT JOIN users uc ON uc.id = rt.created_by
+        LEFT JOIN users um ON um.id = rt.modified_by
+    </sql>
+
+    <sql id="TEMPLATE_WHERE">
+        WHERE rt.is_active = 1
+        <if test="hospitalId != null and hospitalId > 0">
+            AND rt.hospital_id = #{hospitalId}
+        </if>
+        <if test="modalityId != null and modalityId > 0">
+            AND rt.modality_id = #{modalityId}
+        </if>
+        <if test="searchText != null and searchText != ''">
+            AND (
+                rt.template_name ILIKE '%' || #{searchText} || '%'
+                OR rt.template_content ILIKE '%' || #{searchText} || '%'
+                OR h.name ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(h.abbr, '') ILIKE '%' || #{searchText} || '%'
+                OR m.name ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(m.abbr, '') ILIKE '%' || #{searchText} || '%'
+            )
+        </if>
+    </sql>
+
+    <select id="countTemplates" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_result_templates rt
+        <include refid="TEMPLATE_JOINS"/>
+        <include refid="TEMPLATE_WHERE"/>
+    </select>
+
+    <select id="listTemplates" resultMap="PacsResultTemplateResponse">
+        SELECT
+            <include refid="TEMPLATE_COLUMNS"/>
+        FROM pacs_result_templates rt
+        <include refid="TEMPLATE_JOINS"/>
+        <include refid="TEMPLATE_WHERE"/>
+        ORDER BY rt.modified_at DESC NULLS LAST, rt.id DESC
+        <if test="page != null and rowsPerPage != null">
+            LIMIT #{rowsPerPage}
+            OFFSET #{page}
+        </if>
+    </select>
+
+    <select id="findTemplateById" resultMap="PacsResultTemplateResponse">
+        SELECT
+            <include refid="TEMPLATE_COLUMNS"/>
+        FROM pacs_result_templates rt
+        <include refid="TEMPLATE_JOINS"/>
+        WHERE rt.id = #{id}
+          AND rt.is_active = 1
+        LIMIT 1
+    </select>
+
+    <select id="countDuplicateTemplateName" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_result_templates
+        WHERE hospital_id = #{hospitalId}
+          AND modality_id = #{modalityId}
+          AND is_active = 1
+          AND LOWER(TRIM(template_name)) = LOWER(TRIM(#{templateName}))
+        <if test="excludeId != null and excludeId > 0">
+            AND id != #{excludeId}
+        </if>
+    </select>
+
+    <insert id="insertTemplate" useGeneratedKeys="true" keyProperty="request.id">
+        INSERT INTO pacs_result_templates (
+            hospital_id,
+            modality_id,
+            template_name,
+            template_content,
+            is_active,
+            created_by,
+            modified_by,
+            created_at,
+            modified_at
+        ) VALUES (
+            #{request.hospitalId},
+            #{request.modalityId},
+            #{request.templateName},
+            #{request.templateContent},
+            COALESCE(#{request.isActive}, 1),
+            #{createdBy},
+            #{createdBy},
+            NOW(),
+            NOW()
+        )
+    </insert>
+
+    <update id="updateTemplate">
+        UPDATE pacs_result_templates
+        SET
+            hospital_id = #{request.hospitalId},
+            modality_id = #{request.modalityId},
+            template_name = #{request.templateName},
+            template_content = #{request.templateContent},
+            is_active = COALESCE(#{request.isActive}, is_active),
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{request.id}
+          AND is_active = 1
+    </update>
+
+    <update id="deactivateTemplate">
+        UPDATE pacs_result_templates
+        SET
+            is_active = 2,
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND is_active = 1
+    </update>
+</mapper>

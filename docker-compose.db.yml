@@ -1,0 +1,37 @@
+name: ${PACS_DB_COMPOSE_PROJECT_NAME:-udaya_pacs_db}
+
+services:
+  udaya_pacs_db:
+    image: postgres:18
+    container_name: ${PACS_DB_CONTAINER_NAME:-udaya_pacs_db}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PACS_DB_NAME:-emr_pacs_db}
+      POSTGRES_USER: ${PACS_DB_USER:?PACS_DB_USER is required}
+      POSTGRES_PASSWORD: ${PACS_DB_PASSWORD:?PACS_DB_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: ${TZ:-Asia/Phnom_Penh}
+    ports:
+      - "${PACS_DB_BIND_ADDRESS:-127.0.0.1}:${PACS_DB_PORT:-5432}:5432"
+    volumes:
+      - pacs_db_data:/var/lib/postgresql/data
+      - ${PACS_DB_INIT_DIR:-./init}:/docker-entrypoint-initdb.d:ro
+    networks:
+      - pacs_db_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pacs_db_data:
+
+networks:
+  pacs_db_network:
+    name: ${PACS_DB_NETWORK_NAME:-udaya_pacs_db-network}
