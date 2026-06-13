@@ -128,7 +128,7 @@
             NOW(),
             NOW()
         )
-        ON CONFLICT (study_instance_uid) DO UPDATE
+        ON CONFLICT (hospital_id, study_instance_uid) DO UPDATE
         SET
             accession_number = COALESCE(EXCLUDED.accession_number, pacs_studies.accession_number),
             modality = COALESCE(EXCLUDED.modality, pacs_studies.modality),
@@ -143,6 +143,74 @@
             dicom_server_patient_id = COALESCE(EXCLUDED.dicom_server_patient_id, pacs_studies.dicom_server_patient_id),
             dicom_server_series_id = COALESCE(EXCLUDED.dicom_server_series_id, pacs_studies.dicom_server_series_id),
             received_at = COALESCE(EXCLUDED.received_at, pacs_studies.received_at),
+            modified = NOW()
+        RETURNING id
+    </select>
+
+    <select id="upsertFromDicomUpload" resultType="java.lang.Long">
+        INSERT INTO pacs_studies (
+            hospital_id,
+            patient_id,
+            study_instance_uid,
+            accession_number,
+            reference_visit_code,
+            modality,
+            study_date,
+            study_description,
+            dicom_server_id,
+            status,
+            dicom_server_study_id,
+            dicom_server_patient_id,
+            dicom_server_series_id,
+            source_type,
+            uploaded_by,
+            received_at,
+            image_received_at,
+            is_active,
+            created,
+            modified
+        ) VALUES (
+            #{hospitalId},
+            #{patientId},
+            #{studyInstanceUid},
+            #{accessionNumber},
+            #{referenceVisitCode},
+            #{modality},
+            #{studyDate},
+            #{studyDescription},
+            #{dicomServerId},
+            #{statusCode},
+            #{dicomServerStudyId},
+            #{dicomServerPatientId},
+            #{dicomServerSeriesId},
+            'UPLOAD',
+            #{uploadedBy},
+            COALESCE(CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            COALESCE(CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            1,
+            NOW(),
+            NOW()
+        )
+        ON CONFLICT (hospital_id, study_instance_uid) DO UPDATE
+        SET
+            patient_id = EXCLUDED.patient_id,
+            accession_number = COALESCE(EXCLUDED.accession_number, pacs_studies.accession_number),
+            reference_visit_code = COALESCE(EXCLUDED.reference_visit_code, pacs_studies.reference_visit_code),
+            modality = COALESCE(EXCLUDED.modality, pacs_studies.modality),
+            study_date = COALESCE(EXCLUDED.study_date, pacs_studies.study_date),
+            study_description = COALESCE(EXCLUDED.study_description, pacs_studies.study_description),
+            dicom_server_id = COALESCE(EXCLUDED.dicom_server_id, pacs_studies.dicom_server_id),
+            status = CASE
+                WHEN pacs_studies.status = 2 THEN pacs_studies.status
+                ELSE EXCLUDED.status
+            END,
+            dicom_server_study_id = COALESCE(EXCLUDED.dicom_server_study_id, pacs_studies.dicom_server_study_id),
+            dicom_server_patient_id = COALESCE(EXCLUDED.dicom_server_patient_id, pacs_studies.dicom_server_patient_id),
+            dicom_server_series_id = COALESCE(EXCLUDED.dicom_server_series_id, pacs_studies.dicom_server_series_id),
+            source_type = COALESCE(pacs_studies.source_type, EXCLUDED.source_type),
+            uploaded_by = COALESCE(pacs_studies.uploaded_by, EXCLUDED.uploaded_by),
+            received_at = COALESCE(EXCLUDED.received_at, pacs_studies.received_at),
+            image_received_at = COALESCE(EXCLUDED.image_received_at, pacs_studies.image_received_at),
             modified = NOW()
         RETURNING id
     </select>
@@ -179,6 +247,7 @@
         p.patient_uid AS mrn,
         s.study_instance_uid AS studyInstanceUid,
         s.accession_number AS accessionNumber,
+        s.reference_visit_code AS referenceVisitCode,
         s.modality,
         s.study_date AS studyDate,
         TO_CHAR(COALESCE(s.study_date::timestamp, s.received_at, s.created), 'DD-Mon-YYYY HH12:MI AM') AS studyDateTime,
@@ -195,7 +264,7 @@
         q.public_id::text AS worklistPublicKey,
         q.visit_code AS worklistVisitCode,
         <include refid="Worklist_STATUS_NAME"/> AS worklistStatus,
-        TO_CHAR(COALESCE(q.image_received_at, q.received_at), 'YYYY-MM-DD HH24:MI:SS') AS imageReceivedAt
+        TO_CHAR(COALESCE(s.image_received_at, s.received_at, q.image_received_at, q.received_at), 'YYYY-MM-DD HH24:MI:SS') AS imageReceivedAt
     </sql>
 
     <select id="list" resultType="com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse">

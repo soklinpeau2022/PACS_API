@@ -150,6 +150,7 @@ public interface DicomServerMapper {
     List<HospitalDicomServerResponse> listActiveDicomServersByHttpUsername(@Param("username") String username);
 
     List<HospitalDicomServerResponse> listActiveDicomServersByHospital(@Param("hospitalId") Long hospitalId);
+    HospitalDicomServerResponse findPrimaryActiveDicomServerByHospital(@Param("hospitalId") Long hospitalId);
 
     List<HospitalDicomServerResponse> listActiveDicomServersForHealth(@Param("hospitalId") Long hospitalId);
 }

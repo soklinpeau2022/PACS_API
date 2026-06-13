@@ -128,6 +128,32 @@
         LIMIT 1
     </select>
 
+    <select id="findByDemographics" resultType="com.ut.emrPacs.model.dto.response.pacs.patient.PatientResponse">
+        SELECT
+            p.id,
+            p.public_id::text AS publicKey,
+            p.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.code AS hospitalCode,
+            h.name AS hospitalName,
+            p.patient_uid AS patientCode,
+            p.first_name AS firstName,
+            p.last_name AS lastName,
+            p.phone_number AS phoneNumber,
+            p.gender,
+            p.date_of_birth AS dateOfBirth
+        FROM patients p
+        INNER JOIN hospitals h ON h.id = p.hospital_id
+        WHERE p.hospital_id = #{hospitalId}
+          AND p.is_active = 1
+          AND LOWER(BTRIM(COALESCE(p.first_name, ''))) = LOWER(BTRIM(COALESCE(#{firstName}, '')))
+          AND LOWER(BTRIM(COALESCE(p.last_name, ''))) = LOWER(BTRIM(COALESCE(#{lastName}, '')))
+          AND p.date_of_birth = #{dateOfBirth}
+          AND UPPER(BTRIM(COALESCE(p.gender, ''))) = UPPER(BTRIM(COALESCE(#{gender}, '')))
+        ORDER BY p.id DESC
+        LIMIT 1
+    </select>
+
     <select id="countDuplicatePatientCode" resultType="java.lang.Long">
         SELECT COUNT(1)
         FROM patients

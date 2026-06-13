@@ -197,6 +197,50 @@
         LIMIT 1
     </select>
 
+    <select id="findPrimaryActiveDicomServerByHospital" resultMap="HospitalDicomServerResponse">
+        SELECT
+            s.id AS id,
+            s.public_id::text AS publicKey,
+            s.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.name AS hospitalName,
+            s.name AS name,
+            s.ip_address AS ipAddress,
+            s.port AS port,
+            s.dicom_port AS dicomPort,
+            s.ae_title AS aeTitle,
+            <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
+            s.public_health_check_url AS publicHealthCheckUrl,
+            s.viewer_base_url AS viewerBaseUrl,
+            s.pacs_api_callback_base_url AS pacsApiCallbackBaseUrl,
+            s.username AS username,
+            (s.password IS NOT NULL AND BTRIM(s.password) != '') AS hasPassword,
+            s.password AS password,
+            <include refid="DICOM_SERVER_CONFIG_COLUMNS"/>
+            STRING_AGG(DISTINCT route_info.modality_id::text, ',' ORDER BY route_info.modality_id::text) AS modalityIdCsv,
+            STRING_AGG(DISTINCT route_modality.public_id::text, ',' ORDER BY route_modality.public_id::text) AS modalityPublicKeyCsv,
+            STRING_AGG(DISTINCT route_modality.name, ',' ORDER BY route_modality.name) AS modalityNameCsv,
+            s.is_active AS isActive,
+            TO_CHAR(s.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+            TO_CHAR(s.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+        FROM hospital_dicom_servers s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        <include refid="DICOM_SERVER_ROUTE_JOINS"/>
+        WHERE s.hospital_id = #{hospitalId}
+          AND s.is_active = 1
+        GROUP BY s.id, h.id
+        ORDER BY
+            CASE WHEN EXISTS (
+                SELECT 1
+                FROM hospital_dicom_routing_configs cfg
+                WHERE cfg.hospital_id = s.hospital_id
+                  AND cfg.dicom_server_id = s.id
+                  AND cfg.is_active = 1
+            ) THEN 0 ELSE 1 END,
+            s.id DESC
+        LIMIT 1
+    </select>
+
     <select id="countActiveDicomServerNameDuplicate" resultType="java.lang.Long">
         SELECT COUNT(1)
         FROM hospital_dicom_servers

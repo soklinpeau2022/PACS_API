@@ -19,6 +19,7 @@ public class StudyResponse {
     private String mrn;
     private String studyInstanceUid;
     private String accessionNumber;
+    private String referenceVisitCode;
     private String modality;
     private LocalDate studyDate;
     private String studyDateTime;

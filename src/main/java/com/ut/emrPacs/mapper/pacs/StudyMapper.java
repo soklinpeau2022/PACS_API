@@ -22,6 +22,21 @@ public interface StudyMapper {
                          @Param("dicomServerPatientId") String dicomServerPatientId,
                          @Param("dicomServerSeriesId") String dicomServerSeriesId,
                          @Param("receivedAtIso") String receivedAtIso);
+    Long upsertFromDicomUpload(@Param("hospitalId") Long hospitalId,
+                         @Param("patientId") Long patientId,
+                         @Param("studyInstanceUid") String studyInstanceUid,
+                         @Param("accessionNumber") String accessionNumber,
+                         @Param("referenceVisitCode") String referenceVisitCode,
+                         @Param("modality") String modality,
+                         @Param("studyDate") java.time.LocalDate studyDate,
+                         @Param("studyDescription") String studyDescription,
+                         @Param("dicomServerId") Long dicomServerId,
+                         @Param("statusCode") Integer statusCode,
+                         @Param("dicomServerStudyId") String dicomServerStudyId,
+                         @Param("dicomServerPatientId") String dicomServerPatientId,
+                         @Param("dicomServerSeriesId") String dicomServerSeriesId,
+                         @Param("uploadedBy") Long uploadedBy,
+                         @Param("receivedAtIso") String receivedAtIso);
     int updateStatusById(@Param("hospitalId") Long hospitalId,
                          @Param("studyId") Long studyId,
                          @Param("statusCode") Integer statusCode);

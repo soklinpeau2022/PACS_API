@@ -140,13 +140,23 @@ public class JwtTokenService {
             String studyInstanceUid,
             long lifetimeMs
     ) {
+        return issueViewerDicomwebToken(hospitalId, worklistId, null, studyInstanceUid, lifetimeMs);
+    }
+
+    public AccessTokenResponse issueViewerDicomwebToken(
+            Long hospitalId,
+            Long worklistId,
+            Long studyId,
+            String studyInstanceUid,
+            long lifetimeMs
+    ) {
         String scope = "pacs.viewer.dicomweb";
         String clientId = "pacs-viewer-dicomweb";
         String jti = UUID.randomUUID().toString();
         Instant now = Instant.now();
         Instant exp = now.plusMillis(lifetimeMs > 0 ? lifetimeMs : defaultAccessTokenMs);
 
-        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+        JWTClaimsSet.Builder claimsBuilder = new JWTClaimsSet.Builder()
                 .issuer(issuer)
                 .audience(audience)
                 .subject(clientId)
@@ -155,14 +165,19 @@ public class JwtTokenService {
                 .claim("tokenUse", "access")
                 .claim("scope", scope)
                 .claim("hospitalId", hospitalId)
-                .claim("worklistId", worklistId)
                 .claim("studyInstanceUid", studyInstanceUid)
                 .jwtID(jti)
                 .issueTime(Date.from(now))
-                .expirationTime(Date.from(exp))
-                .build();
+                .expirationTime(Date.from(exp));
 
-        String token = sign(claims);
+        if (worklistId != null && worklistId > 0) {
+            claimsBuilder.claim("worklistId", worklistId);
+        }
+        if (studyId != null && studyId > 0) {
+            claimsBuilder.claim("studyId", studyId);
+        }
+
+        String token = sign(claimsBuilder.build());
         long expiresInSeconds = exp.getEpochSecond() - now.getEpochSecond();
         return buildResponse(token, expiresInSeconds, scope);
     }

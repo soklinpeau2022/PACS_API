@@ -1,12 +1,14 @@
 package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.model.dto.request.pacs.dicomServer.DicomServerFindRequest;
+import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerInstanceUploadResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerSeriesResponse;
 import com.ut.emrPacs.model.dto.request.pacs.dicomServer.DicomServerWorklistCreateRequest;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerStudyResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerWorklistCreateResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerWorklistResponse;
 import com.ut.emrPacs.service.service.DicomServerClientService;
+import org.springframework.core.io.Resource;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -41,6 +43,23 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
                 worklistUrl,
                 entity,
                 DicomServerWorklistCreateResponse.class
+        );
+        return response.getBody();
+    }
+
+    @Override
+    public DicomServerInstanceUploadResponse uploadInstance(String baseUrl, String username, String password, Resource dicomResource, long contentLength) {
+        String url = normalizeDicomServerBaseUrl(baseUrl) + "/instances";
+        HttpHeaders headers = buildHeaders(username, password);
+        headers.setContentType(MediaType.parseMediaType("application/dicom"));
+        if (contentLength > 0) {
+            headers.setContentLength(contentLength);
+        }
+        ResponseEntity<DicomServerInstanceUploadResponse> response = restTemplate.exchange(
+                url,
+                HttpMethod.POST,
+                new HttpEntity<>(dicomResource, headers),
+                DicomServerInstanceUploadResponse.class
         );
         return response.getBody();
     }

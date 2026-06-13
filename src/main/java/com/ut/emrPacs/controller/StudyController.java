@@ -40,5 +40,18 @@ public class StudyController {
     public ResponseMessage<BaseResult> find(@PathVariable String id, HttpServletRequest httpServletRequest) throws UnknownHostException {
         return studyService.findById(publicEntityKeyResolver.resolveFromPath(Entity.STUDY, id, "Study"), httpServletRequest);
     }
-}
 
+    @GetMapping(ApiConstants.Study.VIEWER_INFO_PATH)
+    @Operation(summary = "Get study viewer launch info", description = "Module -> Study. Endpoint -> GET /study/{studyId}/viewer-info. Returns viewer metadata for uploaded/archive studies without storing a viewer URL in the database.")
+    public ResponseMessage<BaseResult> getViewerInfo(
+            @PathVariable String studyId,
+            @RequestParam(required = false) String hospitalKey,
+            @RequestParam(required = false, defaultValue = "basic") String mode,
+            @RequestParam(required = false, defaultValue = "READ") String viewerAccess,
+            HttpServletRequest httpServletRequest
+    ) throws UnknownHostException {
+        Long resolvedStudyId = publicEntityKeyResolver.resolveFromPath(Entity.STUDY, studyId, "Study");
+        Long resolvedHospitalId = publicEntityKeyResolver.resolve(Entity.HOSPITAL, hospitalKey, null);
+        return studyService.getViewerInfo(resolvedStudyId, resolvedHospitalId, mode, viewerAccess, httpServletRequest);
+    }
+}

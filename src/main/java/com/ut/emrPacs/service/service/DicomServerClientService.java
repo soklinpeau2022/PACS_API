@@ -1,11 +1,13 @@
 package com.ut.emrPacs.service.service;
 
 import com.ut.emrPacs.model.dto.request.pacs.dicomServer.DicomServerFindRequest;
+import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerInstanceUploadResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerSeriesResponse;
 import com.ut.emrPacs.model.dto.request.pacs.dicomServer.DicomServerWorklistCreateRequest;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerStudyResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerWorklistCreateResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerWorklistResponse;
+import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
@@ -15,6 +17,8 @@ public interface DicomServerClientService {
     DicomServerWorklistCreateResponse postToDicomServerWorklist(DicomServerWorklistCreateRequest request);
 
     DicomServerWorklistCreateResponse postToDicomServerWorklist(String worklistUrl, String username, String password, DicomServerWorklistCreateRequest request);
+
+    DicomServerInstanceUploadResponse uploadInstance(String baseUrl, String username, String password, Resource dicomResource, long contentLength);
 
     DicomServerWorklistResponse getWorklistById(String worklistId);
 

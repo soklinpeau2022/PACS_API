@@ -1410,25 +1410,30 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
     @Override
     public ResponseEntity<StreamingResponseBody> proxyViewerDicomWeb(HttpServletRequest httpServletRequest) throws UnknownHostException {
         Long worklistId = null;
+        Long studyId = null;
         try {
             String viewerToken = readViewerDicomwebTokenValue(httpServletRequest);
             ViewerDicomwebTokenClaims claims = decodeViewerDicomwebToken(viewerToken);
             worklistId = claims.worklistId();
+            studyId = claims.studyId();
             String pathAndQuery = buildViewerDicomwebProxyPathAndQuery(httpServletRequest, claims.studyInstanceUid());
-            return proxyViewerDicomWebToDicomServer(claims, claims.hospitalId(), claims.worklistId(), pathAndQuery, httpServletRequest);
+            if (claims.worklistId() != null && claims.worklistId() > 0L) {
+                return proxyViewerDicomWebToDicomServer(claims, claims.hospitalId(), claims.worklistId(), pathAndQuery, httpServletRequest);
+            }
+            return proxyViewerStudyDicomWebToDicomServer(claims, claims.hospitalId(), claims.studyId(), pathAndQuery, httpServletRequest);
         } catch (JwtException error) {
-            LOGGER.warn("Viewer DICOMweb token-routed proxy rejected for worklistId={}: {}", worklistId, error.getMessage());
+            LOGGER.warn("Viewer DICOMweb token-routed proxy rejected for worklistId={} studyId={}: {}", worklistId, studyId, error.getMessage());
             return ResponseEntity.status(401).build();
         } catch (SecurityException error) {
-            LOGGER.warn("Viewer DICOMweb token-routed request forbidden for worklistId={}: {}", worklistId, error.getMessage());
+            LOGGER.warn("Viewer DICOMweb token-routed request forbidden for worklistId={} studyId={}: {}", worklistId, studyId, error.getMessage());
             return ResponseEntity.status(403).build();
         } catch (IllegalArgumentException error) {
-            LOGGER.warn("Viewer DICOMweb token-routed request rejected for worklistId={}: {}", worklistId, error.getMessage());
+            LOGGER.warn("Viewer DICOMweb token-routed request rejected for worklistId={} studyId={}: {}", worklistId, studyId, error.getMessage());
             return ResponseEntity.badRequest().build();
         } catch (HttpClientErrorException error) {
             return ResponseEntity.status(error.getStatusCode()).build();
         } catch (Exception error) {
-            LOGGER.error("Viewer DICOMweb token-routed proxy failed for worklistId={} error={}", worklistId, error.toString(), error);
+            LOGGER.error("Viewer DICOMweb token-routed proxy failed for worklistId={} studyId={} error={}", worklistId, studyId, error.toString(), error);
             return ResponseEntity.status(502).build();
         }
     }
@@ -1501,6 +1506,60 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             return ResponseEntity.status(error.getStatusCode()).build();
         } catch (Exception error) {
             LOGGER.error("Viewer DICOMweb proxy failed for worklistId={} error={}", worklistId, error.toString(), error);
+            return ResponseEntity.status(502).build();
+        }
+    }
+
+    private ResponseEntity<StreamingResponseBody> proxyViewerStudyDicomWebToDicomServer(
+            ViewerDicomwebTokenClaims claims,
+            Long hospitalId,
+            Long studyId,
+            String pathAndQuery,
+            HttpServletRequest httpServletRequest
+    ) {
+        if (claims == null || hospitalId == null || hospitalId <= 0L || studyId == null || studyId <= 0L) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        try {
+            StudyResponse study = studyMapper.findById(hospitalId, studyId);
+            if (study == null) {
+                return ResponseEntity.notFound().build();
+            }
+            if (!claims.studyInstanceUid().equals(study.getStudyInstanceUid())) {
+                return ResponseEntity.status(403).build();
+            }
+
+            HospitalDicomServerResponse targetServer = resolveStudyDicomServer(study, hospitalId);
+            if (targetServer == null) {
+                return ResponseEntity.notFound().build();
+            }
+
+            String dicomwebBaseUrl = resolveInternalDicomwebBaseUrl(targetServer);
+            if (!hasText(dicomwebBaseUrl)) {
+                return ResponseEntity.status(502).build();
+            }
+
+            return dicomServerClientService.proxyDicomWeb(
+                    dicomwebBaseUrl,
+                    targetServer.getUsername(),
+                    targetServer.getPassword(),
+                    pathAndQuery,
+                    httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.ACCEPT)
+            );
+        } catch (JwtException error) {
+            LOGGER.warn("Viewer DICOMweb token rejected for studyId={}: {}", studyId, error.getMessage());
+            return ResponseEntity.status(401).build();
+        } catch (SecurityException error) {
+            LOGGER.warn("Viewer DICOMweb request forbidden for studyId={}: {}", studyId, error.getMessage());
+            return ResponseEntity.status(403).build();
+        } catch (IllegalArgumentException error) {
+            LOGGER.warn("Viewer DICOMweb request rejected for studyId={}: {}", studyId, error.getMessage());
+            return ResponseEntity.badRequest().build();
+        } catch (HttpClientErrorException error) {
+            return ResponseEntity.status(error.getStatusCode()).build();
+        } catch (Exception error) {
+            LOGGER.error("Viewer DICOMweb proxy failed for studyId={} error={}", studyId, error.toString(), error);
             return ResponseEntity.status(502).build();
         }
     }
@@ -1666,7 +1725,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         Map<String, Object> body = new HashMap<>();
         try {
             ViewerDicomwebTokenClaims claims = resolveViewerRenewClaims(request);
-            String nextToken = issueViewerDicomwebToken(claims.hospitalId(), claims.worklistId(), claims.studyInstanceUid());
+            String nextToken = issueViewerDicomwebToken(claims.hospitalId(), claims.worklistId(), claims.studyId(), claims.studyInstanceUid());
             if (!hasText(nextToken)) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
                         AUTH_FIELD_GRANTED, false,
@@ -1876,6 +1935,17 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         }
 
         return null;
+    }
+
+    private HospitalDicomServerResponse resolveStudyDicomServer(StudyResponse study, Long hospitalId) {
+        if (study != null && study.getDicomServerId() != null && study.getDicomServerId() > 0L) {
+            List<HospitalDicomServerResponse> servers =
+                    dicomServerMapper.getDicomServerById(study.getDicomServerId(), hospitalId);
+            if (servers != null && !servers.isEmpty()) {
+                return servers.get(0);
+            }
+        }
+        return dicomServerMapper.findPrimaryActiveDicomServerByHospital(hospitalId);
     }
 
     private void backfillWorklistDicomRouteId(WorklistDetailRow Worklist, Long dicomRouteId, Long modifiedBy) {
@@ -2221,13 +2291,19 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
     }
 
     private String issueViewerDicomwebToken(Long hospitalId, Long worklistId, String studyInstanceUid) {
+        return issueViewerDicomwebToken(hospitalId, worklistId, null, studyInstanceUid);
+    }
+
+    private String issueViewerDicomwebToken(Long hospitalId, Long worklistId, Long studyId, String studyInstanceUid) {
         if (jwtTokenService == null || hospitalId == null || hospitalId <= 0L
-                || worklistId == null || worklistId <= 0L || !hasText(studyInstanceUid)) {
+                || ((worklistId == null || worklistId <= 0L) && (studyId == null || studyId <= 0L))
+                || !hasText(studyInstanceUid)) {
             return null;
         }
         AccessTokenResponse tokenResponse = jwtTokenService.issueViewerDicomwebToken(
                 hospitalId,
                 worklistId,
+                studyId,
                 studyInstanceUid.trim(),
                 viewerDicomwebTokenMs
         );
@@ -2277,6 +2353,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         String studyInstanceUid = jwt.getClaimAsString("studyInstanceUid");
         Long tokenHospitalId = readLongClaim(jwt, "hospitalId");
         Long tokenWorklistId = readLongClaim(jwt, "worklistId");
+        Long tokenStudyId = readLongClaim(jwt, "studyId");
         String jti = jwt.getId();
         rejectRevokedViewerToken(jti);
 
@@ -2284,11 +2361,11 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             throw new JwtException("Viewer DICOMweb token scope is not valid.");
         }
         if (tokenHospitalId == null || tokenHospitalId <= 0L
-                || tokenWorklistId == null || tokenWorklistId <= 0L
+                || ((tokenWorklistId == null || tokenWorklistId <= 0L) && (tokenStudyId == null || tokenStudyId <= 0L))
                 || !hasText(studyInstanceUid)) {
             throw new JwtException("Viewer DICOMweb token binding is not valid.");
         }
-        return new ViewerDicomwebTokenClaims(tokenHospitalId, tokenWorklistId, studyInstanceUid.trim(), jti, jwt.getExpiresAt());
+        return new ViewerDicomwebTokenClaims(tokenHospitalId, tokenWorklistId, tokenStudyId, studyInstanceUid.trim(), jti, jwt.getExpiresAt());
     }
 
     private static String extractBearerTokenValue(String tokenValue) {
@@ -2347,13 +2424,15 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             ViewerAccessClaims accessClaims = viewerAccessKeyService.decode(viewerAccessToken);
             if (!ViewerAccessKeyService.canRead(accessClaims)
                     || accessClaims.hospitalId() == null || accessClaims.hospitalId() <= 0L
-                    || accessClaims.worklistId() == null || accessClaims.worklistId() <= 0L
+                    || ((accessClaims.worklistId() == null || accessClaims.worklistId() <= 0L)
+                    && (accessClaims.studyId() == null || accessClaims.studyId() <= 0L))
                     || !hasText(accessClaims.studyInstanceUid())) {
                 throw new JwtException("Viewer access token binding is not valid.");
             }
             return new ViewerDicomwebTokenClaims(
                     accessClaims.hospitalId(),
                     accessClaims.worklistId(),
+                    accessClaims.studyId(),
                     accessClaims.studyInstanceUid(),
                     null,
                     null
@@ -2374,7 +2453,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 accessClaims,
                 dicomwebClaims.hospitalId(),
                 dicomwebClaims.worklistId(),
-                null,
+                dicomwebClaims.studyId(),
                 null,
                 dicomwebClaims.studyInstanceUid()
         )) {
@@ -2397,10 +2476,9 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
 
         body.put("viewerAccessToken", nextViewerAccessToken);
         body.put("viewerAccess", accessClaims.accessMode());
-        WorklistDetailRow worklist = WorklistMapper.findWorklistById(
-                accessClaims.hospitalId(),
-                accessClaims.worklistId()
-        );
+        WorklistDetailRow worklist = accessClaims.worklistId() == null || accessClaims.worklistId() <= 0L
+                ? null
+                : WorklistMapper.findWorklistById(accessClaims.hospitalId(), accessClaims.worklistId());
         ViewerEditCapabilities editCapabilities = resolveViewerEditCapabilities(
                 worklist,
                 accessClaims.userId(),
@@ -2881,6 +2959,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
     private record ViewerDicomwebTokenClaims(
             Long hospitalId,
             Long worklistId,
+            Long studyId,
             String studyInstanceUid,
             String jti,
             Instant expiresAt
