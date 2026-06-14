@@ -15,6 +15,6 @@ public class DicomUploadRequest {
     private String hospitalKey;
 
     @JsonAlias({"dicomServerPublicKey", "dicomServerUuid", "dicomServerUUID"})
-    @Schema(description = "Optional DICOM server public key. If omitted, the active hospital DICOM server is used.")
+    @Schema(description = "DICOM server public key. Required when the selected hospital has multiple active DICOM servers.")
     private String dicomServerKey;
 }

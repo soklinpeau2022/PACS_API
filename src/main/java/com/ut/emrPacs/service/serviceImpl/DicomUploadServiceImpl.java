@@ -101,7 +101,11 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             }
 
             Long hospitalId = resolveHospitalId(publicEntityKeyResolver.resolve(Entity.HOSPITAL, request.getHospitalKey(), request.getHospitalId()));
-            HospitalDicomServerResponse dicomServer = resolveDicomServer(hospitalId, request.getDicomServerKey());
+            DicomServerResolution dicomServerResolution = resolveDicomServer(hospitalId, request.getDicomServerKey());
+            if (dicomServerResolution.errorMessage() != null) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message(dicomServerResolution.errorMessage(), false));
+            }
+            HospitalDicomServerResponse dicomServer = dicomServerResolution.server();
             if (dicomServer == null) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("No active DICOM server found for the selected hospital.", false));
             }
@@ -435,13 +439,20 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         return "H" + hospitalId;
     }
 
-    private HospitalDicomServerResponse resolveDicomServer(Long hospitalId, String dicomServerKey) {
+    private DicomServerResolution resolveDicomServer(Long hospitalId, String dicomServerKey) {
         Long dicomServerId = publicEntityKeyResolver.resolve(Entity.DICOM_SERVER, dicomServerKey, null);
         if (dicomServerId != null && dicomServerId > 0) {
             List<HospitalDicomServerResponse> rows = dicomServerMapper.getDicomServerById(dicomServerId, hospitalId);
-            return rows == null || rows.isEmpty() ? null : rows.get(0);
+            return new DicomServerResolution(rows == null || rows.isEmpty() ? null : rows.get(0), null);
         }
-        return dicomServerMapper.findPrimaryActiveDicomServerByHospital(hospitalId);
+        List<HospitalDicomServerResponse> rows = dicomServerMapper.listActiveDicomServersByHospital(hospitalId);
+        if (rows == null || rows.isEmpty()) {
+            return new DicomServerResolution(null, null);
+        }
+        if (rows.size() > 1) {
+            return new DicomServerResolution(null, "Select a DICOM server before uploading because this hospital has multiple active DICOM servers.");
+        }
+        return new DicomServerResolution(rows.get(0), null);
     }
 
     private DicomUploadResponse createBaseResponse(HospitalDicomServerResponse dicomServer) {
@@ -610,6 +621,9 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             DicomUploadResponse response,
             Map<String, DicomUploadStudySummary> summariesByStudyUid
     ) {
+    }
+
+    private record DicomServerResolution(HospitalDicomServerResponse server, String errorMessage) {
     }
 
     private record PatientMatch(PatientResponse patient, Boolean created) {

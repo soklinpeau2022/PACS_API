@@ -33,7 +33,7 @@ public class DicomUploadController {
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(
             summary = "Upload DICOM files",
-            description = "Endpoint -> POST /dicom-uploads. Multipart parts: hospitalKey, repeated files, or one zipFile. DICOM binary is streamed to the DICOM server and not stored in the API database. referenceVisitCode is derived from the DICOM AccessionNumber tag."
+            description = "Endpoint -> POST /dicom-uploads. Multipart parts: hospitalKey, optional dicomServerKey when the hospital has one active server, required dicomServerKey when it has multiple active servers, repeated files, or one zipFile. DICOM binary is streamed to the selected DICOM server and not stored in the API database. referenceVisitCode is derived from the DICOM AccessionNumber tag."
     )
     public ResponseMessage<BaseResult> uploadDicom(
             @ModelAttribute DicomUploadRequest request,
