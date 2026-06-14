@@ -9,6 +9,7 @@ import com.ut.emrPacs.helper.FunctionHelper;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver.Entity;
 import com.ut.emrPacs.mapper.hospital.HospitalMapper;
+import com.ut.emrPacs.mapper.modality.ModalityMapper;
 import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
 import com.ut.emrPacs.mapper.pacs.PatientMapper;
 import com.ut.emrPacs.mapper.pacs.StudyMapper;
@@ -28,6 +29,7 @@ import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomUploadStudySummar
 import com.ut.emrPacs.model.dto.response.pacs.patient.PatientResponse;
 import com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse;
 import com.ut.emrPacs.model.dto.response.systemSettings.hospital.HospitalResponseDetail;
+import com.ut.emrPacs.model.dto.response.systemSettings.modality.ModalityResponse;
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.DicomServerClientService;
 import com.ut.emrPacs.service.service.DicomUploadService;
@@ -78,6 +80,8 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private StudyMapper studyMapper;
     @Autowired
     private WorklistMapper worklistMapper;
+    @Autowired
+    private ModalityMapper modalityMapper;
     @Autowired
     private HospitalMapper hospitalMapper;
     @Autowired
@@ -298,11 +302,19 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                 studyId
         );
         String firstSeriesId = firstSeriesId(study, series, upload);
-        String modality = firstNonBlank(readDicomTag(studyTags, "Modality"), firstSeriesModality(series), "OT");
+        String dicomModality = normalizeDicomModality(firstNonBlank(readDicomTag(studyTags, "Modality"), firstSeriesModality(series)));
+        if (dicomModality == null) {
+            throw new IllegalArgumentException("Uploaded DICOM has no Modality tag.");
+        }
+        ModalityResponse modality = resolveUploadModality(context.hospitalId, dicomModality);
+        String modalityCode = firstNonBlank(modality.getAbbr(), modality.getName());
+        if (modalityCode == null) {
+            throw new IllegalArgumentException("Matched hospital modality has no configured code.");
+        }
         String dicomAccessionNumber = firstNonBlank(readDicomTag(studyTags, "AccessionNumber"));
         String accessionNumber = dicomAccessionNumber;
         if (accessionNumber == null) {
-            accessionNumber = generateUploadAccessionNumber(context.hospitalId, modality);
+            accessionNumber = generateUploadAccessionNumber(context.hospitalId, modalityCode);
         }
         String referenceVisitCode = dicomAccessionNumber;
 
@@ -312,7 +324,8 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                 studyInstanceUid,
                 accessionNumber,
                 referenceVisitCode,
-                modality,
+                modality.getId(),
+                modalityCode,
                 parseDicomDate(readDicomTag(studyTags, "StudyDate")),
                 firstNonBlank(readDicomTag(studyTags, "StudyDescription"), "Uploaded DICOM"),
                 context.dicomServer.getId(),
@@ -338,7 +351,9 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         summary.setReferenceVisitCode(referenceVisitCode);
         summary.setStudyInstanceUid(studyInstanceUid);
         summary.setStudyDescription(savedStudy == null ? firstNonBlank(readDicomTag(studyTags, "StudyDescription"), "Uploaded DICOM") : savedStudy.getStudyDescription());
-        summary.setModality(modality);
+        summary.setModality(modalityCode);
+        summary.setModalityPublicKey(modality.getPublicKey());
+        summary.setModalityName(modality.getName());
         summary.setDicomServerStudyId(study.getId());
         summary.setDicomServerPatientId(study.getParentPatient());
         summary.setDicomServerSeriesId(firstSeriesId);
@@ -555,6 +570,18 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         return null;
     }
 
+    private ModalityResponse resolveUploadModality(Long hospitalId, String dicomModality) {
+        String normalized = normalizeDicomModality(dicomModality);
+        if (normalized == null) {
+            throw new IllegalArgumentException("Uploaded DICOM has no Modality tag.");
+        }
+        ModalityResponse modality = modalityMapper.findActiveHospitalModalityByDicomCode(hospitalId, normalized);
+        if (modality == null || modality.getId() == null) {
+            throw new IllegalArgumentException("DICOM Modality '" + normalized + "' is not active for the selected hospital.");
+        }
+        return modality;
+    }
+
     private static String firstSeriesModality(List<DicomServerSeriesResponse> series) {
         if (series == null) {
             return null;
@@ -569,6 +596,14 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             }
         }
         return null;
+    }
+
+    private static String normalizeDicomModality(String value) {
+        String normalized = trimToNull(value);
+        if (normalized == null) {
+            return null;
+        }
+        return normalized.toUpperCase(Locale.ROOT);
     }
 
     private static int countInstances(DicomServerStudyResponse study, List<DicomServerSeriesResponse> series) {

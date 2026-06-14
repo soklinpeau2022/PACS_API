@@ -224,6 +224,28 @@
           AND hm.is_active = 1
           AND m.is_active = 1
     </select>
+
+    <select id="findActiveHospitalModalityByDicomCode" resultMap="ModalityResponse">
+        SELECT
+            m.id AS id,
+            m.public_id::text AS publicKey,
+            m.abbr AS abbr,
+            m.name AS name,
+            m.is_active AS isActive
+        FROM hospital_modalities hm
+        INNER JOIN modalities m ON m.id = hm.modality_id
+        WHERE hm.hospital_id = #{hospitalId}
+          AND hm.is_active = 1
+          AND m.is_active = 1
+          AND (
+              UPPER(BTRIM(COALESCE(m.abbr, ''))) = UPPER(BTRIM(#{dicomModality}))
+              OR UPPER(BTRIM(COALESCE(m.name, ''))) = UPPER(BTRIM(#{dicomModality}))
+          )
+        ORDER BY
+            CASE WHEN UPPER(BTRIM(COALESCE(m.abbr, ''))) = UPPER(BTRIM(#{dicomModality})) THEN 0 ELSE 1 END,
+            m.id ASC
+        LIMIT 1
+    </select>
     <update id="deactivateHospitalModalityByHospitalId">
         UPDATE hospital_modalities
         SET

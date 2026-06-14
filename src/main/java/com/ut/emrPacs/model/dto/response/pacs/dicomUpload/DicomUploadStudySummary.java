@@ -17,6 +17,8 @@ public class DicomUploadStudySummary {
     private String studyInstanceUid;
     private String studyDescription;
     private String modality;
+    private String modalityPublicKey;
+    private String modalityName;
     private String dicomServerStudyId;
     private String dicomServerPatientId;
     private String dicomServerSeriesId;

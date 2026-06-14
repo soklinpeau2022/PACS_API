@@ -20,7 +20,11 @@ public class StudyResponse {
     private String studyInstanceUid;
     private String accessionNumber;
     private String referenceVisitCode;
+    @JsonIgnore
+    private Long modalityId;
+    private String modalityPublicKey;
     private String modality;
+    private String modalityName;
     private LocalDate studyDate;
     private String studyDateTime;
     private String studyDescription;

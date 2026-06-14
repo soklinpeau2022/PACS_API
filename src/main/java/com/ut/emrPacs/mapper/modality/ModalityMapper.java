@@ -38,6 +38,8 @@ public interface ModalityMapper {
 
     Long countActiveHospitalModality(@Param("hospitalId") Long hospitalId, @Param("modalityId") Long modalityId);
 
+    ModalityResponse findActiveHospitalModalityByDicomCode(@Param("hospitalId") Long hospitalId, @Param("dicomModality") String dicomModality);
+
     Boolean deactivateHospitalModalityByHospitalId(@Param("hospitalId") Long hospitalId, @Param("modifiedBy") Long modifiedBy);
 
     Boolean insertHospitalModalitiesBatch(@Param("relations") List<HospitalModalityRelation> relations);

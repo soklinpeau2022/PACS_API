@@ -121,6 +121,7 @@ class WorklistServiceImplReceivedStudyTest {
         Worklist.setPatientId(100L);
         Worklist.setAccessionNumber("VIEW-SM-0005");
         Worklist.setStatus(WorklistStatus.IN_PROGRESS.name());
+        Worklist.setModalityId(9L);
         Worklist.setModalityCode("SM");
         Worklist.setDicomServerId(4L);
         Worklist.setStudyDescription("Viewer Microscopy");
@@ -139,6 +140,7 @@ class WorklistServiceImplReceivedStudyTest {
                 eq(100L),
                 eq("1.2.826.0.1.3680043.8.498.1"),
                 eq("VIEW-SM-0005"),
+                eq(9L),
                 eq("SM"),
                 any(),
                 eq("Viewer Microscopy"),
@@ -226,7 +228,7 @@ class WorklistServiceImplReceivedStudyTest {
 
         assertFalse(response.isSuccess());
         verify(WorklistMapper, never()).updateWorklistReceivedFromCallbackById(any(), any(), any(), any(), any(), any());
-        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(dicomServerCallbackLogMapper).insertCallbackLog(anyString(), eq("DX-KSFH-0001"), eq("dicom_server_empty-study"), anyString(), anyString(), anyString(), eq(false), eq("DicomServer study has no image instances yet."), any(), anyString());
     }
 
@@ -264,6 +266,7 @@ class WorklistServiceImplReceivedStudyTest {
                 eq(34L),
                 eq("1.2.826.0.1.3680043.8.498.empty2"),
                 eq("DX-KSFH-0002"),
+                eq(4L),
                 eq("DX"),
                 any(),
                 eq("Portable X-Ray"),
@@ -344,7 +347,7 @@ class WorklistServiceImplReceivedStudyTest {
         assertFalse(response.isSuccess());
         assertEquals(403, response.getHeader().getStatusCode());
         verify(WorklistMapper, never()).updateWorklistReceivedFromCallbackById(any(), any(), any(), any(), any(), any());
-        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(dicomServerCallbackLogMapper).insertCallbackLog(anyString(), eq("DX-KSFH-0001"), anyString(), anyString(), anyString(), anyString(), eq(false), anyString(), any(), anyString());
     }
 

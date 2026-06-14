@@ -31,6 +31,8 @@
                 OR COALESCE(s.study_description, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(s.accession_number, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(s.modality, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(study_modality.abbr, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(study_modality.name, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR EXISTS (
                     SELECT 1
                     FROM pacs_worklist_study_links search_qsl
@@ -52,6 +54,8 @@
         </if>
         <if test="filter != null and filter.modalityId != null and filter.modalityId > 0">
             AND (
+                s.modality_id = #{filter.modalityId}
+                OR
                 EXISTS (
                     SELECT 1
                     FROM pacs_worklist_study_links modality_qsl
@@ -98,6 +102,7 @@
             patient_id,
             study_instance_uid,
             accession_number,
+            modality_id,
             modality,
             study_date,
             study_description,
@@ -115,6 +120,7 @@
             #{patientId},
             #{studyInstanceUid},
             #{accessionNumber},
+            #{modalityId},
             #{modality},
             #{studyDate},
             #{studyDescription},
@@ -131,6 +137,7 @@
         ON CONFLICT (hospital_id, study_instance_uid) DO UPDATE
         SET
             accession_number = COALESCE(EXCLUDED.accession_number, pacs_studies.accession_number),
+            modality_id = COALESCE(EXCLUDED.modality_id, pacs_studies.modality_id),
             modality = COALESCE(EXCLUDED.modality, pacs_studies.modality),
             study_date = COALESCE(EXCLUDED.study_date, pacs_studies.study_date),
             study_description = COALESCE(EXCLUDED.study_description, pacs_studies.study_description),
@@ -154,6 +161,7 @@
             study_instance_uid,
             accession_number,
             reference_visit_code,
+            modality_id,
             modality,
             study_date,
             study_description,
@@ -175,6 +183,7 @@
             #{studyInstanceUid},
             #{accessionNumber},
             #{referenceVisitCode},
+            #{modalityId},
             #{modality},
             #{studyDate},
             #{studyDescription},
@@ -196,6 +205,7 @@
             patient_id = EXCLUDED.patient_id,
             accession_number = COALESCE(EXCLUDED.accession_number, pacs_studies.accession_number),
             reference_visit_code = COALESCE(EXCLUDED.reference_visit_code, pacs_studies.reference_visit_code),
+            modality_id = COALESCE(EXCLUDED.modality_id, pacs_studies.modality_id),
             modality = COALESCE(EXCLUDED.modality, pacs_studies.modality),
             study_date = COALESCE(EXCLUDED.study_date, pacs_studies.study_date),
             study_description = COALESCE(EXCLUDED.study_description, pacs_studies.study_description),
@@ -248,7 +258,10 @@
         s.study_instance_uid AS studyInstanceUid,
         s.accession_number AS accessionNumber,
         s.reference_visit_code AS referenceVisitCode,
-        s.modality,
+        s.modality_id AS modalityId,
+        study_modality.public_id::text AS modalityPublicKey,
+        COALESCE(NULLIF(study_modality.abbr, ''), s.modality) AS modality,
+        study_modality.name AS modalityName,
         s.study_date AS studyDate,
         TO_CHAR(COALESCE(s.study_date::timestamp, s.received_at, s.created), 'DD-Mon-YYYY HH12:MI AM') AS studyDateTime,
         s.study_description AS studyDescription,
@@ -273,6 +286,7 @@
         FROM pacs_studies s
         INNER JOIN hospitals h ON h.id = s.hospital_id
         INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+        LEFT JOIN modalities study_modality ON study_modality.id = s.modality_id AND study_modality.is_active = 1
         LEFT JOIN LATERAL (
             SELECT linked_q.*
             FROM pacs_worklist_study_links linked_qsl
@@ -301,6 +315,7 @@
         SELECT COUNT(1)
         FROM pacs_studies s
         INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+        LEFT JOIN modalities study_modality ON study_modality.id = s.modality_id AND study_modality.is_active = 1
         <include refid="STUDY_FILTER_WHERE"/>
     </select>
 
@@ -310,6 +325,7 @@
         FROM pacs_studies s
         INNER JOIN hospitals h ON h.id = s.hospital_id
         INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+        LEFT JOIN modalities study_modality ON study_modality.id = s.modality_id AND study_modality.is_active = 1
         LEFT JOIN LATERAL (
             SELECT linked_q.*
             FROM pacs_worklist_study_links linked_qsl
