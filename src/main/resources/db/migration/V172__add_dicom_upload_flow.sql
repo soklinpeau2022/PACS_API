@@ -48,8 +48,8 @@ SET module_id = EXCLUDED.module_id,
 
 INSERT INTO endpoint_permissions (http_method, endpoint_pattern, permission_code, required_scope, is_active)
 VALUES
-    ('POST', '/dicom-uploads', 'pacs.study.upload', 'pacs.study.read'),
-    ('GET', '/study/*/viewer-info', 'pacs.study.view', 'pacs.study.read')
+    ('POST', '/dicom-uploads', 'pacs.study.upload', 'pacs.study.read', 1),
+    ('GET', '/study/*/viewer-info', 'pacs.study.view', 'pacs.study.read', 1)
 ON CONFLICT (http_method, endpoint_pattern, permission_code)
 DO UPDATE SET
     required_scope = EXCLUDED.required_scope,
