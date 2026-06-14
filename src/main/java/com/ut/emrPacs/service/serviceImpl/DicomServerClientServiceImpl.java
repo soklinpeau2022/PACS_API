@@ -209,6 +209,26 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     }
 
     @Override
+    public void deleteStudyById(String studyId) {
+        deleteStudyById(resolveDefaultDicomServerBaseUrl(), null, null, studyId);
+    }
+
+    @Override
+    public void deleteStudyById(String baseUrl, String username, String password, String studyId) {
+        String normalizedStudyId = studyId == null ? "" : studyId.trim();
+        if (normalizedStudyId.isEmpty()) {
+            throw new IllegalArgumentException("DICOM server study ID is required.");
+        }
+        String url = normalizeDicomServerBaseUrl(baseUrl) + "/studies/" + normalizedStudyId;
+        restTemplate.exchange(
+                url,
+                HttpMethod.DELETE,
+                new HttpEntity<>(buildHeaders(username, password)),
+                Void.class
+        );
+    }
+
+    @Override
     public List<DicomServerSeriesResponse> getSeriesByStudyId(String studyId) {
         return getSeriesByStudyId(resolveDefaultDicomServerBaseUrl(), null, null, studyId);
     }

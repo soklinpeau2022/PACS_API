@@ -31,6 +31,11 @@ public class DashboardOverviewResponse {
     private Long todayAssignedWorklists;
     private Long todayCancelledWorklists;
 
+    private Long retentionNearExpiry;
+    private Long retentionExpiredWaitingApproval;
+    private Long retentionPendingApproval;
+    private Long retentionDeleteFailed;
+
     private List<DashboardWorklistSnapshotItemResponse> WorklistSnapshot;
     private List<DashboardActionAlertResponse> actionAlerts;
 }

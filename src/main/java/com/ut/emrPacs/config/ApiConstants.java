@@ -167,6 +167,20 @@ public final class ApiConstants {
         }
     }
 
+    public static final class StudyRetention {
+        public static final String BASE_PATH = "/study-retention";
+        public static final String POLICY_LIST_PATH = "/policy-list";
+        public static final String POLICY_SAVE_PATH = "/policy-save";
+        public static final String POLICY_DELETE_PATH = "/policy-delete/{id}";
+        public static final String REVIEW_LIST_PATH = "/review-list";
+        public static final String SUMMARY_PATH = "/summary";
+        public static final String APPROVE_DELETE_PATH = "/approve-delete/{studyId}";
+        public static final String REJECT_DELETE_PATH = "/reject-delete/{studyId}";
+
+        private StudyRetention() {
+        }
+    }
+
     public static final class DicomUpload {
         public static final String BASE_PATH = "/dicom-uploads";
 

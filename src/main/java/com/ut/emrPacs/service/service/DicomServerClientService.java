@@ -40,6 +40,10 @@ public interface DicomServerClientService {
 
     DicomServerStudyResponse getStudyById(String baseUrl, String username, String password, String studyId);
 
+    void deleteStudyById(String studyId);
+
+    void deleteStudyById(String baseUrl, String username, String password, String studyId);
+
     List<DicomServerSeriesResponse> getSeriesByStudyId(String studyId);
 
     List<DicomServerSeriesResponse> getSeriesByStudyId(String baseUrl, String username, String password, String studyId);

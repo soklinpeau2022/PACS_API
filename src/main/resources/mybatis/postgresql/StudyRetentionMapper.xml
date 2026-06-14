@@ -1,0 +1,538 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.pacs.StudyRetentionMapper">
+
+    <sql id="POLICY_COLUMNS">
+        p.id,
+        p.public_id::text AS publicKey,
+        p.hospital_id AS hospitalId,
+        h.public_id::text AS hospitalPublicKey,
+        h.name AS hospitalName,
+        p.dicom_server_id AS dicomServerId,
+        ds.public_id::text AS dicomServerPublicKey,
+        ds.name AS dicomServerName,
+        p.modality_id AS modalityId,
+        m.public_id::text AS modalityPublicKey,
+        m.abbr AS modalityCode,
+        m.name AS modalityName,
+        p.retention_days AS retentionDays,
+        p.notify_before_days AS notifyBeforeDays,
+        p.require_approval AS requireApproval,
+        p.enabled AS enabled,
+        CASE
+            WHEN p.hospital_id IS NULL AND p.dicom_server_id IS NULL AND p.modality_id IS NULL
+                THEN 'Global default'
+            ELSE CONCAT_WS(' / ', h.name, ds.name, COALESCE(NULLIF(m.abbr, ''), m.name))
+        END AS scopeLabel,
+        p.notes,
+        TO_CHAR(p.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+        TO_CHAR(p.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modifiedAt
+    </sql>
+
+    <sql id="POLICY_FROM">
+        FROM study_retention_policies p
+        LEFT JOIN hospitals h ON h.id = p.hospital_id
+        LEFT JOIN hospital_dicom_servers ds ON ds.id = p.dicom_server_id
+        LEFT JOIN modalities m ON m.id = p.modality_id
+    </sql>
+
+    <sql id="POLICY_LIST_WHERE">
+        WHERE p.is_active = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND (p.hospital_id = #{hospitalId} OR p.hospital_id IS NULL)
+          </if>
+          <if test="filter != null and filter.enabled != null">
+              AND p.enabled = #{filter.enabled}
+          </if>
+          <if test="filter != null and filter.dicomServerId != null and filter.dicomServerId > 0">
+              AND p.dicom_server_id = #{filter.dicomServerId}
+          </if>
+          <if test="filter != null and filter.modalityId != null and filter.modalityId > 0">
+              AND p.modality_id = #{filter.modalityId}
+          </if>
+          <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+              AND (
+                  COALESCE(h.name, '') ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(ds.name, '') ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(m.abbr, '') ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(m.name, '') ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(p.notes, '') ILIKE '%' || #{filter.searchText} || '%'
+              )
+          </if>
+    </sql>
+
+    <select id="countPolicies" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        <include refid="POLICY_FROM"/>
+        <include refid="POLICY_LIST_WHERE"/>
+    </select>
+
+    <select id="listPolicies" resultType="com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionPolicyResponse">
+        SELECT
+            <include refid="POLICY_COLUMNS"/>
+        <include refid="POLICY_FROM"/>
+        <include refid="POLICY_LIST_WHERE"/>
+        ORDER BY
+            CASE WHEN p.hospital_id IS NULL THEN 1 ELSE 0 END,
+            COALESCE(h.name, ''),
+            COALESCE(ds.name, ''),
+            COALESCE(m.abbr, m.name, ''),
+            p.modified_at DESC,
+            p.id DESC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="findPolicyById" resultType="com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionPolicyResponse">
+        SELECT
+            <include refid="POLICY_COLUMNS"/>
+        <include refid="POLICY_FROM"/>
+        WHERE p.id = #{id}
+          AND p.is_active = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND p.hospital_id = #{hospitalId}
+          </if>
+        LIMIT 1
+    </select>
+
+    <select id="countDuplicatePolicyScope" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM study_retention_policies
+        WHERE is_active = 1
+          AND COALESCE(hospital_id, 0) = COALESCE(#{hospitalId}, 0)
+          AND COALESCE(dicom_server_id, 0) = COALESCE(#{dicomServerId}, 0)
+          AND COALESCE(modality_id, 0) = COALESCE(#{modalityId}, 0)
+          <if test="excludeId != null and excludeId > 0">
+              AND id != #{excludeId}
+          </if>
+    </select>
+
+    <select id="countDicomServerInHospital" resultType="java.lang.Integer">
+        SELECT COUNT(1)
+        FROM hospital_dicom_servers
+        WHERE id = #{dicomServerId}
+          AND hospital_id = #{hospitalId}
+          AND is_active != 2
+    </select>
+
+    <insert id="insertPolicy" useGeneratedKeys="true" keyProperty="request.id">
+        INSERT INTO study_retention_policies (
+            hospital_id,
+            dicom_server_id,
+            modality_id,
+            retention_days,
+            notify_before_days,
+            require_approval,
+            enabled,
+            notes,
+            is_active,
+            created_by,
+            modified_by,
+            created_at,
+            modified_at
+        ) VALUES (
+            #{request.hospitalId},
+            #{request.dicomServerId},
+            #{request.modalityId},
+            #{request.retentionDays},
+            #{request.notifyBeforeDays},
+            COALESCE(#{request.requireApproval}, TRUE),
+            COALESCE(#{request.enabled}, TRUE),
+            #{request.notes},
+            1,
+            #{userId},
+            #{userId},
+            NOW(),
+            NOW()
+        )
+    </insert>
+
+    <update id="updatePolicy">
+        UPDATE study_retention_policies
+        SET
+            hospital_id = #{request.hospitalId},
+            dicom_server_id = #{request.dicomServerId},
+            modality_id = #{request.modalityId},
+            retention_days = #{request.retentionDays},
+            notify_before_days = #{request.notifyBeforeDays},
+            require_approval = COALESCE(#{request.requireApproval}, TRUE),
+            enabled = COALESCE(#{request.enabled}, TRUE),
+            notes = #{request.notes},
+            modified_by = #{userId},
+            modified_at = NOW()
+        WHERE id = #{request.id}
+          AND is_active = 1
+    </update>
+
+    <update id="deletePolicy">
+        UPDATE study_retention_policies
+        SET is_active = 2,
+            enabled = FALSE,
+            modified_by = #{userId},
+            modified_at = NOW()
+        WHERE id = #{id}
+          AND is_active = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND hospital_id = #{hospitalId}
+          </if>
+    </update>
+
+    <sql id="RETENTION_CANDIDATE_ROWS">
+        SELECT
+            candidate.*,
+            CASE
+                WHEN candidate.latestDecisionStatus = 'DELETE_FAILED' THEN 'DELETE_FAILED'
+                WHEN candidate.latestDecisionStatus = 'KEEP_PERMANENT' THEN 'KEEP_PERMANENT'
+                WHEN candidate.latestDecisionStatus = 'REJECTED' THEN 'REJECTED'
+                WHEN candidate.latestDecisionStatus IN ('PENDING_APPROVAL', 'APPROVED') THEN 'PENDING_APPROVAL'
+                WHEN candidate.latestDecisionStatus = 'DELETED' THEN 'DELETED'
+                WHEN candidate.expires_at_value &lt;= NOW() THEN 'EXPIRED_WAITING_APPROVAL'
+                WHEN candidate.near_expiry_at_value &lt;= NOW() THEN 'NEAR_EXPIRY'
+                ELSE 'ACTIVE'
+            END AS status,
+            CEIL(EXTRACT(EPOCH FROM (candidate.expires_at_value - NOW())) / 86400.0)::BIGINT AS daysUntilExpiry
+        FROM (
+            SELECT
+                s.id AS studyId,
+                s.public_id::text AS studyPublicKey,
+                s.hospital_id AS hospitalId,
+                h.public_id::text AS hospitalPublicKey,
+                h.name AS hospitalName,
+                policy.id AS policyId,
+                policy.public_id::text AS policyPublicKey,
+                s.dicom_server_id AS dicomServerId,
+                ds.public_id::text AS dicomServerPublicKey,
+                ds.name AS dicomServerName,
+                study_modality.id AS modalityId,
+                study_modality.public_id::text AS modalityPublicKey,
+                COALESCE(NULLIF(study_modality.abbr, ''), s.modality) AS modalityCode,
+                study_modality.name AS modalityName,
+                NULLIF(TRIM(CONCAT(COALESCE(patient.first_name, ''), ' ', COALESCE(patient.last_name, ''))), '') AS patientName,
+                patient.patient_uid AS patientMrn,
+                s.accession_number AS accessionNumber,
+                s.reference_visit_code AS referenceVisitCode,
+                s.study_instance_uid AS studyInstanceUid,
+                s.dicom_server_study_id AS dicomServerStudyId,
+                TO_CHAR(s.study_date, 'YYYY-MM-DD') AS studyDate,
+                TO_CHAR(COALESCE(s.image_received_at, s.received_at), 'YYYY-MM-DD HH24:MI:SS') AS imageReceivedAt,
+                policy.retention_days AS retentionDays,
+                policy.notify_before_days AS notifyBeforeDays,
+                TO_CHAR(base_dates.retention_base_at, 'YYYY-MM-DD HH24:MI:SS') AS retentionBaseAt,
+                TO_CHAR(base_dates.retention_base_at + (policy.retention_days * INTERVAL '1 day') - (policy.notify_before_days * INTERVAL '1 day'), 'YYYY-MM-DD HH24:MI:SS') AS nearExpiryAt,
+                TO_CHAR(base_dates.retention_base_at + (policy.retention_days * INTERVAL '1 day'), 'YYYY-MM-DD HH24:MI:SS') AS expiresAt,
+                base_dates.retention_base_at + (policy.notify_before_days * INTERVAL '0 day') AS retention_base_value,
+                base_dates.retention_base_at + (policy.retention_days * INTERVAL '1 day') - (policy.notify_before_days * INTERVAL '1 day') AS near_expiry_at_value,
+                base_dates.retention_base_at + (policy.retention_days * INTERVAL '1 day') AS expires_at_value,
+                latest.status AS latestDecisionStatus,
+                latest.decision_note AS decisionNote,
+                latest.error_message AS errorMessage,
+                TO_CHAR(latest.requested_at, 'YYYY-MM-DD HH24:MI:SS') AS requestedAt,
+                TO_CHAR(latest.approved_at, 'YYYY-MM-DD HH24:MI:SS') AS approvedAt,
+                TO_CHAR(latest.rejected_at, 'YYYY-MM-DD HH24:MI:SS') AS rejectedAt,
+                TO_CHAR(latest.deleted_at, 'YYYY-MM-DD HH24:MI:SS') AS deletedAt
+            FROM pacs_studies s
+            INNER JOIN hospitals h ON h.id = s.hospital_id
+            INNER JOIN patients patient ON patient.id = s.patient_id AND patient.hospital_id = s.hospital_id
+            LEFT JOIN hospital_dicom_servers ds ON ds.id = s.dicom_server_id
+            LEFT JOIN LATERAL (
+                SELECT m.*
+                FROM modalities m
+                WHERE m.is_active = 1
+                  AND (
+                      m.id = s.modality_id
+                      OR (
+                          s.modality_id IS NULL
+                          AND (
+                              UPPER(COALESCE(m.abbr, '')) = UPPER(COALESCE(s.modality, ''))
+                              OR UPPER(COALESCE(m.name, '')) = UPPER(COALESCE(s.modality, ''))
+                          )
+                      )
+                  )
+                ORDER BY CASE WHEN m.id = s.modality_id THEN 0 ELSE 1 END, m.id ASC
+                LIMIT 1
+            ) study_modality ON TRUE
+            CROSS JOIN LATERAL (
+                SELECT COALESCE(
+                    s.image_received_at,
+                    s.received_at,
+                    s.study_date::timestamp AT TIME ZONE 'UTC',
+                    s.created,
+                    NOW()
+                ) AS retention_base_at
+            ) base_dates
+            INNER JOIN LATERAL (
+                SELECT p.*
+                FROM study_retention_policies p
+                WHERE p.is_active = 1
+                  AND p.enabled = TRUE
+                  AND (p.hospital_id IS NULL OR p.hospital_id = s.hospital_id)
+                  AND (p.dicom_server_id IS NULL OR p.dicom_server_id = s.dicom_server_id)
+                  AND (p.modality_id IS NULL OR p.modality_id = study_modality.id)
+                ORDER BY
+                    CASE WHEN p.hospital_id IS NULL THEN 0 ELSE 1 END DESC,
+                    CASE WHEN p.dicom_server_id IS NULL THEN 0 ELSE 1 END DESC,
+                    CASE WHEN p.modality_id IS NULL THEN 0 ELSE 1 END DESC,
+                    p.modified_at DESC,
+                    p.id DESC
+                LIMIT 1
+            ) policy ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT request.*
+                FROM study_retention_delete_requests request
+                WHERE request.hospital_id = s.hospital_id
+                  AND request.study_id = s.id
+                ORDER BY request.created_at DESC, request.id DESC
+                LIMIT 1
+            ) latest ON TRUE
+            WHERE s.is_active = 1
+              <if test="hospitalId != null and hospitalId > 0">
+                  AND s.hospital_id = #{hospitalId}
+              </if>
+        ) candidate
+    </sql>
+
+    <sql id="RETENTION_REVIEW_FILTERS">
+        <if test="filter != null and filter.searchText != null and filter.searchText != ''">
+            AND (
+                COALESCE(patientName, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(patientMrn, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(accessionNumber, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(referenceVisitCode, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(studyInstanceUid, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(dicomServerName, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(modalityCode, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(modalityName, '') ILIKE '%' || #{filter.searchText} || '%'
+            )
+        </if>
+        <if test="filter != null and filter.dicomServerId != null and filter.dicomServerId > 0">
+            AND dicomServerId = #{filter.dicomServerId}
+        </if>
+        <if test="filter != null and filter.modalityId != null and filter.modalityId > 0">
+            AND modalityId = #{filter.modalityId}
+        </if>
+        <if test="filter != null and filter.startDate != null and filter.startDate != ''">
+            AND CAST(expires_at_value AS DATE) &gt;= CAST(#{filter.startDate} AS DATE)
+        </if>
+        <if test="filter != null and filter.endDate != null and filter.endDate != ''">
+            AND CAST(expires_at_value AS DATE) &lt;= CAST(#{filter.endDate} AS DATE)
+        </if>
+        <choose>
+            <when test="filter != null and filter.status != null and filter.status != ''">
+                AND status = #{filter.status}
+            </when>
+            <otherwise>
+                AND status != 'ACTIVE'
+            </otherwise>
+        </choose>
+    </sql>
+
+    <select id="countReview" resultType="java.lang.Long">
+        WITH retention_rows AS (
+            <include refid="RETENTION_CANDIDATE_ROWS"/>
+        )
+        SELECT COUNT(1)
+        FROM retention_rows
+        WHERE status != 'DELETED'
+        <include refid="RETENTION_REVIEW_FILTERS"/>
+    </select>
+
+    <select id="listReview" resultType="com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionReviewResponse">
+        WITH retention_rows AS (
+            <include refid="RETENTION_CANDIDATE_ROWS"/>
+        )
+        SELECT *
+        FROM retention_rows
+        WHERE status != 'DELETED'
+        <include refid="RETENTION_REVIEW_FILTERS"/>
+        ORDER BY
+            CASE status
+                WHEN 'DELETE_FAILED' THEN 0
+                WHEN 'EXPIRED_WAITING_APPROVAL' THEN 1
+                WHEN 'PENDING_APPROVAL' THEN 2
+                WHEN 'NEAR_EXPIRY' THEN 3
+                WHEN 'REJECTED' THEN 4
+                WHEN 'KEEP_PERMANENT' THEN 5
+                ELSE 6
+            END,
+            expires_at_value ASC,
+            studyId DESC
+        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        </if>
+    </select>
+
+    <select id="findReviewCandidateByStudyId" resultType="com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionReviewResponse">
+        WITH retention_rows AS (
+            <include refid="RETENTION_CANDIDATE_ROWS"/>
+        )
+        SELECT *
+        FROM retention_rows
+        WHERE studyId = #{studyId}
+          AND status != 'DELETED'
+        LIMIT 1
+    </select>
+
+    <select id="summary" resultType="com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionSummaryResponse">
+        WITH retention_rows AS (
+            <include refid="RETENTION_CANDIDATE_ROWS"/>
+        )
+        SELECT
+            COALESCE(SUM(CASE WHEN status = 'NEAR_EXPIRY' THEN 1 ELSE 0 END), 0)::BIGINT AS nearExpiry,
+            COALESCE(SUM(CASE WHEN status = 'EXPIRED_WAITING_APPROVAL' THEN 1 ELSE 0 END), 0)::BIGINT AS expiredWaitingApproval,
+            COALESCE(SUM(CASE WHEN status = 'PENDING_APPROVAL' THEN 1 ELSE 0 END), 0)::BIGINT AS pendingApproval,
+            COALESCE(SUM(CASE WHEN status = 'DELETE_FAILED' THEN 1 ELSE 0 END), 0)::BIGINT AS deleteFailed,
+            COALESCE(SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END), 0)::BIGINT AS rejected,
+            COALESCE(SUM(CASE WHEN status = 'KEEP_PERMANENT' THEN 1 ELSE 0 END), 0)::BIGINT AS keepPermanent,
+            COALESCE(SUM(CASE WHEN status IN ('NEAR_EXPIRY', 'EXPIRED_WAITING_APPROVAL', 'PENDING_APPROVAL', 'DELETE_FAILED') THEN 1 ELSE 0 END), 0)::BIGINT AS totalOpen
+        FROM retention_rows
+        WHERE status != 'DELETED'
+    </select>
+
+    <select id="createDeleteRequest" resultType="java.lang.Long">
+        INSERT INTO study_retention_delete_requests (
+            hospital_id,
+            study_id,
+            policy_id,
+            dicom_server_id,
+            modality_id,
+            status,
+            expires_at,
+            near_expiry_at,
+            study_instance_uid,
+            dicom_server_study_id,
+            accession_number,
+            reference_visit_code,
+            patient_mrn,
+            patient_name,
+            requested_by,
+            requested_at,
+            created_at,
+            updated_at
+        ) VALUES (
+            #{candidate.hospitalId},
+            #{candidate.studyId},
+            #{candidate.policyId},
+            #{candidate.dicomServerId},
+            #{candidate.modalityId},
+            'PENDING_APPROVAL',
+            CAST(#{candidate.expiresAt} AS TIMESTAMPTZ),
+            CAST(#{candidate.nearExpiryAt} AS TIMESTAMPTZ),
+            #{candidate.studyInstanceUid},
+            #{candidate.dicomServerStudyId},
+            #{candidate.accessionNumber},
+            #{candidate.referenceVisitCode},
+            #{candidate.patientMrn},
+            #{candidate.patientName},
+            #{userId},
+            NOW(),
+            NOW(),
+            NOW()
+        )
+        RETURNING id
+    </select>
+
+    <update id="markRequestApproved">
+        UPDATE study_retention_delete_requests
+        SET status = 'APPROVED',
+            approved_by = #{userId},
+            approved_at = NOW(),
+            decision_note = #{note},
+            error_message = NULL,
+            updated_at = NOW()
+        WHERE id = #{requestId}
+    </update>
+
+    <update id="markRequestRejected">
+        UPDATE study_retention_delete_requests
+        SET status = #{status},
+            rejected_by = #{userId},
+            rejected_at = NOW(),
+            decision_note = #{note},
+            error_message = NULL,
+            updated_at = NOW()
+        WHERE id = #{requestId}
+    </update>
+
+    <update id="markRequestDeleted">
+        UPDATE study_retention_delete_requests
+        SET status = 'DELETED',
+            deleted_at = NOW(),
+            updated_at = NOW(),
+            error_message = NULL
+        WHERE id = #{requestId}
+    </update>
+
+    <update id="markRequestDeleteFailed">
+        UPDATE study_retention_delete_requests
+        SET status = 'DELETE_FAILED',
+            error_message = #{errorMessage},
+            updated_at = NOW()
+        WHERE id = #{requestId}
+    </update>
+
+    <select id="hardDeleteStudyData" resultType="java.lang.Integer">
+        WITH target_worklists AS (
+            SELECT DISTINCT q.id
+            FROM pacs_worklists q
+            WHERE q.hospital_id = #{hospitalId}
+              AND (
+                  q.study_id = #{studyId}
+                  OR EXISTS (
+                      SELECT 1
+                      FROM pacs_worklist_study_links link
+                      WHERE link.hospital_id = q.hospital_id
+                        AND link.worklist_id = q.id
+                        AND link.study_id = #{studyId}
+                  )
+              )
+        ),
+        deleted_viewer_states AS (
+            DELETE FROM pacs_viewer_states vs
+            WHERE vs.hospital_id = #{hospitalId}
+              AND (
+                  vs.study_id = #{studyId}
+                  OR EXISTS (SELECT 1 FROM target_worklists tw WHERE tw.id = vs.worklist_id)
+              )
+            RETURNING 1
+        ),
+        deleted_results AS (
+            DELETE FROM pacs_results pr
+            WHERE pr.hospital_id = #{hospitalId}
+              AND (
+                  pr.study_id = #{studyId}
+                  OR EXISTS (SELECT 1 FROM target_worklists tw WHERE tw.id = pr.worklist_id)
+              )
+            RETURNING 1
+        ),
+        deleted_worklist_links AS (
+            DELETE FROM pacs_worklist_study_links link
+            WHERE link.hospital_id = #{hospitalId}
+              AND (
+                  link.study_id = #{studyId}
+                  OR EXISTS (SELECT 1 FROM target_worklists tw WHERE tw.id = link.worklist_id)
+              )
+            RETURNING 1
+        ),
+        deleted_worklist_histories AS (
+            DELETE FROM pacs_worklist_histories history
+            WHERE history.hospital_id = #{hospitalId}
+              AND EXISTS (SELECT 1 FROM target_worklists tw WHERE tw.id = history.worklist_id)
+            RETURNING 1
+        ),
+        deleted_worklists AS (
+            DELETE FROM pacs_worklists q
+            WHERE q.hospital_id = #{hospitalId}
+              AND EXISTS (SELECT 1 FROM target_worklists tw WHERE tw.id = q.id)
+            RETURNING 1
+        ),
+        deleted_study AS (
+            DELETE FROM pacs_studies s
+            WHERE s.hospital_id = #{hospitalId}
+              AND s.id = #{studyId}
+            RETURNING 1
+        )
+        SELECT COALESCE((SELECT COUNT(1) FROM deleted_study), 0)::INTEGER
+    </select>
+
+</mapper>

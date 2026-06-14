@@ -26,6 +26,7 @@ public class PublicEntityKeyResolver {
         MODULE,
         MODULE_DETAIL,
         PACS_RESULT_TEMPLATE,
+        STUDY_RETENTION_POLICY,
         SYSTEM_ACTIVITY,
         USER_LOG
     }
@@ -48,6 +49,7 @@ public class PublicEntityKeyResolver {
         TABLES.put(Entity.MODULE, "modules");
         TABLES.put(Entity.MODULE_DETAIL, "module_details");
         TABLES.put(Entity.PACS_RESULT_TEMPLATE, "pacs_result_templates");
+        TABLES.put(Entity.STUDY_RETENTION_POLICY, "study_retention_policies");
         TABLES.put(Entity.SYSTEM_ACTIVITY, "system_activities");
         TABLES.put(Entity.USER_LOG, "user_logs");
     }

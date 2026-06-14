@@ -5,6 +5,7 @@ import com.ut.emrPacs.config.ApiConstants;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver.Entity;
 import com.ut.emrPacs.mapper.pacs.DashboardMapper;
+import com.ut.emrPacs.mapper.pacs.StudyRetentionMapper;
 import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.MessageService;
 import com.ut.emrPacs.model.base.ResponseMessage;
@@ -14,6 +15,7 @@ import com.ut.emrPacs.model.dto.request.dashboard.DashboardOverviewRequest;
 import com.ut.emrPacs.model.dto.response.dashboard.DashboardActionAlertResponse;
 import com.ut.emrPacs.model.dto.response.dashboard.DashboardOverviewResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.DicomServerHealthResponse;
+import com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionSummaryResponse;
 import com.ut.emrPacs.model.enums.WorklistStatus;
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.DashboardService;
@@ -37,6 +39,8 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Autowired
     private DashboardMapper dashboardMapper;
+    @Autowired
+    private StudyRetentionMapper studyRetentionMapper;
 
     @Autowired
     private MessageService messageService;
@@ -101,6 +105,12 @@ public class DashboardServiceImpl implements DashboardService {
                 response.setTodayAssignedWorklists(0L);
                 response.setTodayCancelledWorklists(0L);
             }
+
+            StudyRetentionSummaryResponse retentionSummary = studyRetentionMapper.summary(hospitalId);
+            response.setRetentionNearExpiry(nullSafeLong(retentionSummary == null ? null : retentionSummary.getNearExpiry()));
+            response.setRetentionExpiredWaitingApproval(nullSafeLong(retentionSummary == null ? null : retentionSummary.getExpiredWaitingApproval()));
+            response.setRetentionPendingApproval(nullSafeLong(retentionSummary == null ? null : retentionSummary.getPendingApproval()));
+            response.setRetentionDeleteFailed(nullSafeLong(retentionSummary == null ? null : retentionSummary.getDeleteFailed()));
 
             response.setWorklistSnapshot(dashboardMapper.listWorklistSnapshot(hospitalId, snapshotLimit));
             response.setActionAlerts(buildActionAlerts(response, waitingThresholdMinutes, includeTodayMetrics));
@@ -262,6 +272,36 @@ public class DashboardServiceImpl implements DashboardService {
                     "There are cancelled Worklists today. Please review operational flow.",
                     overview.getTodayCancelledWorklists(),
                     "/worklist"
+            ));
+        }
+        if (overview.getRetentionDeleteFailed() != null && overview.getRetentionDeleteFailed() > 0L) {
+            alerts.add(buildAlert(
+                    "STUDY_RETENTION_DELETE_FAILED",
+                    "danger",
+                    "Study deletion failed",
+                    "A retention deletion needs review before retry.",
+                    overview.getRetentionDeleteFailed(),
+                    "/study-retention?status=DELETE_FAILED"
+            ));
+        }
+        if (overview.getRetentionExpiredWaitingApproval() != null && overview.getRetentionExpiredWaitingApproval() > 0L) {
+            alerts.add(buildAlert(
+                    "STUDY_RETENTION_EXPIRED",
+                    "danger",
+                    "Expired studies waiting approval",
+                    "Studies reached retention expiry and need Super Admin approval.",
+                    overview.getRetentionExpiredWaitingApproval(),
+                    "/study-retention?status=EXPIRED_WAITING_APPROVAL"
+            ));
+        }
+        if (overview.getRetentionNearExpiry() != null && overview.getRetentionNearExpiry() > 0L) {
+            alerts.add(buildAlert(
+                    "STUDY_RETENTION_NEAR_EXPIRY",
+                    "warning",
+                    "Studies nearing expiry",
+                    "Studies are inside the retention warning window.",
+                    overview.getRetentionNearExpiry(),
+                    "/study-retention?status=NEAR_EXPIRY"
             ));
         }
 
