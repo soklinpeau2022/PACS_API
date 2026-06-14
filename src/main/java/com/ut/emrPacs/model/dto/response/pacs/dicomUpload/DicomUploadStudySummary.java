@@ -14,6 +14,9 @@ public class DicomUploadStudySummary {
     private Boolean patientCreated;
     private String accessionNumber;
     private String referenceVisitCode;
+    private String worklistPublicKey;
+    private String worklistVisitCode;
+    private Boolean worklistCreated;
     private String studyInstanceUid;
     private String studyDescription;
     private String modality;

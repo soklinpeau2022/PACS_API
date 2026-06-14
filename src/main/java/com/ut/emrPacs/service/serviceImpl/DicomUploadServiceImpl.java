@@ -4,6 +4,7 @@ import com.ut.emrPacs.authentication.principal.CurrentUserPrincipal;
 import com.ut.emrPacs.authentication.session.UserAuthSession;
 import com.ut.emrPacs.authentication.util.AuthorityUtils;
 import com.ut.emrPacs.config.ApiConstants;
+import com.ut.emrPacs.config.WorklistConstants;
 import com.ut.emrPacs.helper.FunctionCodeGenerate;
 import com.ut.emrPacs.helper.FunctionHelper;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
@@ -20,6 +21,7 @@ import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import com.ut.emrPacs.model.dto.request.pacs.dicomUpload.DicomUploadRequest;
 import com.ut.emrPacs.model.dto.request.pacs.patient.PatientCreateRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistAssignRequest;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerInstanceUploadResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerSeriesResponse;
@@ -28,6 +30,8 @@ import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomUploadResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomUploadStudySummary;
 import com.ut.emrPacs.model.dto.response.pacs.patient.PatientResponse;
 import com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse;
+import com.ut.emrPacs.model.dto.response.pacs.worklist.WorklistDetailRow;
+import com.ut.emrPacs.model.enums.WorklistStatus;
 import com.ut.emrPacs.model.dto.response.systemSettings.hospital.HospitalResponseDetail;
 import com.ut.emrPacs.model.dto.response.systemSettings.modality.ModalityResponse;
 import com.ut.emrPacs.service.service.ActivityLogService;
@@ -53,12 +57,16 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+
+import static com.ut.emrPacs.helper.dicomServer.DicomResponseReadHelper.readDicomServerInstanceCount;
 
 @Service
 public class DicomUploadServiceImpl implements DicomUploadService {
@@ -68,7 +76,6 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private static final long MAX_ZIP_ENTRY_BYTES = 128L * 1024L * 1024L;
     private static final int ZIP_READ_BUFFER_BYTES = 64 * 1024;
     private static final int STATUS_IMAGE_RECEIVED = 1;
-    private static final String UPLOAD_MODALITY_PREFIX = "UPLOAD";
 
     @Autowired
     private DicomServerClientService dicomServerClientService;
@@ -127,13 +134,17 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             Long uploadedBy = currentUserId();
             OffsetDateTime receivedAt = OffsetDateTime.now();
             Map<String, DicomUploadStudySummary> summariesByStudyUid = new LinkedHashMap<>();
+            Map<String, UploadWorklistContext> worklistsByStudyUid = new LinkedHashMap<>();
+            Set<Long> receivedWorklistIds = new HashSet<>();
             UploadContext context = new UploadContext(
                     hospitalId,
                     dicomServer,
                     uploadedBy,
                     receivedAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
                     uploadResponse,
-                    summariesByStudyUid
+                    summariesByStudyUid,
+                    worklistsByStudyUid,
+                    receivedWorklistIds
             );
 
             if (hasZip) {
@@ -288,13 +299,6 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             throw new IllegalArgumentException("Uploaded DICOM has no StudyInstanceUID.");
         }
 
-        String dicomPatientId = firstNonBlank(readDicomTag(patientTags, "PatientID"), study.getParentPatient());
-        DicomPatientName patientName = splitPatientName(readDicomTag(patientTags, "PatientName"));
-        LocalDate birthDate = parseDicomDate(readDicomTag(patientTags, "PatientBirthDate"));
-        String gender = normalizePatientSex(readDicomTag(patientTags, "PatientSex"));
-        PatientMatch patientMatch = findOrCreatePatient(context.hospitalId, dicomPatientId, patientName, birthDate, gender);
-        PatientResponse patient = patientMatch.patient();
-
         List<DicomServerSeriesResponse> series = dicomServerClientService.getSeriesByStudyId(
                 context.dicomServer.getBaseUrl(),
                 context.dicomServer.getUsername(),
@@ -302,6 +306,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                 studyId
         );
         String firstSeriesId = firstSeriesId(study, series, upload);
+        int instanceCount = countInstances(study, series);
         String dicomModality = normalizeDicomModality(firstNonBlank(readDicomTag(studyTags, "Modality"), firstSeriesModality(series)));
         if (dicomModality == null) {
             throw new IllegalArgumentException("Uploaded DICOM has no Modality tag.");
@@ -311,12 +316,29 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         if (modalityCode == null) {
             throw new IllegalArgumentException("Matched hospital modality has no configured code.");
         }
+
+        String dicomPatientId = firstNonBlank(readDicomTag(patientTags, "PatientID"), study.getParentPatient());
+        DicomPatientName patientName = splitPatientName(readDicomTag(patientTags, "PatientName"));
+        LocalDate birthDate = parseDicomDate(readDicomTag(patientTags, "PatientBirthDate"));
+        String gender = normalizePatientSex(readDicomTag(patientTags, "PatientSex"));
+        PatientMatch patientMatch = findOrCreatePatient(context.hospitalId, dicomPatientId, patientName, birthDate, gender);
+        PatientResponse patient = patientMatch.patient();
+
         String dicomAccessionNumber = firstNonBlank(readDicomTag(studyTags, "AccessionNumber"));
-        String accessionNumber = dicomAccessionNumber;
-        if (accessionNumber == null) {
-            accessionNumber = generateUploadAccessionNumber(context.hospitalId, modalityCode);
-        }
         String referenceVisitCode = dicomAccessionNumber;
+        LocalDate studyDate = parseDicomDate(readDicomTag(studyTags, "StudyDate"));
+        String studyDescription = firstNonBlank(readDicomTag(studyTags, "StudyDescription"), "Uploaded DICOM");
+        UploadWorklistContext uploadWorklist = resolveOrCreateUploadWorklist(
+                context,
+                studyInstanceUid,
+                study.getId(),
+                patient,
+                modality,
+                studyDate,
+                studyDescription,
+                referenceVisitCode
+        );
+        String accessionNumber = uploadWorklist.visitCode();
 
         Long studyDbId = studyMapper.upsertFromDicomUpload(
                 context.hospitalId,
@@ -326,16 +348,19 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                 referenceVisitCode,
                 modality.getId(),
                 modalityCode,
-                parseDicomDate(readDicomTag(studyTags, "StudyDate")),
-                firstNonBlank(readDicomTag(studyTags, "StudyDescription"), "Uploaded DICOM"),
+                studyDate,
+                studyDescription,
                 context.dicomServer.getId(),
                 STATUS_IMAGE_RECEIVED,
                 study.getId(),
                 firstNonBlank(study.getParentPatient(), upload == null ? null : upload.getParentPatient()),
                 firstSeriesId,
+                instanceCount,
                 context.uploadedBy,
                 context.receivedAtIso
         );
+
+        WorklistDetailRow linkedWorklist = markUploadWorklistReceived(context, uploadWorklist, patient.getId(), studyDbId, referenceVisitCode);
         StudyResponse savedStudy = studyMapper.findById(context.hospitalId, studyDbId);
 
         DicomUploadStudySummary summary = context.summariesByStudyUid.computeIfAbsent(studyInstanceUid, ignored -> new DicomUploadStudySummary());
@@ -349,6 +374,9 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         summary.setPatientCreated(Boolean.TRUE.equals(patientMatch.created()));
         summary.setAccessionNumber(accessionNumber);
         summary.setReferenceVisitCode(referenceVisitCode);
+        summary.setWorklistPublicKey(linkedWorklist == null ? uploadWorklist.publicKey() : linkedWorklist.getPublicKey());
+        summary.setWorklistVisitCode(linkedWorklist == null ? uploadWorklist.visitCode() : linkedWorklist.getVisitCode());
+        summary.setWorklistCreated(uploadWorklist.created());
         summary.setStudyInstanceUid(studyInstanceUid);
         summary.setStudyDescription(savedStudy == null ? firstNonBlank(readDicomTag(studyTags, "StudyDescription"), "Uploaded DICOM") : savedStudy.getStudyDescription());
         summary.setModality(modalityCode);
@@ -357,7 +385,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         summary.setDicomServerStudyId(study.getId());
         summary.setDicomServerPatientId(study.getParentPatient());
         summary.setDicomServerSeriesId(firstSeriesId);
-        summary.setInstances(countInstances(study, series));
+        summary.setInstances(instanceCount);
         summary.setStatus("IMAGE_RECEIVED");
         summary.setViewerAvailable(studyInstanceUid != null && study.getId() != null);
     }
@@ -403,6 +431,126 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         throw new IllegalStateException("Unable to create uploaded DICOM patient.");
     }
 
+    private UploadWorklistContext resolveOrCreateUploadWorklist(
+            UploadContext context,
+            String studyInstanceUid,
+            String dicomServerStudyId,
+            PatientResponse patient,
+            ModalityResponse modality,
+            LocalDate studyDate,
+            String studyDescription,
+            String referenceVisitCode
+    ) {
+        UploadWorklistContext cached = context.worklistsByStudyUid.get(studyInstanceUid);
+        if (cached != null) {
+            return cached;
+        }
+
+        WorklistDetailRow existing = worklistMapper.findWorklistByStudyIdentifiersAndHospital(
+                context.hospitalId,
+                studyInstanceUid,
+                dicomServerStudyId
+        );
+        if (existing != null && existing.getId() != null && firstNonBlank(existing.getVisitCode()) != null) {
+            UploadWorklistContext resolved = new UploadWorklistContext(
+                    existing.getId(),
+                    existing.getPublicKey(),
+                    existing.getVisitCode(),
+                    false
+            );
+            context.worklistsByStudyUid.put(studyInstanceUid, resolved);
+            return resolved;
+        }
+
+        WorklistAssignRequest request = new WorklistAssignRequest();
+        request.setPatientId(patient.getId());
+        request.setModalityId(modality.getId());
+        request.setDicomServerId(context.dicomServer.getId());
+        request.setStudyDescription(studyDescription);
+        request.setScheduledDate(studyDate == null ? LocalDate.now() : studyDate);
+        request.setScheduledTime(LocalTime.now().withSecond(0).withNano(0));
+        request.setNotes(buildUploadWorklistNote(referenceVisitCode));
+
+        String visitCode = null;
+        Boolean inserted = false;
+        for (int attempt = 0; attempt < 10; attempt++) {
+            visitCode = generateVisitCode(context.hospitalId, modality);
+            if (worklistMapper.findWorklistByVisitCodeAnyHospital(visitCode) != null) {
+                continue;
+            }
+            try {
+                inserted = worklistMapper.assignWorklist(context.hospitalId, context.uploadedBy, visitCode, request);
+                if (Boolean.TRUE.equals(inserted)) {
+                    break;
+                }
+            } catch (DuplicateKeyException duplicate) {
+                LOGGER.warn("visit_code collision detected for uploaded DICOM hospitalId={} visitCode={}, retrying", context.hospitalId, visitCode);
+            }
+        }
+        if (!Boolean.TRUE.equals(inserted)) {
+            throw new IllegalStateException("Unable to create Worklist for uploaded DICOM.");
+        }
+
+        WorklistDetailRow created = worklistMapper.findWorklistByVisitCode(context.hospitalId, visitCode);
+        if (created == null || created.getId() == null) {
+            throw new IllegalStateException("Uploaded DICOM Worklist was not found after creation.");
+        }
+        worklistMapper.insertHistory(
+                context.hospitalId,
+                created.getId(),
+                created.getPatientId(),
+                WorklistStatus.WAITING.code(),
+                WorklistStatus.WAITING.code(),
+                WorklistConstants.ACTION_ASSIGN,
+                request.getNotes(),
+                context.uploadedBy
+        );
+
+        UploadWorklistContext resolved = new UploadWorklistContext(
+                created.getId(),
+                created.getPublicKey(),
+                created.getVisitCode(),
+                true
+        );
+        context.worklistsByStudyUid.put(studyInstanceUid, resolved);
+        return resolved;
+    }
+
+    private WorklistDetailRow markUploadWorklistReceived(
+            UploadContext context,
+            UploadWorklistContext uploadWorklist,
+            Long patientId,
+            Long studyDbId,
+            String referenceVisitCode
+    ) {
+        if (uploadWorklist == null || uploadWorklist.id() == null || firstNonBlank(uploadWorklist.visitCode()) == null) {
+            return null;
+        }
+        worklistMapper.updateWorklistReceivedByVisitCode(
+                context.hospitalId,
+                uploadWorklist.visitCode(),
+                studyDbId,
+                context.receivedAtIso,
+                WorklistStatus.IN_PROGRESS.code(),
+                context.uploadedBy
+        );
+        worklistMapper.upsertWorklistStudyLink(context.hospitalId, uploadWorklist.id(), studyDbId, context.uploadedBy);
+        boolean firstReceiveForUpload = context.receivedWorklistIds.add(uploadWorklist.id());
+        if (uploadWorklist.created() && firstReceiveForUpload) {
+            worklistMapper.insertHistory(
+                    context.hospitalId,
+                    uploadWorklist.id(),
+                    patientId,
+                    WorklistStatus.WAITING.code(),
+                    WorklistStatus.IN_PROGRESS.code(),
+                    WorklistConstants.ACTION_RECEIVED_STUDY,
+                    buildUploadWorklistNote(referenceVisitCode),
+                    context.uploadedBy
+            );
+        }
+        return worklistMapper.findWorklistById(context.hospitalId, uploadWorklist.id());
+    }
+
     private String generatePatientCode(Long hospitalId) {
         String yearPrefix = FunctionCodeGenerate.currentPatientYearPrefix();
         String hospitalToken = resolveHospitalToken(hospitalId);
@@ -418,13 +566,52 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         return FunctionCodeGenerate.buildPatientCode(yearPrefix, hospitalToken, safeSequence);
     }
 
-    private String generateUploadAccessionNumber(Long hospitalId, String modality) {
+    private String generateVisitCode(Long hospitalId, ModalityResponse modality) {
         String dateToken = FunctionCodeGenerate.currentVisitDateToken();
-        String hospitalToken = resolveHospitalToken(hospitalId);
-        String sequenceKey = FunctionCodeGenerate.buildVisitSequenceKey(UPLOAD_MODALITY_PREFIX, hospitalToken, dateToken);
+        String visitPrefix = resolveVisitPrefix(modality);
+        String hospitalToken = resolveVisitHospitalToken(hospitalId);
+        String sequenceKey = FunctionCodeGenerate.buildVisitSequenceKey(visitPrefix, hospitalToken, dateToken);
         Long nextSequence = worklistMapper.nextVisitSequence(hospitalId, sequenceKey);
-        String shortDate = dateToken.length() >= 8 ? dateToken.substring(0, 8) : dateToken;
-        return "UPLOAD-" + hospitalToken + "-" + shortDate + "-" + String.format("%04d", nextSequence == null ? 1L : Math.max(nextSequence, 1L));
+        long sequence = nextSequence == null ? 1L : nextSequence;
+        return FunctionCodeGenerate.buildVisitCode(visitPrefix, hospitalToken, dateToken, sequence);
+    }
+
+    private String resolveVisitHospitalToken(Long hospitalId) {
+        if (hospitalId == null || hospitalId <= 0) {
+            return "HOSP";
+        }
+        try {
+            List<HospitalResponseDetail> hospitals = hospitalMapper.getHospitalById(hospitalId);
+            if (hospitals != null && !hospitals.isEmpty() && hospitals.get(0) != null) {
+                String token = FunctionHelper.normalizeHospitalToken(hospitals.get(0).getAbbr());
+                if (FunctionHelper.isValidHospitalToken(token)) {
+                    return token;
+                }
+            }
+        } catch (Exception ignored) {
+            return "H" + hospitalId;
+        }
+        return "H" + hospitalId;
+    }
+
+    private String resolveVisitPrefix(ModalityResponse modality) {
+        if (modality == null) {
+            return "OT";
+        }
+        String token = FunctionHelper.normalizeModalityToken(modality.getAbbr());
+        if (FunctionHelper.hasText(token)) {
+            return token;
+        }
+        token = FunctionHelper.normalizeModalityToken(modality.getName());
+        return FunctionHelper.hasText(token) ? token : "OT";
+    }
+
+    private static String buildUploadWorklistNote(String referenceVisitCode) {
+        String reference = firstNonBlank(referenceVisitCode);
+        if (reference == null) {
+            return "Created automatically from uploaded DICOM.";
+        }
+        return "Created automatically from uploaded DICOM. Original AccessionNumber: " + reference;
     }
 
     private String resolveHospitalToken(Long hospitalId) {
@@ -507,6 +694,16 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         String raw = trimToNull(value);
         if (raw == null) {
             return new DicomPatientName(null, null);
+        }
+        if (raw.contains("^")) {
+            String[] dicomParts = raw.split("\\^", -1);
+            String familyName = trimToNull(dicomParts.length > 0 ? dicomParts[0] : null);
+            String givenName = trimToNull(dicomParts.length > 1 ? dicomParts[1] : null);
+            String middleName = trimToNull(dicomParts.length > 2 ? dicomParts[2] : null);
+            String firstName = firstNonBlank(givenName, middleName, familyName);
+            boolean usedFamilyNameAsFirst = familyName != null && familyName.equals(firstName);
+            String lastName = usedFamilyNameAsFirst ? "" : firstNonBlank(familyName, "");
+            return new DicomPatientName(firstName, lastName);
         }
         String normalized = raw.replace('^', ' ').replaceAll("\\s+", " ").trim();
         if (normalized.isEmpty()) {
@@ -610,6 +807,10 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         if (study != null && study.getInstances() != null && !study.getInstances().isEmpty()) {
             return study.getInstances().size();
         }
+        Integer statisticsCount = study == null ? null : readDicomServerInstanceCount(study.getStatistics());
+        if (statisticsCount != null && statisticsCount > 0) {
+            return statisticsCount;
+        }
         if (series == null) {
             return 0;
         }
@@ -654,8 +855,13 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             Long uploadedBy,
             String receivedAtIso,
             DicomUploadResponse response,
-            Map<String, DicomUploadStudySummary> summariesByStudyUid
+            Map<String, DicomUploadStudySummary> summariesByStudyUid,
+            Map<String, UploadWorklistContext> worklistsByStudyUid,
+            Set<Long> receivedWorklistIds
     ) {
+    }
+
+    private record UploadWorklistContext(Long id, String publicKey, String visitCode, boolean created) {
     }
 
     private record DicomServerResolution(HospitalDicomServerResponse server, String errorMessage) {

@@ -3337,6 +3337,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                     dicomServerStudyId,
                     dicomServerPatientId,
                     dicomServerSeriesId,
+                    resolveStudyInstanceCount(dicomServerStudyId, verifiedStudy, server),
                     receivedAtIso
             );
         }
@@ -3691,6 +3692,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 dicomServerStudyId,
                 dicomServerPatientId,
                 dicomServerSeriesId,
+                resolveStudyInstanceCount(dicomServerStudyId, studyResponse, server),
                 receivedAtIso
         );
     }

@@ -24,7 +24,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping(ApiConstants.DicomUpload.BASE_PATH)
-@Tag(name = "16. DICOM Upload Controller", description = "Upload DICOM files through the API, stream them to the hospital DICOM server, and persist metadata only.")
+@Tag(name = "16. DICOM Upload Controller", description = "Upload DICOM files through the API, stream them to the hospital DICOM server, create a received PACS Worklist, and persist metadata only.")
 public class DicomUploadController {
 
     @Autowired
@@ -33,7 +33,7 @@ public class DicomUploadController {
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(
             summary = "Upload DICOM files",
-            description = "Endpoint -> POST /dicom-uploads. Multipart parts: hospitalKey, optional dicomServerKey when the hospital has one active server, required dicomServerKey when it has multiple active servers, repeated files, or one zipFile. DICOM binary is streamed to the selected DICOM server and not stored in the API database. referenceVisitCode is derived from the DICOM AccessionNumber tag."
+            description = "Endpoint -> POST /dicom-uploads. Multipart parts: hospitalKey, optional dicomServerKey when the hospital has one active server, required dicomServerKey when it has multiple active servers, repeated files, or one zipFile. DICOM binary is streamed to the selected DICOM server and not stored in the API database. The upload creates/reuses a received PACS Worklist using the normal hospital visit-code flow, stores that visit code as the study accession number, and stores the original DICOM AccessionNumber as referenceVisitCode."
     )
     public ResponseMessage<BaseResult> uploadDicom(
             @ModelAttribute DicomUploadRequest request,

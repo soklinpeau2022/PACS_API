@@ -396,6 +396,17 @@ public class PacsResultSyncServiceImpl implements PacsResultSyncService {
         return count != null && count > 0;
     }
 
+    private static Integer countStudyInstances(DicomServerStudyResponse studyResponse) {
+        if (studyResponse == null) {
+            return 0;
+        }
+        if (studyResponse.getInstances() != null && !studyResponse.getInstances().isEmpty()) {
+            return studyResponse.getInstances().size();
+        }
+        Integer count = readDicomServerInstanceCount(studyResponse.getStatistics());
+        return count == null ? 0 : Math.max(count, 0);
+    }
+
     private static Integer readDicomServerInstanceCount(Map<String, Object> statistics) {
         if (statistics == null || statistics.isEmpty()) {
             return null;
@@ -444,6 +455,7 @@ public class PacsResultSyncServiceImpl implements PacsResultSyncService {
                 dicomServerStudyId,
                 studyResponse != null ? studyResponse.getParentPatient() : null,
                 studyResponse != null && studyResponse.getSeries() != null && !studyResponse.getSeries().isEmpty() ? studyResponse.getSeries().get(0) : null,
+                countStudyInstances(studyResponse),
                 receivedAtIso
         );
     }

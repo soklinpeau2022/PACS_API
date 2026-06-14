@@ -22,6 +22,7 @@ public interface StudyMapper {
                          @Param("dicomServerStudyId") String dicomServerStudyId,
                          @Param("dicomServerPatientId") String dicomServerPatientId,
                          @Param("dicomServerSeriesId") String dicomServerSeriesId,
+                         @Param("instanceCount") Integer instanceCount,
                          @Param("receivedAtIso") String receivedAtIso);
     Long upsertFromDicomUpload(@Param("hospitalId") Long hospitalId,
                          @Param("patientId") Long patientId,
@@ -37,6 +38,7 @@ public interface StudyMapper {
                          @Param("dicomServerStudyId") String dicomServerStudyId,
                          @Param("dicomServerPatientId") String dicomServerPatientId,
                          @Param("dicomServerSeriesId") String dicomServerSeriesId,
+                         @Param("instanceCount") Integer instanceCount,
                          @Param("uploadedBy") Long uploadedBy,
                          @Param("receivedAtIso") String receivedAtIso);
     int updateStatusById(@Param("hospitalId") Long hospitalId,

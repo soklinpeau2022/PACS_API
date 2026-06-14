@@ -572,6 +572,23 @@
         LIMIT 1
     </select>
 
+    <select id="findWorklistByStudyIdentifiersAndHospital" resultMap="WorklistDetailRow">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        WHERE q.hospital_id = #{hospitalId}
+          AND (
+              (#{studyInstanceUid} IS NOT NULL AND #{studyInstanceUid} != '' AND LOWER(s.study_instance_uid) = LOWER(#{studyInstanceUid}))
+              OR (#{dicomServerStudyId} IS NOT NULL AND #{dicomServerStudyId} != '' AND LOWER(s.dicom_server_study_id) = LOWER(#{dicomServerStudyId}))
+          )
+        ORDER BY q.id DESC
+        LIMIT 1
+    </select>
+
     <select id="listWaitingWorklistForAutoSend" resultMap="WorklistDetailRow">
         SELECT
             <include refid="Worklist_SELECT_COLUMNS"/>

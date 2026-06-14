@@ -44,6 +44,9 @@ public interface WorklistMapper {
     WorklistDetailRow findWorklistByAccessionNumberAndHospital(@Param("hospitalId") Long hospitalId, @Param("accessionNumber") String accessionNumber);
     WorklistDetailRow findWorklistByStudyIdentifiers(@Param("studyInstanceUid") String studyInstanceUid,
                                                      @Param("dicomServerStudyId") String dicomServerStudyId);
+    WorklistDetailRow findWorklistByStudyIdentifiersAndHospital(@Param("hospitalId") Long hospitalId,
+                                                     @Param("studyInstanceUid") String studyInstanceUid,
+                                                     @Param("dicomServerStudyId") String dicomServerStudyId);
 
     List<WorklistDetailRow> listWaitingWorklistForAutoSend(@Param("limit") Integer limit);
     List<WorklistDetailRow> listPendingPacsSyncWorklist();
