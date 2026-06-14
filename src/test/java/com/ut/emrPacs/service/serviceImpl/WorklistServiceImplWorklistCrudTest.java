@@ -259,6 +259,7 @@ class WorklistServiceImplWorklistCrudTest {
         when(jwtTokenService.issueViewerDicomwebToken(
                 eq(11L),
                 eq(1660L),
+                eq(null),
                 eq("1.2.840.113619.102201.1660"),
                 anyLong()
         )).thenReturn(new AccessTokenResponse("Bearer", "viewer-token-2", null, 1800L, "pacs.viewer.dicomweb"));
@@ -311,7 +312,7 @@ class WorklistServiceImplWorklistCrudTest {
         var response = WorklistService.renewViewerDicomWeb(Map.of("token", "viewer-token"));
 
         assertEquals(HttpStatus.UNAUTHORIZED.value(), response.getStatusCode().value());
-        verify(jwtTokenService, never()).issueViewerDicomwebToken(anyLong(), anyLong(), anyString(), anyLong());
+        verify(jwtTokenService, never()).issueViewerDicomwebToken(anyLong(), anyLong(), any(), anyString(), anyLong());
     }
 
     @Test
@@ -341,6 +342,7 @@ class WorklistServiceImplWorklistCrudTest {
         when(jwtTokenService.issueViewerDicomwebToken(
                 eq(11L),
                 eq(1660L),
+                eq(44L),
                 eq("1.2.840.113619.102201.1660"),
                 anyLong()
         )).thenReturn(new AccessTokenResponse("Bearer", "viewer-token-3", null, 600L, "pacs.viewer.dicomweb"));
@@ -408,7 +410,7 @@ class WorklistServiceImplWorklistCrudTest {
         assertFalse(response.isSuccess());
         assertEquals("Unable to verify viewer access.", response.getHeader().getErrorText());
         verify(publicViewerAttemptGuard).recordFailure(hospitalKey, worklistKey);
-        verify(jwtTokenService, never()).issueViewerDicomwebToken(anyLong(), anyLong(), anyString(), anyLong());
+        verify(jwtTokenService, never()).issueViewerDicomwebToken(anyLong(), anyLong(), any(), anyString(), anyLong());
     }
 
     @Test
@@ -478,6 +480,7 @@ class WorklistServiceImplWorklistCrudTest {
         when(jwtTokenService.issueViewerDicomwebToken(
                 eq(11L),
                 eq(1660L),
+                eq(null),
                 eq("1.2.840.113619.102201.1660"),
                 anyLong()
         )).thenReturn(new AccessTokenResponse(
@@ -753,6 +756,7 @@ class WorklistServiceImplWorklistCrudTest {
         when(jwtTokenService.issueViewerDicomwebToken(
                 eq(11L),
                 eq(1660L),
+                eq(null),
                 eq("1.2.840.113619.102201.1660"),
                 anyLong()
         )).thenReturn(new AccessTokenResponse("Bearer", "viewer-token", null, 1800, "pacs.viewer.dicomweb"));

@@ -50,6 +50,7 @@ public class WorklistListResponse {
     private WorklistItemRefResponse modality;
 
     private String accessionNumber;
+    private String referenceVisitCode;
     private String dicomServerWorklistId;
     private String dicomServerWorklistPath;
     private String dicomServerStudyId;

@@ -9,6 +9,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -20,14 +21,34 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GlobalRequestSizeLimitFilter.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
-    private static final long MAX_REQUEST_BYTES = 12L * 1024L * 1024L; // 12 MB global cap
+
+    private final long maxRequestBytes;
+    private final long dicomUploadMaxRequestBytes;
+    private final String dicomUploadPath;
+
+    public GlobalRequestSizeLimitFilter(
+            @Value("${app.security.max-request-bytes:12582912}") long maxRequestBytes,
+            @Value("${app.security.dicom-upload.max-request-bytes:268435456}") long dicomUploadMaxRequestBytes,
+            @Value("${app.security.dicom-upload.path:/dicom-uploads}") String dicomUploadPath
+    ) {
+        this.maxRequestBytes = maxRequestBytes;
+        this.dicomUploadMaxRequestBytes = dicomUploadMaxRequestBytes;
+        this.dicomUploadPath = normalizePath(dicomUploadPath);
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         long length = request.getContentLengthLong();
-        if (length > MAX_REQUEST_BYTES) {
-            SecurityAuditLogger.logBlocked(LOGGER, request, "payload_too_large", "content_length", Long.toString(length));
+        long maxBytes = resolveMaxRequestBytes(request);
+        if (length > maxBytes) {
+            SecurityAuditLogger.logBlocked(
+                    LOGGER,
+                    request,
+                    "payload_too_large",
+                    "content_length",
+                    length + "/" + maxBytes
+            );
             response.setStatus(HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             String json = OBJECT_MAPPER.writeValueAsString(
@@ -37,5 +58,44 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
             return;
         }
         filterChain.doFilter(request, response);
+    }
+
+    private long resolveMaxRequestBytes(HttpServletRequest request) {
+        if (isDicomUploadRequest(request)) {
+            return dicomUploadMaxRequestBytes;
+        }
+        return maxRequestBytes;
+    }
+
+    private boolean isDicomUploadRequest(HttpServletRequest request) {
+        String requestUri = request.getRequestURI();
+        if (requestUri == null || requestUri.isBlank()) {
+            return false;
+        }
+        String contextPath = request.getContextPath();
+        String path = requestUri;
+        if (contextPath != null && !contextPath.isBlank() && path.startsWith(contextPath)) {
+            path = path.substring(contextPath.length());
+        }
+        path = normalizePath(path);
+        return isConfiguredUploadPath(path) || path.endsWith(dicomUploadPath);
+    }
+
+    private boolean isConfiguredUploadPath(String path) {
+        return path.equals(dicomUploadPath) || path.startsWith(dicomUploadPath + "/");
+    }
+
+    private static String normalizePath(String value) {
+        if (value == null || value.isBlank()) {
+            return "/dicom-uploads";
+        }
+        String normalized = value.trim();
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
+        while (normalized.endsWith("/") && normalized.length() > 1) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
     }
 }

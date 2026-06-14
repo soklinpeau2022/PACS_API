@@ -8,27 +8,68 @@ import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerStudyRespon
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerWorklistCreateResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerWorklistResponse;
 import com.ut.emrPacs.service.service.DicomServerClientService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.core.io.Resource;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Flow;
 
 @Service
 public class DicomServerClientServiceImpl implements DicomServerClientService {
 
     private final RestTemplate restTemplate;
+    private final HttpClient uploadHttpClient;
+    private final ObjectMapper objectMapper;
+    private final Duration uploadTimeout;
 
-    public DicomServerClientServiceImpl(RestTemplate restTemplate) {
+    DicomServerClientServiceImpl(RestTemplate restTemplate) {
+        this(restTemplate, new ObjectMapper(), 10000, 7200000);
+    }
+
+    @Autowired
+    public DicomServerClientServiceImpl(
+            RestTemplate restTemplate,
+            @Value("${pacs.dicom-server.client.connect-timeout-ms:10000}") int connectTimeoutMs,
+            @Value("${pacs.dicom-server.client.read-timeout-ms:7200000}") int readTimeoutMs
+    ) {
+        this(restTemplate, new ObjectMapper(), connectTimeoutMs, readTimeoutMs);
+    }
+
+    private DicomServerClientServiceImpl(
+            RestTemplate restTemplate,
+            ObjectMapper objectMapper,
+            int connectTimeoutMs,
+            int readTimeoutMs
+    ) {
         this.restTemplate = restTemplate;
+        this.objectMapper = objectMapper;
+        this.uploadTimeout = Duration.ofMillis(Math.max(1000, readTimeoutMs));
+        this.uploadHttpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofMillis(Math.max(1000, connectTimeoutMs)))
+                .build();
     }
 
     @Override
@@ -50,18 +91,43 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     @Override
     public DicomServerInstanceUploadResponse uploadInstance(String baseUrl, String username, String password, Resource dicomResource, long contentLength) {
         String url = normalizeDicomServerBaseUrl(baseUrl) + "/instances";
-        HttpHeaders headers = buildHeaders(username, password);
-        headers.setContentType(MediaType.parseMediaType("application/dicom"));
-        if (contentLength > 0) {
-            headers.setContentLength(contentLength);
+        HttpRequest.BodyPublisher bodyPublisher = HttpRequest.BodyPublishers.ofInputStream(() -> {
+            try {
+                return dicomResource.getInputStream();
+            } catch (IOException error) {
+                throw new UncheckedIOException(error);
+            }
+        });
+        if (contentLength >= 0) {
+            bodyPublisher = new KnownLengthBodyPublisher(bodyPublisher, contentLength);
         }
-        ResponseEntity<DicomServerInstanceUploadResponse> response = restTemplate.exchange(
-                url,
-                HttpMethod.POST,
-                new HttpEntity<>(dicomResource, headers),
-                DicomServerInstanceUploadResponse.class
-        );
-        return response.getBody();
+
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(URI.create(url))
+                .timeout(uploadTimeout)
+                .header(HttpHeaders.CONTENT_TYPE, "application/dicom")
+                .POST(bodyPublisher);
+        applyBasicAuth(requestBuilder, username, password);
+
+        HttpResponse<String> response;
+        try {
+            response = uploadHttpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
+        } catch (IOException error) {
+            throw new ResourceAccessException("DICOM server is unreachable.", error);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("DICOM upload was interrupted.", error);
+        } catch (UncheckedIOException error) {
+            throw new ResourceAccessException("Unable to read DICOM upload stream.", error.getCause());
+        }
+
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IllegalStateException("DICOM server upload failed with HTTP " + response.statusCode() + ".");
+        }
+        try {
+            return objectMapper.readValue(response.body(), DicomServerInstanceUploadResponse.class);
+        } catch (IOException error) {
+            throw new IllegalStateException("DICOM server upload response was not readable.", error);
+        }
     }
 
     @Override
@@ -249,6 +315,16 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         return headers;
     }
 
+    private void applyBasicAuth(HttpRequest.Builder requestBuilder, String username, String password) {
+        String resolvedUsername = username != null && !username.isBlank() ? username.trim() : null;
+        String resolvedPassword = password != null && !password.isBlank() ? password.trim() : null;
+        if (resolvedUsername == null || resolvedPassword == null) {
+            return;
+        }
+        String token = Base64.getEncoder().encodeToString((resolvedUsername + ":" + resolvedPassword).getBytes(StandardCharsets.UTF_8));
+        requestBuilder.header(HttpHeaders.AUTHORIZATION, "Basic " + token);
+    }
+
     private String buildWorklistItemUrl(String baseUrl, String worklistId) {
         String normalizedBaseUrl = normalizeWorklistBaseUrl(baseUrl);
         return normalizedBaseUrl + "/worklists/" + worklistId;
@@ -285,5 +361,18 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
 
     private String buildFindUrl(String baseUrl) {
         return normalizeDicomServerBaseUrl(baseUrl) + "/tools/find";
+    }
+
+    private record KnownLengthBodyPublisher(HttpRequest.BodyPublisher delegate, long contentLength)
+            implements HttpRequest.BodyPublisher {
+        @Override
+        public long contentLength() {
+            return contentLength;
+        }
+
+        @Override
+        public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
+            delegate.subscribe(subscriber);
+        }
     }
 }

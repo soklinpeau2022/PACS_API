@@ -21,6 +21,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.NoHandlerFoundException;
@@ -72,6 +73,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ResponseMessage<BaseResult>> handleInvalidMultipart(Exception exception) {
         LOGGER.warn("Invalid multipart request: {}", exception.getMessage());
         return buildError(HttpStatus.BAD_REQUEST, "BAD_REQUEST", MESSAGE_BAD_REQUEST);
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ResponseMessage<BaseResult>> handleMaxUploadSize(MaxUploadSizeExceededException exception) {
+        LOGGER.warn("Multipart upload too large: {}", exception.getMessage());
+        return buildError(HttpStatus.PAYLOAD_TOO_LARGE, "PAYLOAD_TOO_LARGE", "Request payload too large.");
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)

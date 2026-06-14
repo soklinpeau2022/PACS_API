@@ -30,6 +30,7 @@
                 OR p.patient_uid ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(s.study_description, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(s.accession_number, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(s.reference_visit_code, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(s.modality, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(study_modality.abbr, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(study_modality.name, '') ILIKE '%' || #{filter.searchText} || '%'
@@ -80,16 +81,22 @@
             )
         </if>
         <if test="filter != null and filter.accessionNumber != null and filter.accessionNumber != ''">
-            AND COALESCE(s.accession_number, '') ILIKE '%' || #{filter.accessionNumber} || '%'
+            AND (
+                COALESCE(s.accession_number, '') ILIKE '%' || #{filter.accessionNumber} || '%'
+                OR COALESCE(s.reference_visit_code, '') ILIKE '%' || #{filter.accessionNumber} || '%'
+            )
         </if>
         <if test="filter != null and filter.accessionNumberExact != null and filter.accessionNumberExact != ''">
-            AND LOWER(s.accession_number) = LOWER(#{filter.accessionNumberExact})
+            AND (
+                LOWER(s.accession_number) = LOWER(#{filter.accessionNumberExact})
+                OR LOWER(s.reference_visit_code) = LOWER(#{filter.accessionNumberExact})
+            )
         </if>
         <if test="filter != null and filter.startDate != null and filter.startDate != ''">
-            AND COALESCE(s.study_date, CAST(s.received_at AS DATE), CAST(s.created AS DATE)) >= CAST(#{filter.startDate} AS DATE)
+            AND COALESCE(CAST(s.image_received_at AS DATE), CAST(s.received_at AS DATE), s.study_date, CAST(s.created AS DATE)) >= CAST(#{filter.startDate} AS DATE)
         </if>
         <if test="filter != null and filter.endDate != null and filter.endDate != ''">
-            AND COALESCE(s.study_date, CAST(s.received_at AS DATE), CAST(s.created AS DATE)) &lt;= CAST(#{filter.endDate} AS DATE)
+            AND COALESCE(CAST(s.image_received_at AS DATE), CAST(s.received_at AS DATE), s.study_date, CAST(s.created AS DATE)) &lt;= CAST(#{filter.endDate} AS DATE)
         </if>
         <if test="filter != null and filter.statusCode != null">
             AND s.status = #{filter.statusCode}
@@ -306,7 +313,7 @@
             LIMIT 1
         ) q ON TRUE
         <include refid="STUDY_FILTER_WHERE"/>
-        ORDER BY COALESCE(s.study_date, CAST(s.received_at AS DATE), CAST(s.created AS DATE)) DESC, s.id DESC
+        ORDER BY COALESCE(s.image_received_at, s.received_at, s.study_date::timestamp, s.created) DESC, s.id DESC
         <choose>
             <when test="filter != null and filter.page != null and filter.rowsPerPage != null">
                 LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}

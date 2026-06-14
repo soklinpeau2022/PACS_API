@@ -7,6 +7,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -49,5 +50,16 @@ class GlobalExceptionHandlerTest {
         assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
         assertNotNull(response.getBody());
         assertEquals(400, response.getBody().getHeader().getStatusCode());
+    }
+
+    @Test
+    void shouldReturnPayloadTooLargeForMultipartLimit() {
+        MaxUploadSizeExceededException exception = new MaxUploadSizeExceededException(4294967296L);
+
+        ResponseEntity<ResponseMessage<BaseResult>> response = handler.handleMaxUploadSize(exception);
+
+        assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals(413, response.getBody().getHeader().getStatusCode());
     }
 }

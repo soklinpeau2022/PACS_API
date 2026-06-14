@@ -35,6 +35,7 @@ public class WorklistDetailRow {
     private Long dicomRouteId;
     private String visitCode;
     private String accessionNumber;
+    private String referenceVisitCode;
     private String modalityCode;
     private String machineAeTitle;
     private String studyDescription;

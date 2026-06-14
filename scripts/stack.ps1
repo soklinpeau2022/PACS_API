@@ -275,6 +275,23 @@ function Resolve-HostPath {
     return (Resolve-Path $resolvedPath).Path
 }
 
+function Test-PathUnder {
+    param([string]$ChildPath, [string]$ParentPath)
+    $child = [System.IO.Path]::GetFullPath($ChildPath).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $parent = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    if ($child.Equals($parent, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $child.StartsWith($parent + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-DicomUploadTempPath {
+    param([string]$PathValue)
+    $apiRoot = [System.IO.Path]::GetFullPath($projectRoot)
+    $frontendRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "..\PACS_Frontend"))
+    if ((Test-PathUnder -ChildPath $PathValue -ParentPath $apiRoot) -or (Test-PathUnder -ChildPath $PathValue -ParentPath $frontendRoot)) {
+        throw "PACS_DICOM_UPLOAD_TEMP_HOST_PATH must be outside PACS_API and PACS_Frontend: $PathValue"
+    }
+}
+
 function Get-TargetEnvValue {
     param([string]$Suffix, [string]$FallbackKey = "")
     $prefixKey = "$($Target.ToUpperInvariant())_$Suffix"
@@ -533,11 +550,17 @@ function Start-ApiContainer {
 
     $keyPath = Resolve-HostPath -PathValue (Get-EnvValue -FilePath $envFile -Key "KEY_PATH") -DefaultValue "./src/main/resources/key"
     $imagePath = Resolve-HostPath -PathValue (Get-EnvValue -FilePath $envFile -Key "HOSPITAL_IMAGE_HOST_PATH") -DefaultValue "./runtime-image"
+    $dicomUploadTempPath = Resolve-HostPath -PathValue (Get-EnvValue -FilePath $envFile -Key "PACS_DICOM_UPLOAD_TEMP_HOST_PATH") -DefaultValue "../runtime-dicom-upload-temp"
+    Assert-DicomUploadTempPath -PathValue $dicomUploadTempPath
     if (-not (Test-Path $imagePath)) {
         New-Item -ItemType Directory -Path $imagePath | Out-Null
     }
+    if (-not (Test-Path $dicomUploadTempPath)) {
+        New-Item -ItemType Directory -Path $dicomUploadTempPath | Out-Null
+    }
     if (Get-Command chown -ErrorAction SilentlyContinue) {
         try { & chown -R "10001:10001" $imagePath | Out-Null } catch {}
+        try { & chown -R "10001:10001" $dicomUploadTempPath | Out-Null } catch {}
     }
     Ensure-DockerNetwork -Name $redisNetworkName
 
@@ -563,6 +586,12 @@ function Start-ApiContainer {
         "SECURITY_JWT_PUBLIC_KEY=$(Get-EnvValue -FilePath $envFile -Key 'SECURITY_JWT_PUBLIC_KEY')",
         "SECURITY_JWT_KEY_ID=$(Get-EnvValue -FilePath $envFile -Key 'SECURITY_JWT_KEY_ID')",
         "HOSPITAL_IMAGE_ROOT_PATH=$(Get-EnvValue -FilePath $envFile -Key 'HOSPITAL_IMAGE_ROOT_PATH')",
+        "PACS_DICOM_UPLOAD_TEMP_DIR=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_UPLOAD_TEMP_DIR' -DefaultValue '/var/ut-dicom-upload-temp')",
+        "SPRING_SERVLET_MULTIPART_LOCATION=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'SPRING_SERVLET_MULTIPART_LOCATION' -DefaultValue '/var/ut-dicom-upload-temp')",
+        "APP_SECURITY_DICOM_UPLOAD_MAX_REQUEST_BYTES=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'APP_SECURITY_DICOM_UPLOAD_MAX_REQUEST_BYTES' -DefaultValue '4294967296')",
+        "SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE' -DefaultValue '4GB')",
+        "SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE' -DefaultValue '4GB')",
+        "PACS_DICOM_SERVER_CLIENT_READ_TIMEOUT_MS=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_SERVER_CLIENT_READ_TIMEOUT_MS' -DefaultValue '7200000')",
         "PACS_RESULT_STATIC_AUTH_ENABLED=$(Get-EnvValue -FilePath $envFile -Key 'PACS_RESULT_STATIC_AUTH_ENABLED')",
         "PACS_RESULT_API_KEY=$(Get-EnvValue -FilePath $envFile -Key 'PACS_RESULT_API_KEY')",
         "PACS_RESULT_UPLOAD_ROOT=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_RESULT_UPLOAD_ROOT' -DefaultValue '/var/ut-image')",
@@ -592,7 +621,8 @@ function Start-ApiContainer {
         "--network", $redisNetworkName,
         "--tmpfs", "/tmp:size=64m,mode=1777",
         "-v", "${keyPath}:/app/config/key:ro",
-        "-v", "${imagePath}:/var/ut-image"
+        "-v", "${imagePath}:/var/ut-image",
+        "-v", "${dicomUploadTempPath}:/var/ut-dicom-upload-temp"
     )
     foreach ($pair in $envPairs) {
         $idx = $pair.IndexOf("=")

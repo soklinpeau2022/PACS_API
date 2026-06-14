@@ -310,6 +310,93 @@ class WorklistServiceImplReceivedStudyTest {
     }
 
     @Test
+    void receivedStudyShouldAcceptUploadReferenceAccessionAndKeepGeneratedVisitCode() throws Exception {
+        WorklistServiceImpl WorklistService = buildService();
+        authenticateMachineClient(4L);
+
+        WorklistReceivedStudyRequest request = new WorklistReceivedStudyRequest();
+        request.setEvent("STUDY_RECEIVED");
+        request.setAccessionNumber("CT-KSFH-200914-0001");
+        request.setDicomServerStudyId("dicom_server_uploaded-study");
+        request.setDicomServerPatientId("dicom_server_uploaded-patient");
+        request.setDicomServerSeriesIds(List.of("uploaded-series-1"));
+        request.setStudyInstanceUid("1.2.826.0.1.3680043.8.498.uploaded");
+        request.setStudyDescription("Uploaded CT");
+        request.setImageInstanceCount(146);
+
+        WorklistDetailRow Worklist = new WorklistDetailRow();
+        Worklist.setId(24L);
+        Worklist.setHospitalId(1L);
+        Worklist.setPatientId(35L);
+        Worklist.setModalityId(4L);
+        Worklist.setDicomServerId(4L);
+        Worklist.setVisitCode("KSFH-20260614-000001");
+        Worklist.setAccessionNumber("KSFH-20260614-000001");
+        Worklist.setReferenceVisitCode("CT-KSFH-200914-0001");
+        Worklist.setStatus(WorklistStatus.IN_PROGRESS.name());
+        Worklist.setModalityCode("CT");
+        Worklist.setStudyDescription("Uploaded CT");
+        when(WorklistMapper.findWorklistByAccessionNumber("CT-KSFH-200914-0001")).thenReturn(Worklist);
+
+        HospitalDicomServerResponse server = dicomServer(4L);
+        when(dicomServerMapper.findActiveDicomServerByWorklist(1L, 24L)).thenReturn(server);
+        when(studyMapper.upsertFromWorklist(
+                eq(1L),
+                eq(35L),
+                eq("1.2.826.0.1.3680043.8.498.uploaded"),
+                eq("KSFH-20260614-000001"),
+                eq(4L),
+                eq("CT"),
+                any(),
+                eq("Uploaded CT"),
+                any(),
+                any(),
+                eq("dicom_server_uploaded-study"),
+                eq("dicom_server_uploaded-patient"),
+                eq("uploaded-series-1"),
+                eq(146),
+                anyString()
+        )).thenReturn(602L);
+        when(WorklistMapper.updateWorklistReceivedFromCallbackById(
+                eq(1L),
+                eq(24L),
+                eq(602L),
+                eq(WorklistStatus.IN_PROGRESS.code()),
+                eq(null),
+                anyString()
+        )).thenReturn(1);
+        WorklistDetailRow refreshed = new WorklistDetailRow();
+        refreshed.setId(24L);
+        refreshed.setHospitalId(1L);
+        refreshed.setPatientId(35L);
+        refreshed.setStatus(WorklistStatus.IN_PROGRESS.name());
+        refreshed.setStudyInstanceUid("1.2.826.0.1.3680043.8.498.uploaded");
+        when(WorklistMapper.findWorklistById(1L, 24L)).thenReturn(refreshed);
+
+        ResponseMessage<BaseResult> response = WorklistService.receivedStudy(request, new MockHttpServletRequest());
+
+        assertTrue(response.isSuccess());
+        verify(dicomServerClientService, never()).getStudyById(anyString(), anyString(), anyString(), anyString());
+        verify(studyMapper).upsertFromWorklist(
+                eq(1L),
+                eq(35L),
+                eq("1.2.826.0.1.3680043.8.498.uploaded"),
+                eq("KSFH-20260614-000001"),
+                eq(4L),
+                eq("CT"),
+                any(),
+                eq("Uploaded CT"),
+                any(),
+                any(),
+                eq("dicom_server_uploaded-study"),
+                eq("dicom_server_uploaded-patient"),
+                eq("uploaded-series-1"),
+                eq(146),
+                anyString()
+        );
+    }
+
+    @Test
     void receivedStudyShouldAcceptWhenWorklistIsMissing() throws Exception {
         WorklistServiceImpl WorklistService = buildService();
         authenticateMachineClient();

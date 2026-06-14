@@ -3327,7 +3327,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                     Worklist.getHospitalId(),
                     Worklist.getPatientId(),
                     studyInstanceUid,
-                    firstNonBlank(normalizedOrEmpty(request == null ? null : request.getAccessionNumber()), Worklist.getAccessionNumber()),
+                    resolveStudyAccessionNumberForCallback(Worklist, request, studyTags),
                     Worklist.getModalityId(),
                     firstNonBlank(Worklist.getModalityCode(), Worklist.getModalityName()),
                     parseDicomStudyDate(firstNonBlank(readDicomTag(studyTags, DicomTagConstants.STUDY_DATE), normalizedOrEmpty(request == null ? null : request.getStudyDate()))),
@@ -3362,13 +3362,11 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 normalizedOrEmpty(request == null ? null : request.getStudyInstanceUid()),
                 normalizedOrEmpty(request == null ? null : request.getStudyUuid())
         );
-        String expectedAccessionNumber = firstNonBlank(Worklist.getAccessionNumber(), normalizedOrEmpty(request == null ? null : request.getAccessionNumber()));
         String requestedAccessionNumber = normalizedOrEmpty(request == null ? null : request.getAccessionNumber());
-        if (hasText(requestedAccessionNumber)
-                && hasText(expectedAccessionNumber)
-                && !requestedAccessionNumber.trim().equalsIgnoreCase(expectedAccessionNumber.trim())) {
+        if (hasText(requestedAccessionNumber) && !isCallbackAccessionAllowedForWorklist(Worklist, requestedAccessionNumber)) {
             throw new IllegalArgumentException("Callback accession does not match this Worklist.");
         }
+        String expectedAccessionNumber = resolveStudyAccessionNumberForCallback(Worklist, request, null);
         Integer callbackInstanceCount = request == null ? null : request.getImageInstanceCount();
         if (callbackInstanceCount != null && callbackInstanceCount > 0 && hasText(requestedStudyInstanceUid)) {
             DicomServerStudyResponse callbackStudy = new DicomServerStudyResponse();
@@ -3403,8 +3401,9 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         if (!hasText(dicomServerStudyId) && hasText(requestedStudyInstanceUid)) {
             dicomServerStudyId = findDicomServerStudyIdByStudyInstanceUid(requestedStudyInstanceUid, server);
         }
-        if (!hasText(dicomServerStudyId) && hasText(Worklist.getAccessionNumber())) {
-            dicomServerStudyId = findDicomServerStudyIdByAccessionNumber(Worklist.getAccessionNumber(), server);
+        String dicomServerAccessionNumber = firstNonBlank(Worklist.getReferenceVisitCode(), Worklist.getAccessionNumber(), Worklist.getVisitCode());
+        if (!hasText(dicomServerStudyId) && hasText(dicomServerAccessionNumber)) {
+            dicomServerStudyId = findDicomServerStudyIdByAccessionNumber(dicomServerAccessionNumber, server);
         }
         if (!hasText(dicomServerStudyId)) {
             throw new IllegalArgumentException("DicomServer study is not available yet.");
@@ -3422,7 +3421,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         if (!hasText(actualAccessionNumber)) {
             throw new IllegalArgumentException("DicomServer study is missing Accession Number.");
         }
-        if (hasText(expectedAccessionNumber) && !actualAccessionNumber.trim().equalsIgnoreCase(expectedAccessionNumber.trim())) {
+        if (!isCallbackAccessionAllowedForWorklist(Worklist, actualAccessionNumber)) {
             throw new IllegalArgumentException("DicomServer study accession does not match this Worklist.");
         }
 
@@ -3482,6 +3481,52 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             LOGGER.warn("Unable to resolve callback DICOM server {}: {}", callbackDicomServerId, error.getMessage());
             return null;
         }
+    }
+
+    private boolean isCallbackAccessionAllowedForWorklist(WorklistDetailRow worklist, String accessionNumber) {
+        if (!hasText(accessionNumber)) {
+            return true;
+        }
+        if (!hasAnyCallbackAccession(worklist)) {
+            return true;
+        }
+        String normalized = accessionNumber.trim();
+        return matchesCallbackAccession(normalized, worklist.getAccessionNumber())
+                || matchesCallbackAccession(normalized, worklist.getVisitCode())
+                || matchesCallbackAccession(normalized, worklist.getReferenceVisitCode());
+    }
+
+    private boolean hasAnyCallbackAccession(WorklistDetailRow worklist) {
+        return worklist != null && (
+                hasText(worklist.getAccessionNumber())
+                        || hasText(worklist.getVisitCode())
+                        || hasText(worklist.getReferenceVisitCode())
+        );
+    }
+
+    private boolean matchesCallbackAccession(String requestedAccessionNumber, String expectedAccessionNumber) {
+        return hasText(requestedAccessionNumber)
+                && hasText(expectedAccessionNumber)
+                && requestedAccessionNumber.trim().equalsIgnoreCase(expectedAccessionNumber.trim());
+    }
+
+    private String resolveStudyAccessionNumberForCallback(
+            WorklistDetailRow worklist,
+            WorklistReceivedStudyRequest request,
+            Map<String, Object> studyTags
+    ) {
+        if (worklist == null) {
+            return normalizedOrEmpty(request == null ? null : request.getAccessionNumber());
+        }
+        String worklistAccessionNumber = firstNonBlank(worklist.getAccessionNumber(), worklist.getVisitCode());
+        String requestedAccessionNumber = normalizedOrEmpty(request == null ? null : request.getAccessionNumber());
+        String dicomAccessionNumber = readDicomTag(studyTags, DicomTagConstants.ACCESSION_NUMBER);
+        String referenceVisitCode = worklist.getReferenceVisitCode();
+        if ((hasText(requestedAccessionNumber) && matchesCallbackAccession(requestedAccessionNumber, referenceVisitCode))
+                || (hasText(dicomAccessionNumber) && matchesCallbackAccession(dicomAccessionNumber, referenceVisitCode))) {
+            return firstNonBlank(worklistAccessionNumber, requestedAccessionNumber, dicomAccessionNumber);
+        }
+        return firstNonBlank(requestedAccessionNumber, dicomAccessionNumber, worklistAccessionNumber);
     }
 
     private WorklistDetailRow resolveCallbackWorklist(

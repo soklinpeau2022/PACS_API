@@ -34,6 +34,7 @@
             selected_route.id AS dicomRouteId,
             q.visit_code AS visitCode,
             COALESCE(s.accession_number, q.visit_code) AS accessionNumber,
+            s.reference_visit_code AS referenceVisitCode,
             COALESCE(NULLIF(m.abbr, ''), NULLIF(s.modality, ''), NULLIF(m.name, ''), '') AS modalityCode,
             selected_machine.machine_ae_title AS machineAeTitle,
             q.study_description AS studyDescription,
@@ -535,6 +536,7 @@
         <include refid="Worklist_STUDY_JOINS"/>
         WHERE LOWER(q.visit_code) = LOWER(#{accessionNumber})
            OR LOWER(s.accession_number) = LOWER(#{accessionNumber})
+           OR LOWER(s.reference_visit_code) = LOWER(#{accessionNumber})
         ORDER BY q.id DESC
         LIMIT 1
     </select>
@@ -551,6 +553,7 @@
           AND (
               LOWER(q.visit_code) = LOWER(#{accessionNumber})
               OR LOWER(s.accession_number) = LOWER(#{accessionNumber})
+              OR LOWER(s.reference_visit_code) = LOWER(#{accessionNumber})
           )
         ORDER BY q.id DESC
         LIMIT 1
