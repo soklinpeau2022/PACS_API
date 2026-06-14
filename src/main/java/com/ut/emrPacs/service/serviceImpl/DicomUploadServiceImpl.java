@@ -116,14 +116,12 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             }
 
             DicomUploadResponse uploadResponse = createBaseResponse(dicomServer);
-            String referenceVisitCode = trimToNull(request.getReferenceVisitCode());
             Long uploadedBy = currentUserId();
             OffsetDateTime receivedAt = OffsetDateTime.now();
             Map<String, DicomUploadStudySummary> summariesByStudyUid = new LinkedHashMap<>();
             UploadContext context = new UploadContext(
                     hospitalId,
                     dicomServer,
-                    referenceVisitCode,
                     uploadedBy,
                     receivedAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
                     uploadResponse,
@@ -297,17 +295,19 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         );
         String firstSeriesId = firstSeriesId(study, series, upload);
         String modality = firstNonBlank(readDicomTag(studyTags, "Modality"), firstSeriesModality(series), "OT");
-        String accessionNumber = firstNonBlank(readDicomTag(studyTags, "AccessionNumber"));
+        String dicomAccessionNumber = firstNonBlank(readDicomTag(studyTags, "AccessionNumber"));
+        String accessionNumber = dicomAccessionNumber;
         if (accessionNumber == null) {
             accessionNumber = generateUploadAccessionNumber(context.hospitalId, modality);
         }
+        String referenceVisitCode = dicomAccessionNumber;
 
         Long studyDbId = studyMapper.upsertFromDicomUpload(
                 context.hospitalId,
                 patient.getId(),
                 studyInstanceUid,
                 accessionNumber,
-                context.referenceVisitCode,
+                referenceVisitCode,
                 modality,
                 parseDicomDate(readDicomTag(studyTags, "StudyDate")),
                 firstNonBlank(readDicomTag(studyTags, "StudyDescription"), "Uploaded DICOM"),
@@ -331,7 +331,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         summary.setPatientSex(patient.getGender());
         summary.setPatientCreated(Boolean.TRUE.equals(patientMatch.created()));
         summary.setAccessionNumber(accessionNumber);
-        summary.setReferenceVisitCode(context.referenceVisitCode);
+        summary.setReferenceVisitCode(referenceVisitCode);
         summary.setStudyInstanceUid(studyInstanceUid);
         summary.setStudyDescription(savedStudy == null ? firstNonBlank(readDicomTag(studyTags, "StudyDescription"), "Uploaded DICOM") : savedStudy.getStudyDescription());
         summary.setModality(modality);
@@ -605,7 +605,6 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private record UploadContext(
             Long hospitalId,
             HospitalDicomServerResponse dicomServer,
-            String referenceVisitCode,
             Long uploadedBy,
             String receivedAtIso,
             DicomUploadResponse response,
