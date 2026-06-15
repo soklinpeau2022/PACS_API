@@ -249,6 +249,7 @@ function OnStableStudy(studyId, tags, metadata, origin)
   end
 
   local mainDicomTags = study['MainDicomTags'] or {}
+  local patientDicomTags = study['PatientMainDicomTags'] or {}
   local accessionNumber = readTag(mainDicomTags, 'AccessionNumber')
 
   if not hasText(accessionNumber) then
@@ -267,6 +268,13 @@ function OnStableStudy(studyId, tags, metadata, origin)
     accessionNumber = accessionNumber,
     dicomServerStudyId = studyId,
     studyInstanceUid = readTag(mainDicomTags, 'StudyInstanceUID'),
+    patientId = readTag(patientDicomTags, 'PatientID'),
+    patientName = readTag(patientDicomTags, 'PatientName'),
+    patientBirthDate = readTag(patientDicomTags, 'PatientBirthDate'),
+    patientSex = readTag(patientDicomTags, 'PatientSex'),
+    studyDescription = readTag(mainDicomTags, 'StudyDescription'),
+    studyDate = readTag(mainDicomTags, 'StudyDate'),
+    institutionName = readTag(mainDicomTags, 'InstitutionName'),
     imageInstanceCount = instanceCount
   }
 

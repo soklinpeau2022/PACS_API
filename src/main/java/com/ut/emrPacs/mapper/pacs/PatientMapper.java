@@ -21,6 +21,11 @@ public interface PatientMapper {
                                        @Param("lastName") String lastName,
                                        @Param("dateOfBirth") java.time.LocalDate dateOfBirth,
                                        @Param("gender") String gender);
+    PatientResponse findByPatientHn(@Param("hospitalId") Long hospitalId,
+                                    @Param("patientHn") String patientHn);
+    int updatePatientHnIfBlank(@Param("hospitalId") Long hospitalId,
+                               @Param("patientId") Long patientId,
+                               @Param("patientHn") String patientHn);
     Long countDuplicatePatientCode(@Param("patientCode") String patientCode, @Param("excludeId") Long excludeId);
     Boolean existsPatientSequenceTable();
     Long nextPatientSequenceByYear(@Param("hospitalId") Long hospitalId,

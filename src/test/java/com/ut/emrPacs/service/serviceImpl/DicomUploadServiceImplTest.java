@@ -19,7 +19,6 @@ import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerStudyRespon
 import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomUploadResponse;
 import com.ut.emrPacs.model.dto.response.pacs.patient.PatientResponse;
 import com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse;
-import com.ut.emrPacs.model.dto.response.pacs.worklist.WorklistDetailRow;
 import com.ut.emrPacs.model.dto.response.systemSettings.modality.ModalityResponse;
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.DicomServerClientService;
@@ -42,11 +41,13 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -81,7 +82,6 @@ class DicomUploadServiceImplTest {
         ReflectionTestUtils.setField(service, "dicomServerMapper", dicomServerMapper);
         ReflectionTestUtils.setField(service, "patientMapper", patientMapper);
         ReflectionTestUtils.setField(service, "studyMapper", studyMapper);
-        ReflectionTestUtils.setField(service, "worklistMapper", worklistMapper);
         ReflectionTestUtils.setField(service, "modalityMapper", modalityMapper);
         ReflectionTestUtils.setField(service, "hospitalMapper", hospitalMapper);
         ReflectionTestUtils.setField(service, "publicEntityKeyResolver", publicEntityKeyResolver);
@@ -106,7 +106,7 @@ class DicomUploadServiceImplTest {
     }
 
     @Test
-    void singleDicomFileCreatesLinkedStudyAndReceivedWorklist() throws Exception {
+    void singleDicomFileCreatesStudyWithoutWorklist() throws Exception {
         HospitalDicomServerResponse server = server();
         when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server));
         when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
@@ -122,16 +122,9 @@ class DicomUploadServiceImplTest {
         when(patientMapper.nextPatientSequenceByYear(eq(11L), any(), any())).thenReturn(1L);
         when(patientMapper.create(eq(11L), any())).thenReturn(55L);
         when(patientMapper.findById(11L, 55L)).thenReturn(patient());
-        when(worklistMapper.findWorklistByStudyIdentifiersAndHospital(11L, "1.2.3.4", "orthanc-study-1")).thenReturn(null);
-        when(worklistMapper.nextVisitSequence(eq(11L), any())).thenReturn(7L);
-        when(worklistMapper.findWorklistByVisitCodeAnyHospital(any())).thenReturn(null);
-        when(worklistMapper.assignWorklist(eq(11L), eq(99L), any(), any())).thenReturn(true);
-        when(worklistMapper.findWorklistByVisitCode(eq(11L), any())).thenReturn(worklist(66L, null));
-        when(studyMapper.upsertFromDicomUpload(eq(11L), eq(55L), eq("1.2.3.4"), any(), eq("ACC-2023"), eq(3L), eq("CT"),
-                eq(LocalDate.of(2023, 9, 26)), eq("CT CHEST"), eq(5L), eq(1), eq("orthanc-study-1"), eq("orthanc-patient-1"),
+        when(studyMapper.upsertFromDicomUpload(eq(11L), eq(55L), eq("1.2.3.4"), eq("ACC-2023"), eq("ACC-2023"), eq(3L), eq("CT"),
+                eq(LocalDate.of(2023, 9, 26)), eq("CT CHEST"), eq("TSNH HOSPITAL"), eq(5L), eq(1), eq("orthanc-study-1"), eq("orthanc-patient-1"),
                 eq("series-1"), eq(3), eq(99L), any())).thenReturn(77L);
-        when(worklistMapper.updateWorklistReceivedByVisitCode(eq(11L), any(), eq(77L), any(), eq(2), eq(99L))).thenReturn(1);
-        when(worklistMapper.findWorklistById(11L, 66L)).thenReturn(worklist(66L, 77L));
         when(studyMapper.findById(11L, 77L)).thenReturn(savedStudy());
 
         ResponseMessage<BaseResult> response = service.uploadDicom(new DicomUploadRequest(), List.of(
@@ -144,12 +137,15 @@ class DicomUploadServiceImplTest {
         assertEquals(0, body.getFailedFiles());
         assertEquals(1, body.getStudyCount());
         assertEquals("study-key", body.getStudies().get(0).getStudyPublicKey());
-        assertEquals("worklist-key", body.getStudies().get(0).getWorklistPublicKey());
-        verify(worklistMapper).upsertWorklistStudyLink(11L, 66L, 77L, 99L);
+        assertNull(body.getStudies().get(0).getWorklistPublicKey());
+        assertFalse(body.getStudies().get(0).getWorklistCreated());
+        assertEquals("PID-HEL", body.getStudies().get(0).getPatientHn());
+        assertEquals("TSNH HOSPITAL", body.getStudies().get(0).getInstitutionName());
+        verifyNoInteractions(worklistMapper);
     }
 
     @Test
-    void acceptedDicomFileFailsWhenStudyCannotBeLinkedToWorklist() throws Exception {
+    void acceptedDicomFileFailsWhenStudyCannotBeSavedWithoutTouchingWorklist() throws Exception {
         HospitalDicomServerResponse server = server();
         when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server));
         when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
@@ -161,16 +157,9 @@ class DicomUploadServiceImplTest {
         when(modalityMapper.findActiveHospitalModalityByDicomCode(11L, "CT")).thenReturn(modality());
         when(patientMapper.findByDemographics(eq(11L), eq("HEL"), eq("SOK"), eq(LocalDate.of(1975, 1, 1)), eq("M")))
                 .thenReturn(patient());
-        when(worklistMapper.findWorklistByStudyIdentifiersAndHospital(11L, "1.2.3.4", "orthanc-study-1")).thenReturn(null);
-        when(worklistMapper.nextVisitSequence(eq(11L), any())).thenReturn(7L);
-        when(worklistMapper.findWorklistByVisitCodeAnyHospital(any())).thenReturn(null);
-        when(worklistMapper.assignWorklist(eq(11L), eq(99L), any(), any())).thenReturn(true);
-        when(worklistMapper.findWorklistByVisitCode(eq(11L), any())).thenReturn(worklist(66L, null));
-        when(studyMapper.upsertFromDicomUpload(eq(11L), eq(55L), eq("1.2.3.4"), any(), eq("ACC-2023"), eq(3L), eq("CT"),
-                eq(LocalDate.of(2023, 9, 26)), eq("CT CHEST"), eq(5L), eq(1), eq("orthanc-study-1"), eq("orthanc-patient-1"),
-                eq("series-1"), eq(3), eq(99L), any())).thenReturn(77L);
-        when(worklistMapper.updateWorklistReceivedByVisitCode(eq(11L), any(), eq(77L), any(), eq(2), eq(99L))).thenReturn(0);
-        when(worklistMapper.updateWorklistReceivedById(eq(11L), eq(66L), eq(77L), eq(2), eq(99L), any())).thenReturn(0);
+        when(studyMapper.upsertFromDicomUpload(eq(11L), eq(55L), eq("1.2.3.4"), eq("ACC-2023"), eq("ACC-2023"), eq(3L), eq("CT"),
+                eq(LocalDate.of(2023, 9, 26)), eq("CT CHEST"), eq("TSNH HOSPITAL"), eq(5L), eq(1), eq("orthanc-study-1"), eq("orthanc-patient-1"),
+                eq("series-1"), eq(3), eq(99L), any())).thenReturn(null);
 
         ResponseMessage<BaseResult> response = service.uploadDicom(new DicomUploadRequest(), List.of(
                 new MockMultipartFile("files", "one.dcm", "application/dicom", new byte[] {1, 2, 3, 4})
@@ -181,7 +170,8 @@ class DicomUploadServiceImplTest {
         assertEquals(0, body.getAcceptedFiles());
         assertEquals(1, body.getFailedFiles());
         assertNotNull(body.getErrors());
-        assertTrue(body.getErrors().get(0).contains("Worklist could not be marked"));
+        assertTrue(body.getErrors().get(0).contains("study was not saved"));
+        verifyNoInteractions(worklistMapper);
     }
 
     private static HospitalDicomServerResponse server() {
@@ -214,7 +204,8 @@ class DicomUploadServiceImplTest {
                 "Modality", "CT",
                 "AccessionNumber", "ACC-2023",
                 "StudyDate", "20230926",
-                "StudyDescription", "CT CHEST"
+                "StudyDescription", "CT CHEST",
+                "InstitutionName", "TSNH HOSPITAL"
         ));
         response.setPatientMainDicomTags(Map.of(
                 "PatientID", "PID-HEL",
@@ -249,20 +240,11 @@ class DicomUploadServiceImplTest {
         response.setId(55L);
         response.setPublicKey("patient-key");
         response.setPatientCode("26-KSFH-P0000001");
+        response.setPatientHn("PID-HEL");
         response.setFirstName("HEL");
         response.setLastName("SOK");
         response.setGender("M");
         response.setDateOfBirth(LocalDate.of(1975, 1, 1));
-        return response;
-    }
-
-    private static WorklistDetailRow worklist(Long id, Long studyId) {
-        WorklistDetailRow response = new WorklistDetailRow();
-        response.setId(id);
-        response.setPublicKey("worklist-key");
-        response.setVisitCode("CT-KSFH-260614-0007");
-        response.setPatientId(55L);
-        response.setStudyId(studyId);
         return response;
     }
 
@@ -272,6 +254,7 @@ class DicomUploadServiceImplTest {
         response.setPublicKey("study-key");
         response.setStudyInstanceUid("1.2.3.4");
         response.setStudyDescription("CT CHEST");
+        response.setInstitutionName("TSNH HOSPITAL");
         response.setStatus("IMAGE_RECEIVED");
         return response;
     }

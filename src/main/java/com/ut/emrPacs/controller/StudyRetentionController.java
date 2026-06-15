@@ -9,6 +9,8 @@ import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import com.ut.emrPacs.model.base.filter.StudyRetentionPolicyFilter;
 import com.ut.emrPacs.model.base.filter.StudyRetentionReviewFilter;
+import com.ut.emrPacs.model.dto.request.pacs.studyRetention.StudyRetentionAutoDeleteRequest;
+import com.ut.emrPacs.model.dto.request.pacs.studyRetention.StudyRetentionBulkDeleteRequest;
 import com.ut.emrPacs.model.dto.request.pacs.studyRetention.StudyRetentionDecisionRequest;
 import com.ut.emrPacs.model.dto.request.pacs.studyRetention.StudyRetentionPolicySaveRequest;
 import com.ut.emrPacs.service.service.StudyRetentionService;
@@ -42,6 +44,16 @@ public class StudyRetentionController {
             return ResponseMessageUtils.makeResponse(false, 401, "Unauthorized", "You must be logged in.");
         }
         return studyRetentionService.listPolicies(filter, httpServletRequest);
+    }
+
+    @PostMapping(ApiConstants.StudyRetention.POLICY_FIND_PATH)
+    @Operation(summary = "Find a study retention policy", description = "Module -> Study Retention. Endpoint -> POST /study-retention/policy-find/{publicKey}. Use study_retention_policies.public_id only.")
+    public ResponseMessage<BaseResult> findPolicy(@PathVariable String publicKey, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        if (UserAuthSession.getCurrentUser() == null) {
+            return ResponseMessageUtils.makeResponse(false, 401, "Unauthorized", "You must be logged in.");
+        }
+        Long policyId = publicEntityKeyResolver.resolveFromPath(Entity.STUDY_RETENTION_POLICY, publicKey, "Study retention policy");
+        return studyRetentionService.findPolicy(policyId, httpServletRequest);
     }
 
     @PostMapping(ApiConstants.StudyRetention.POLICY_SAVE_PATH)
@@ -89,6 +101,24 @@ public class StudyRetentionController {
         }
         Long resolvedStudyId = publicEntityKeyResolver.resolveFromPath(Entity.STUDY, studyId, "Study");
         return studyRetentionService.approveDelete(resolvedStudyId, request, httpServletRequest);
+    }
+
+    @PostMapping(ApiConstants.StudyRetention.BULK_DELETE_PATH)
+    @Operation(summary = "Bulk approve hard-delete expired studies", description = "Module -> Study Retention. Endpoint -> POST /study-retention/bulk-delete")
+    public ResponseMessage<BaseResult> bulkDelete(@Valid @RequestBody(required = false) StudyRetentionBulkDeleteRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        if (UserAuthSession.getCurrentUser() == null) {
+            return ResponseMessageUtils.makeResponse(false, 401, "Unauthorized", "You must be logged in.");
+        }
+        return studyRetentionService.bulkDelete(request, httpServletRequest);
+    }
+
+    @PostMapping(ApiConstants.StudyRetention.AUTO_DELETE_RUN_PATH)
+    @Operation(summary = "Run chunked auto-delete for expired studies", description = "Module -> Study Retention. Endpoint -> POST /study-retention/auto-delete-run")
+    public ResponseMessage<BaseResult> runAutoDelete(@Valid @RequestBody(required = false) StudyRetentionAutoDeleteRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        if (UserAuthSession.getCurrentUser() == null) {
+            return ResponseMessageUtils.makeResponse(false, 401, "Unauthorized", "You must be logged in.");
+        }
+        return studyRetentionService.runAutoDelete(request, httpServletRequest);
     }
 
     @PostMapping(ApiConstants.StudyRetention.REJECT_DELETE_PATH)

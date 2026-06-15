@@ -175,6 +175,36 @@ function Add-BodyValue {
     }
 }
 
+function Copy-Hashtable {
+    param([hashtable]$Source)
+    $copy = @{}
+    foreach ($key in $Source.Keys) {
+        $copy[$key] = $Source[$key]
+    }
+    return $copy
+}
+
+function Get-Sha256Hex {
+    param([byte[]]$Bytes)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash($Bytes)
+        return (($hash | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-ByteSlice {
+    param([byte[]]$Bytes, [int]$Start, [int]$End)
+    $length = [Math]::Max(0, $End - $Start)
+    $slice = New-Object byte[] $length
+    if ($length -gt 0) {
+        [Array]::Copy($Bytes, $Start, $slice, 0, $length)
+    }
+    return $slice
+}
+
 function Invoke-ApiRaw {
     param(
         [string]$Method,
@@ -956,6 +986,48 @@ if ($viewerBrowserHeaders.Count -gt 0 -and $null -ne $viewerInfoData) {
         Add-Result -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-find" -Name "Validate PACS viewer state round trip" -Status "FAIL" -Category "audit" -Detail "Saved viewer state was not returned with the expected state type."
     }
 
+    $chunkViewerStateBody = Copy-Hashtable $viewerStateBody
+    $chunkViewerStateBody["stateType"] = "$($viewerStateType)_CHUNK"
+    $chunkViewerStateSaveBody = Copy-Hashtable $viewerStateSaveBody
+    $chunkViewerStateSaveBody["stateType"] = $chunkViewerStateBody["stateType"]
+    $chunkViewerStateSaveBody["viewerState"] = @{
+        source = "api-smoke-chunk"
+        savedAt = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $chunkViewerStateSaveBody["metadata"] = @{ testRun = $Stamp; chunkedEndpoint = $true }
+    $chunkJson = $chunkViewerStateSaveBody | ConvertTo-Json -Depth 40 -Compress
+    $chunkBytes = [System.Text.Encoding]::UTF8.GetBytes($chunkJson)
+    $chunkUploadId = "api-smoke-$Stamp"
+    $chunkHash = Get-Sha256Hex $chunkBytes
+    $chunkCount = 2
+    $firstChunkEnd = [Math]::Ceiling($chunkBytes.Length / 2)
+    for ($chunkIndex = 0; $chunkIndex -lt $chunkCount; $chunkIndex++) {
+        $start = if ($chunkIndex -eq 0) { 0 } else { $firstChunkEnd }
+        $end = if ($chunkIndex -eq 0) { $firstChunkEnd } else { $chunkBytes.Length }
+        $chunkBody = Copy-Hashtable $chunkViewerStateBody
+        $chunkBody["uploadId"] = $chunkUploadId
+        $chunkBody["chunkIndex"] = $chunkIndex
+        $chunkBody["chunkCount"] = $chunkCount
+        $chunkBody["payloadSizeBytes"] = $chunkBytes.Length
+        $chunkBody["payloadSha256"] = $chunkHash
+        $chunkBody["chunkData"] = [Convert]::ToBase64String((Get-ByteSlice -Bytes $chunkBytes -Start $start -End $end))
+        $null = Test-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-save-chunk" -Name "Upload PACS viewer state chunk $chunkIndex" -Body $chunkBody -Category "safe-mutation" -ExtraHeaders $viewerBrowserHeaders
+    }
+    $chunkCompleteBody = Copy-Hashtable $chunkViewerStateBody
+    $chunkCompleteBody["uploadId"] = $chunkUploadId
+    $chunkCompleteBody["chunkCount"] = $chunkCount
+    $chunkCompleteBody["payloadSizeBytes"] = $chunkBytes.Length
+    $chunkCompleteBody["payloadSha256"] = $chunkHash
+    $null = Test-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-save-chunk-complete" -Name "Complete PACS viewer state chunked save" -Body $chunkCompleteBody -Category "safe-mutation" -ExtraHeaders $viewerBrowserHeaders
+    $chunkFoundViewerState = Test-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-find" -Name "Find chunked PACS viewer state" -Body $chunkViewerStateBody -Category "read" -ExtraHeaders $viewerBrowserHeaders
+    $chunkFoundViewerStateRow = Get-FirstData $chunkFoundViewerState
+    if ($null -ne $chunkFoundViewerStateRow -and [string]$chunkFoundViewerStateRow.stateType -eq $chunkViewerStateBody["stateType"]) {
+        Add-Result -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-save-chunk-complete" -Name "Validate PACS viewer state chunked round trip" -Status "PASS" -Category "audit" -Detail "Chunked viewer state was reassembled and returned from the database."
+    } else {
+        Add-Result -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-save-chunk-complete" -Name "Validate PACS viewer state chunked round trip" -Status "FAIL" -Category "audit" -Detail "Chunked viewer state was not returned with the expected state type."
+    }
+    $null = Test-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-delete" -Name "Delete chunked PACS viewer state" -Body $chunkViewerStateBody -Category "safe-mutation" -ExtraHeaders $viewerBrowserHeaders
+
     $null = Test-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-delete" -Name "Delete PACS viewer state" -Body $viewerStateBody -Category "safe-mutation" -ExtraHeaders $viewerBrowserHeaders
     $deletedViewerState = Test-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-find" -Name "Confirm PACS viewer state deletion" -Body $viewerStateBody -Category "read" -ExtraHeaders $viewerBrowserHeaders
     if (@(Get-DataList $deletedViewerState).Count -eq 0) {
@@ -966,6 +1038,8 @@ if ($viewerBrowserHeaders.Count -gt 0 -and $null -ne $viewerInfoData) {
 } else {
     $viewerStateSkipReason = "viewer-info did not return a scoped viewer access token."
     Skip-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-save" -Name "Save PACS viewer state" -Reason $viewerStateSkipReason -Category "safe-mutation"
+    Skip-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-save-chunk" -Name "Upload PACS viewer state chunk" -Reason $viewerStateSkipReason -Category "safe-mutation"
+    Skip-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-save-chunk-complete" -Name "Complete PACS viewer state chunked save" -Reason $viewerStateSkipReason -Category "safe-mutation"
     Skip-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-find" -Name "Find PACS viewer state" -Reason $viewerStateSkipReason
     Skip-Api -Method "POST" -Path "/pacs-result-api/pacs-result-viewer-state-delete" -Name "Delete PACS viewer state" -Reason $viewerStateSkipReason -Category "safe-mutation"
 }

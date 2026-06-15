@@ -13,5 +13,7 @@ public final class DicomTagConstants {
     public static final String ACCESSION_NUMBER = "AccessionNumber";
     public static final String STUDY_DESCRIPTION = "StudyDescription";
     public static final String STUDY_DATE = "StudyDate";
+    public static final String INSTITUTION_NAME = "InstitutionName";
+    public static final String PATIENT_ID = "PatientID";
     public static final String PATIENT_NAME = "PatientName";
 }

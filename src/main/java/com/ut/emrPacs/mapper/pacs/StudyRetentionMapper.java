@@ -28,6 +28,8 @@ public interface StudyRetentionMapper {
 
     Integer countDicomServerInHospital(@Param("hospitalId") Long hospitalId, @Param("dicomServerId") Long dicomServerId);
 
+    Integer countModalityInHospital(@Param("hospitalId") Long hospitalId, @Param("modalityId") Long modalityId);
+
     Integer insertPolicy(@Param("request") StudyRetentionPolicySaveRequest request, @Param("userId") Long userId);
 
     Integer updatePolicy(@Param("request") StudyRetentionPolicySaveRequest request, @Param("userId") Long userId);
@@ -39,6 +41,15 @@ public interface StudyRetentionMapper {
     List<StudyRetentionReviewResponse> listReview(@Param("hospitalId") Long hospitalId, @Param("filter") StudyRetentionReviewFilter filter);
 
     StudyRetentionReviewResponse findReviewCandidateByStudyId(@Param("hospitalId") Long hospitalId, @Param("studyId") Long studyId);
+
+    List<StudyRetentionReviewResponse> listReviewCandidatesByStudyPublicKeys(
+            @Param("hospitalId") Long hospitalId,
+            @Param("studyPublicKeys") List<String> studyPublicKeys
+    );
+
+    List<StudyRetentionReviewResponse> listAutoDeleteCandidates(@Param("hospitalId") Long hospitalId, @Param("limit") Integer limit);
+
+    List<StudyRetentionReviewResponse> listDashboardRetentionAlerts(@Param("hospitalId") Long hospitalId, @Param("limit") Integer limit);
 
     StudyRetentionSummaryResponse summary(@Param("hospitalId") Long hospitalId);
 

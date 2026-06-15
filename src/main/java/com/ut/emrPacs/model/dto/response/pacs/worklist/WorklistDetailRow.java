@@ -22,6 +22,7 @@ public class WorklistDetailRow {
     private Long patientId;
     private String patientPublicKey;
     private String patientUid;
+    private String patientHn;
     private String patientName;
     private LocalDate dob;
     private String sex;
@@ -58,6 +59,7 @@ public class WorklistDetailRow {
     private String receivedAt;
     private String startedAt;
     private String imageReceivedAt;
+    private String institutionName;
     private String cancelledAt;
     private String errorMessage;
     private String status;

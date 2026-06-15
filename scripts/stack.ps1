@@ -251,6 +251,9 @@ Summary: $Summary
 function Invoke-Compose {
     param([string[]]$ComposeArgs)
     & docker compose --env-file $envFile --profile $Target -f docker-compose.yml @ComposeArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "docker compose $($ComposeArgs -join ' ') failed (exit $LASTEXITCODE). Aborting deploy so a stale image is not promoted."
+    }
 }
 
 function Show-LocalDockerPsSnapshot {
@@ -586,8 +589,8 @@ function Start-ApiContainer {
         "SECURITY_JWT_PUBLIC_KEY=$(Get-EnvValue -FilePath $envFile -Key 'SECURITY_JWT_PUBLIC_KEY')",
         "SECURITY_JWT_KEY_ID=$(Get-EnvValue -FilePath $envFile -Key 'SECURITY_JWT_KEY_ID')",
         "HOSPITAL_IMAGE_ROOT_PATH=$(Get-EnvValue -FilePath $envFile -Key 'HOSPITAL_IMAGE_ROOT_PATH')",
-        "PACS_DICOM_UPLOAD_TEMP_DIR=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_UPLOAD_TEMP_DIR' -DefaultValue '/var/ut-dicom-upload-temp')",
-        "SPRING_SERVLET_MULTIPART_LOCATION=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'SPRING_SERVLET_MULTIPART_LOCATION' -DefaultValue '/var/ut-dicom-upload-temp')",
+        "PACS_DICOM_UPLOAD_TEMP_DIR=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_UPLOAD_TEMP_DIR' -DefaultValue '/var/ut-image/tmp/dicom-upload')",
+        "SPRING_SERVLET_MULTIPART_LOCATION=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'SPRING_SERVLET_MULTIPART_LOCATION' -DefaultValue '/var/ut-image')",
         "APP_SECURITY_DICOM_UPLOAD_MAX_REQUEST_BYTES=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'APP_SECURITY_DICOM_UPLOAD_MAX_REQUEST_BYTES' -DefaultValue '4294967296')",
         "SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE' -DefaultValue '4GB')",
         "SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE' -DefaultValue '4GB')",

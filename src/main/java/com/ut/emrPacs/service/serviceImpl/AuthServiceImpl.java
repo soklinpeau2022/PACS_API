@@ -26,7 +26,6 @@ import com.ut.emrPacs.model.users.User;
 import com.ut.emrPacs.model.users.UserGroupList;
 import com.ut.emrPacs.service.service.AuthService;
 import com.ut.emrPacs.service.service.ActivityLogService;
-import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
@@ -50,10 +49,8 @@ import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.util.*;
 
-import static com.ut.emrPacs.config.ApiConstants.Security.ACCESS_TOKEN_COOKIE;
 import static com.ut.emrPacs.config.ApiConstants.Security.PRINCIPAL_TYPE_CLIENT;
 import static com.ut.emrPacs.config.ApiConstants.Security.PRINCIPAL_TYPE_USER;
-import static com.ut.emrPacs.config.ApiConstants.Security.REFRESH_TOKEN_COOKIE;
 
 @Service
 public class AuthServiceImpl implements AuthService {
@@ -89,18 +86,14 @@ public class AuthServiceImpl implements AuthService {
     @Value("${security.jwt.refresh-token-ms}")
     private long refreshTokenExpirationMs;
 
-    @Value("${security.jwt.refresh-token-allow-body:false}")
+    @Value("${security.jwt.refresh-token-allow-body:true}")
     private boolean allowRefreshTokenInBody;
 
-    @Value("${security.jwt.refresh-token-return-in-body:false}")
+    @Value("${security.jwt.refresh-token-return-in-body:true}")
     private boolean returnRefreshTokenInBody;
 
-    @Value("${app.security.cookies.same-site:None}")
-    private String authCookieSameSite;
-
-    @Value("${app.security.cookies.secure:true}")
-    private boolean authCookieSecure;
-
+    @Value("${security.jwt.access-token-return-in-body:true}")
+    private boolean returnAccessTokenInBody;
 
     /** {@inheritDoc} */
     @Override
@@ -191,10 +184,8 @@ public class AuthServiceImpl implements AuthService {
             List<AccessTokenResponse> tokens = new ArrayList<>();
             tokens.add(accessTokenResponse);
             replaceWithOpaqueRefreshToken(tokens, userId, hospitalId, clientId, loginRequest.getClientName(), httpServletRequest, null, refreshTokenLifetimeMs);
-            if (!tokens.isEmpty()) {
-                setAuthCookies(httpServletRequest, httpServletResponse, tokens.getFirst(), refreshTokenLifetimeMs);
-            }
-            stripRefreshTokensFromResponse(tokens);
+            String tokenJti = extractAccessTokenJti(tokens);
+            stripBrowserTokensFromResponse(tokens);
             setNoStoreHeaders(httpServletResponse);
 
             if (userId != null) {
@@ -206,7 +197,6 @@ public class AuthServiceImpl implements AuthService {
                 }
             }
 
-            String tokenJti = extractAccessTokenJti(tokens);
             auditAuthEvent("login_success", true, userId, clientId, PRINCIPAL_TYPE_USER, tokenJti, httpServletRequest, "ok");
 
             BaseResult result = new BaseResult();
@@ -256,22 +246,19 @@ public class AuthServiceImpl implements AuthService {
         try { revokedTokenMapper.deleteExpired(LocalDateTime.now()); } catch (Exception ex) { logger.warn("Expired token cleanup failed: {}", ex.getMessage()); }
         refreshTokenService.cleanupExpired();
         SecurityContextHolder.clearContext();
-        clearAuthCookies(httpServletRequest, httpServletResponse);
     }
 
 
     /** {@inheritDoc} */
     @Override
-    public ResponseMessage<BaseResult> handleLogout(HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse) {
+    public ResponseMessage<BaseResult> handleLogout(RefreshTokenRequest refreshTokenRequest, HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse) {
         // Process flow: execute handle logout business logic and return operation result.
         LocalTime startDuration = LocalTime.now();
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         Long userId = extractUserId(authentication);
         try {
             revokeCurrentAccessTokenIfPresent(httpServletRequest);
-            revokeRefreshTokenIfPresent(httpServletRequest);
-
-            clearAuthCookies(httpServletRequest, httpServletResponse);
+            revokeRefreshTokenIfPresent(refreshTokenRequest, httpServletRequest);
 
             if (userId != null) {
                 try {
@@ -321,28 +308,24 @@ public class AuthServiceImpl implements AuthService {
         String requestedClientId = refreshTokenRequest != null ? trimToNull(refreshTokenRequest.getClientId()) : null;
         String refreshToken = resolveRefreshToken(refreshTokenRequest, request);
         if (refreshToken == null || refreshToken.isBlank()) {
-            clearAuthCookies(request, response);
             auditAuthEvent("refresh_failure", false, null, requestedClientId, PRINCIPAL_TYPE_USER, null, request, "missing_refresh_token");
             return ResponseMessageUtils.makeResponse(false, 401, messageService.message("Invalid or expired token", false));
         }
 
         RefreshTokenRow refreshTokenRow = refreshTokenService.validate(refreshToken);
         if (refreshTokenRow == null) {
-            clearAuthCookies(request, response);
             auditAuthEvent("refresh_failure", false, null, requestedClientId, PRINCIPAL_TYPE_USER, null, request, "invalid_refresh_token");
             return ResponseMessageUtils.makeResponse(false, 401, messageService.message("Invalid or expired token", false));
         }
 
         String refreshClientId = trimToNull(refreshTokenRow.getClientId());
         if (requestedClientId != null && !requestedClientId.equals(refreshClientId)) {
-            clearAuthCookies(request, response);
             auditAuthEvent("refresh_failure", false, refreshTokenRow.getUserId(), requestedClientId, PRINCIPAL_TYPE_USER, null, request, "client_mismatch");
             return ResponseMessageUtils.makeResponse(false, 401, messageService.message("Invalid client.", false));
         }
 
         OAuth2ClientRow clientRow = validateOAuthClientForGrant(refreshClientId, "refresh_token", false);
         if (clientRow == null) {
-            clearAuthCookies(request, response);
             auditAuthEvent("invalid_client", false, refreshTokenRow.getUserId(), refreshClientId, PRINCIPAL_TYPE_USER, null, request, "invalid_client_or_grant");
             return ResponseMessageUtils.makeResponse(false, 401, messageService.message("Invalid client.", false));
         }
@@ -350,12 +333,10 @@ public class AuthServiceImpl implements AuthService {
         Long userId = refreshTokenRow.getUserId();
         User user = userId != null ? authMapper.findAuthUserById(userId) : null;
         if (user == null) {
-            clearAuthCookies(request, response);
             auditAuthEvent("refresh_failure", false, userId, refreshClientId, PRINCIPAL_TYPE_USER, null, request, "user_not_found");
             return ResponseMessageUtils.makeResponse(false, 401, messageService.message("Invalid or expired token", false));
         }
         if (user.getIsActive() != null && user.getIsActive() != 1) {
-            clearAuthCookies(request, response);
             auditAuthEvent("refresh_failure", false, userId, refreshClientId, PRINCIPAL_TYPE_USER, null, request, "user_inactive");
             return ResponseMessageUtils.makeResponse(false, 403, messageService.message("Forbidden", false));
         }
@@ -365,7 +346,6 @@ public class AuthServiceImpl implements AuthService {
         List<String> roles = buildRolesForUser(user);
         Long hospitalId = refreshTokenRow.getHospitalId();
         if (hospitalId == null) {
-            clearAuthCookies(request, response);
             auditAuthEvent("refresh_failure", false, userId, refreshClientId, PRINCIPAL_TYPE_USER, null, request, "no_hospital");
             return ResponseMessageUtils.makeResponse(false, 403, messageService.message("Forbidden", false));
         }
@@ -396,52 +376,15 @@ public class AuthServiceImpl implements AuthService {
                 refreshTokenLifetimeMs
         );
 
-        if (!tokens.isEmpty()) {
-            setAuthCookies(request, response, tokens.get(0), refreshTokenLifetimeMs);
-        }
-        stripRefreshTokensFromResponse(tokens);
+        String tokenJti = extractAccessTokenJti(tokens);
+        stripBrowserTokensFromResponse(tokens);
         setNoStoreHeaders(response);
 
-        String tokenJti = extractAccessTokenJti(tokens);
         auditAuthEvent("refresh_success", true, userId, refreshClientId, PRINCIPAL_TYPE_USER, tokenJti, request, "ok");
 
         BaseResult result = new BaseResult();
         result.setData(tokens);
         return ResponseMessageUtils.makeResponse(true, result);
-    }
-
-    private void clearAuthCookies(HttpServletRequest request, HttpServletResponse response) {
-        CookieUtils.deleteCookie(request, response, ACCESS_TOKEN_COOKIE, true, authCookieSameSite, authCookieSecure);
-        CookieUtils.deleteCookie(request, response, REFRESH_TOKEN_COOKIE, true, authCookieSameSite, authCookieSecure);
-    }
-
-    private void setAuthCookies(HttpServletRequest request,
-                                HttpServletResponse response,
-                                AccessTokenResponse tokenResponse,
-                                Long refreshTokenLifetimeMs) {
-        if (tokenResponse == null) {
-            return;
-        }
-        int accessMaxAge = toPositiveSeconds(tokenResponse.getExpiresIn());
-        CookieUtils.addOrUpdateCookie(request, response, ACCESS_TOKEN_COOKIE, tokenResponse.getAccessToken(), accessMaxAge, true, authCookieSameSite, authCookieSecure);
-
-        long resolvedRefreshMs = refreshTokenLifetimeMs != null && refreshTokenLifetimeMs > 0
-                ? refreshTokenLifetimeMs
-                : refreshTokenExpirationMs;
-        int refreshMaxAge = toSecondsFromMillis(resolvedRefreshMs);
-        if (refreshMaxAge > 0) {
-            CookieUtils.addOrUpdateCookie(request, response, REFRESH_TOKEN_COOKIE, tokenResponse.getRefreshToken(), refreshMaxAge, true, authCookieSameSite, authCookieSecure);
-        }
-    }
-
-    private int toPositiveSeconds(Long seconds) {
-        if (seconds == null || seconds <= 0) {
-            return 0;
-        }
-        if (seconds > Integer.MAX_VALUE) {
-            return Integer.MAX_VALUE;
-        }
-        return (int) Math.max(seconds, 0);
     }
 
     private int toSecondsFromMillis(long durationMs) {
@@ -521,14 +464,19 @@ public class AuthServiceImpl implements AuthService {
         }
     }
 
-    private void stripRefreshTokensFromResponse(List<AccessTokenResponse> tokens) {
-        if (returnRefreshTokenInBody || tokens == null) {
+    private void stripBrowserTokensFromResponse(List<AccessTokenResponse> tokens) {
+        if (tokens == null) {
             return;
         }
         for (AccessTokenResponse token : tokens) {
             if (token != null) {
-                token.setRefreshToken(null);
-                token.setRefreshExpiresIn(null);
+                if (!returnAccessTokenInBody) {
+                    token.setAccessToken(null);
+                }
+                if (!returnRefreshTokenInBody) {
+                    token.setRefreshToken(null);
+                    token.setRefreshExpiresIn(null);
+                }
             }
         }
     }
@@ -543,14 +491,7 @@ public class AuthServiceImpl implements AuthService {
                 }
             }
         }
-        return CookieUtils.getCookie(request, REFRESH_TOKEN_COOKIE)
-                .map(Cookie::getValue)
-                .filter(Objects::nonNull)
-                .map(String::trim)
-                .filter(value -> !value.isEmpty())
-                .filter(value -> !AuthTokenHelper.isNullLike(value))
-                .map(this::decryptOrOriginal)
-                .orElse(null);
+        return null;
     }
 
     private String decryptOrOriginal(String token) {
@@ -574,8 +515,8 @@ public class AuthServiceImpl implements AuthService {
         return roles.stream().toList();
     }
 
-    private void revokeRefreshTokenIfPresent(HttpServletRequest request) {
-        String refreshToken = resolveRefreshToken(null, request);
+    private void revokeRefreshTokenIfPresent(RefreshTokenRequest refreshTokenRequest, HttpServletRequest request) {
+        String refreshToken = resolveRefreshToken(refreshTokenRequest, request);
         if (refreshToken == null || refreshToken.isBlank()) {
             return;
         }
@@ -807,5 +748,3 @@ public class AuthServiceImpl implements AuthService {
     private record ScopeResolution(boolean valid, String grantedScope, String reasonCode) {
     }
 }
-
-

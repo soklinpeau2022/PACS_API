@@ -1,0 +1,228 @@
+package com.ut.emrPacs.service.serviceImpl;
+
+import com.ut.emrPacs.authentication.principal.CurrentUserPrincipal;
+import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
+import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
+import com.ut.emrPacs.mapper.pacs.StudyRetentionMapper;
+import com.ut.emrPacs.model.base.BaseResult;
+import com.ut.emrPacs.model.base.MessageService;
+import com.ut.emrPacs.model.base.ResponseMessage;
+import com.ut.emrPacs.model.dto.request.pacs.studyRetention.StudyRetentionAutoDeleteRequest;
+import com.ut.emrPacs.model.dto.request.pacs.studyRetention.StudyRetentionBulkDeleteRequest;
+import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
+import com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionBulkDeleteResponse;
+import com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionReviewResponse;
+import com.ut.emrPacs.service.service.ActivityLogService;
+import com.ut.emrPacs.service.service.DicomServerClientService;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+@ExtendWith(MockitoExtension.class)
+class StudyRetentionServiceImplTest {
+
+    @Mock
+    private StudyRetentionMapper studyRetentionMapper;
+    @Mock
+    private DicomServerMapper dicomServerMapper;
+    @Mock
+    private DicomServerClientService dicomServerClientService;
+    @Mock
+    private ActivityLogService activityLogService;
+    @Mock
+    private PublicEntityKeyResolver publicEntityKeyResolver;
+    @Mock
+    private PlatformTransactionManager transactionManager;
+
+    private StudyRetentionServiceImpl service;
+
+    @BeforeEach
+    void setUp() {
+        service = new StudyRetentionServiceImpl();
+        ReflectionTestUtils.setField(service, "studyRetentionMapper", studyRetentionMapper);
+        ReflectionTestUtils.setField(service, "dicomServerMapper", dicomServerMapper);
+        ReflectionTestUtils.setField(service, "dicomServerClientService", dicomServerClientService);
+        ReflectionTestUtils.setField(service, "messageService", new MessageService());
+        ReflectionTestUtils.setField(service, "activityLogService", activityLogService);
+        ReflectionTestUtils.setField(service, "publicEntityKeyResolver", publicEntityKeyResolver);
+        ReflectionTestUtils.setField(service, "transactionManager", transactionManager);
+        ReflectionTestUtils.setField(service, "autoDeleteSchedulerEnabled", false);
+        ReflectionTestUtils.setField(service, "scheduledAutoDeleteChunkSize", 25);
+        ReflectionTestUtils.setField(service, "scheduledAutoDeleteMaxItems", 100);
+
+        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                "super.admin",
+                "n/a",
+                List.of(new SimpleGrantedAuthority("ROLE_SUPER_ADMIN"))
+        );
+        authentication.setDetails(new CurrentUserPrincipal(1L, "super.admin", null, null, "pacs-web", "jti", 1L));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        lenient().when(dicomServerMapper.getDicomServerById(anyLong(), anyLong())).thenReturn(List.of(server()));
+        lenient().when(studyRetentionMapper.hardDeleteStudyData(anyLong(), anyLong())).thenReturn(1);
+    }
+
+    @AfterEach
+    void tearDown() {
+        SecurityContextHolder.clearContext();
+    }
+
+    @Test
+    void bulkDeleteDeletesSelectedStudiesInChunksAndReportsMissingRows() throws Exception {
+        StudyRetentionBulkDeleteRequest request = new StudyRetentionBulkDeleteRequest();
+        request.setStudyPublicKeys(List.of("Study-A", "study-b", "study-c", "missing", "study-a"));
+        request.setChunkSize(2);
+
+        when(studyRetentionMapper.listReviewCandidatesByStudyPublicKeys(isNull(), eq(List.of("study-a", "study-b"))))
+                .thenReturn(List.of(candidate("study-a", "EXPIRED_WAITING_APPROVAL", 101L), candidate("study-b", "DELETE_FAILED", 102L)));
+        when(studyRetentionMapper.listReviewCandidatesByStudyPublicKeys(isNull(), eq(List.of("study-c", "missing"))))
+                .thenReturn(List.of(candidate("study-c", "PENDING_APPROVAL", 103L)));
+        when(studyRetentionMapper.createDeleteRequest(any(StudyRetentionReviewResponse.class), eq(1L)))
+                .thenReturn(1001L, 1002L, 1003L);
+
+        StudyRetentionBulkDeleteResponse body = extractBulkResponse(service.bulkDelete(request, new MockHttpServletRequest()));
+
+        assertEquals("BULK_DELETE", body.getMode());
+        assertEquals(4, body.getRequested());
+        assertEquals(4, body.getProcessed());
+        assertEquals(3, body.getDeleted());
+        assertEquals(0, body.getFailed());
+        assertEquals(1, body.getSkipped());
+        assertEquals(2, body.getChunkSize());
+        assertEquals(2, body.getChunks());
+        verify(studyRetentionMapper).listReviewCandidatesByStudyPublicKeys(isNull(), eq(List.of("study-a", "study-b")));
+        verify(studyRetentionMapper).listReviewCandidatesByStudyPublicKeys(isNull(), eq(List.of("study-c", "missing")));
+    }
+
+    @Test
+    void bulkDeleteSkipsRowsThatAreNotReadyForDeletion() throws Exception {
+        StudyRetentionBulkDeleteRequest request = new StudyRetentionBulkDeleteRequest();
+        request.setStudyPublicKeys(List.of("study-active"));
+
+        when(studyRetentionMapper.listReviewCandidatesByStudyPublicKeys(isNull(), eq(List.of("study-active"))))
+                .thenReturn(List.of(candidate("study-active", "NEAR_EXPIRY", 201L)));
+
+        StudyRetentionBulkDeleteResponse body = extractBulkResponse(service.bulkDelete(request, new MockHttpServletRequest()));
+
+        assertEquals(1, body.getRequested());
+        assertEquals(1, body.getProcessed());
+        assertEquals(0, body.getDeleted());
+        assertEquals(0, body.getFailed());
+        assertEquals(1, body.getSkipped());
+        verify(studyRetentionMapper, never()).createDeleteRequest(any(StudyRetentionReviewResponse.class), anyLong());
+        verify(dicomServerClientService, never()).deleteStudyById(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void runAutoDeleteDeletesAutoReadyCandidatesInChunks() throws Exception {
+        StudyRetentionAutoDeleteRequest request = new StudyRetentionAutoDeleteRequest();
+        request.setMaxItems(3);
+        request.setChunkSize(2);
+
+        when(studyRetentionMapper.listAutoDeleteCandidates(isNull(), eq(3)))
+                .thenReturn(List.of(
+                        candidate("auto-a", "AUTO_DELETE_READY", 301L),
+                        candidate("auto-b", "AUTO_DELETE_READY", 302L),
+                        candidate("auto-c", "AUTO_DELETE_READY", 303L)
+                ));
+        when(studyRetentionMapper.createDeleteRequest(any(StudyRetentionReviewResponse.class), eq(1L)))
+                .thenReturn(2001L, 2002L, 2003L);
+
+        StudyRetentionBulkDeleteResponse body = extractBulkResponse(service.runAutoDelete(request, new MockHttpServletRequest()));
+
+        assertEquals("MANUAL_AUTO_RUN", body.getMode());
+        assertEquals(3, body.getRequested());
+        assertEquals(3, body.getProcessed());
+        assertEquals(3, body.getDeleted());
+        assertEquals(0, body.getFailed());
+        assertEquals(0, body.getSkipped());
+        assertEquals(2, body.getChunkSize());
+        assertEquals(2, body.getChunks());
+        verify(studyRetentionMapper).listAutoDeleteCandidates(isNull(), eq(3));
+    }
+
+    @Test
+    void runAutoDeleteRecordsFailureAndContinuesWithNextCandidate() throws Exception {
+        StudyRetentionAutoDeleteRequest request = new StudyRetentionAutoDeleteRequest();
+        request.setMaxItems(2);
+        request.setChunkSize(2);
+
+        when(studyRetentionMapper.listAutoDeleteCandidates(isNull(), eq(2)))
+                .thenReturn(List.of(candidate("auto-failed", "AUTO_DELETE_READY", 401L), candidate("auto-ok", "AUTO_DELETE_READY", 402L)));
+        when(studyRetentionMapper.createDeleteRequest(any(StudyRetentionReviewResponse.class), eq(1L)))
+                .thenReturn(3001L, 3002L);
+        doThrow(new RuntimeException("delete failed"))
+                .doNothing()
+                .when(dicomServerClientService)
+                .deleteStudyById(anyString(), anyString(), anyString(), anyString());
+
+        StudyRetentionBulkDeleteResponse body = extractBulkResponse(service.runAutoDelete(request, new MockHttpServletRequest()));
+
+        assertEquals(2, body.getProcessed());
+        assertEquals(1, body.getDeleted());
+        assertEquals(1, body.getFailed());
+        assertEquals(0, body.getSkipped());
+        verify(studyRetentionMapper).markRequestDeleteFailed(eq(3001L), anyString());
+        verify(studyRetentionMapper).markRequestDeleted(3002L, 1L);
+    }
+
+    private static StudyRetentionBulkDeleteResponse extractBulkResponse(ResponseMessage<BaseResult> response) {
+        assertTrue(response.getHeader().getResult());
+        assertNotNull(response.getBody());
+        assertNotNull(response.getBody().getData());
+        assertEquals(1, response.getBody().getData().size());
+        return (StudyRetentionBulkDeleteResponse) response.getBody().getData().get(0);
+    }
+
+    private static StudyRetentionReviewResponse candidate(String publicKey, String status, Long studyId) {
+        StudyRetentionReviewResponse response = new StudyRetentionReviewResponse();
+        response.setStudyId(studyId);
+        response.setStudyPublicKey(publicKey);
+        response.setHospitalId(10L);
+        response.setHospitalName("KSFH Hospital");
+        response.setDicomServerId(20L);
+        response.setDicomServerName("UDAYA_DICOM_SERVER_KSFH");
+        response.setDicomServerStudyId("dicom-" + publicKey);
+        response.setPatientName("Retention Test " + publicKey);
+        response.setPatientMrn("MRN-" + publicKey);
+        response.setAccessionNumber("ACC-" + publicKey);
+        response.setStatus(status);
+        response.setAutoDelete("AUTO_DELETE_READY".equals(status));
+        return response;
+    }
+
+    private static HospitalDicomServerResponse server() {
+        HospitalDicomServerResponse response = new HospitalDicomServerResponse();
+        response.setBaseUrl("http://dicom-server.local");
+        response.setUsername("dicom-user");
+        response.setPassword("dicom-pass");
+        return response;
+    }
+}

@@ -13,7 +13,7 @@ public interface AuthService {
 
     ResponseMessage<BaseResult> handleLogin(LoginRequest loginUser, HttpServletRequest httpServletRequest, HttpServletResponse response);
 
-    ResponseMessage<BaseResult> handleLogout(HttpServletRequest request, HttpServletResponse response);
+    ResponseMessage<BaseResult> handleLogout(RefreshTokenRequest refreshTokenRequest, HttpServletRequest request, HttpServletResponse response);
 
     ResponseMessage<BaseResult> refreshAccessToken(RefreshTokenRequest refreshTokenRequest, HttpServletRequest request, HttpServletResponse response);
 

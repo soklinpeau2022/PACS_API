@@ -1,6 +1,7 @@
 package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.config.ApiConstants;
+import com.ut.emrPacs.config.WorklistConstants;
 import com.ut.emrPacs.mapper.modality.ModalityMapper;
 import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
 import com.ut.emrPacs.mapper.pacs.DicomServerCallbackLogMapper;
@@ -146,6 +147,7 @@ class WorklistServiceImplReceivedStudyTest {
                 eq("Viewer Microscopy"),
                 any(),
                 any(),
+                any(),
                 eq("dicom_server_study-1"),
                 eq("dicom_server_patient-1"),
                 eq("series-1"),
@@ -229,7 +231,7 @@ class WorklistServiceImplReceivedStudyTest {
 
         assertFalse(response.isSuccess());
         verify(WorklistMapper, never()).updateWorklistReceivedFromCallbackById(any(), any(), any(), any(), any(), any());
-        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(dicomServerCallbackLogMapper).insertCallbackLog(anyString(), eq("DX-KSFH-0001"), eq("dicom_server_empty-study"), anyString(), anyString(), anyString(), eq(false), eq("DicomServer study has no image instances yet."), any(), anyString());
     }
 
@@ -271,6 +273,7 @@ class WorklistServiceImplReceivedStudyTest {
                 eq("DX"),
                 any(),
                 eq("Portable X-Ray"),
+                any(),
                 any(),
                 any(),
                 eq("dicom_server_empty-study-2"),
@@ -351,6 +354,7 @@ class WorklistServiceImplReceivedStudyTest {
                 eq("Uploaded CT"),
                 any(),
                 any(),
+                any(),
                 eq("dicom_server_uploaded-study"),
                 eq("dicom_server_uploaded-patient"),
                 eq("uploaded-series-1"),
@@ -388,6 +392,7 @@ class WorklistServiceImplReceivedStudyTest {
                 eq("Uploaded CT"),
                 any(),
                 any(),
+                any(),
                 eq("dicom_server_uploaded-study"),
                 eq("dicom_server_uploaded-patient"),
                 eq("uploaded-series-1"),
@@ -397,20 +402,47 @@ class WorklistServiceImplReceivedStudyTest {
     }
 
     @Test
-    void receivedStudyShouldAcceptWhenWorklistIsMissing() throws Exception {
+    void receivedStudyShouldAcknowledgeDirectStudyUploadWithoutCreatingWorklistStudyLink() throws Exception {
         WorklistServiceImpl WorklistService = buildService();
-        authenticateMachineClient();
+        authenticateMachineClient(4L);
 
         WorklistReceivedStudyRequest request = new WorklistReceivedStudyRequest();
-        request.setAccessionNumber("VIEW-SM-404");
-        when(WorklistMapper.findWorklistByAccessionNumber("VIEW-SM-404")).thenReturn(null);
+        request.setEvent("STUDY_RECEIVED");
+        request.setAccessionNumber("DIRECT-CT-404");
+        request.setDicomServerStudyId("direct-study-1");
+        request.setDicomServerPatientId("direct-patient-1");
+        request.setDicomServerSeriesIds(List.of("direct-series-1"));
+        request.setStudyInstanceUid("1.2.826.0.1.3680043.8.498.direct");
+        request.setImageInstanceCount(12);
+        when(WorklistMapper.findWorklistByAccessionNumber("DIRECT-CT-404")).thenReturn(null);
+        when(WorklistMapper.findWorklistByStudyIdentifiers("1.2.826.0.1.3680043.8.498.direct", "direct-study-1")).thenReturn(null);
+        when(dicomServerMapper.getDicomServerById(4L, null)).thenReturn(List.of(dicomServer(4L)));
+        when(dicomServerClientService.getStudyById(
+                "http://localhost:8042",
+                "dicom_server",
+                "secret",
+                "direct-study-1"
+        )).thenReturn(dicomServerStudy("direct-study-1", "1.2.826.0.1.3680043.8.498.direct", "DIRECT-CT-404", List.of("instance-1")));
 
         ResponseMessage<BaseResult> response = WorklistService.receivedStudy(request, new MockHttpServletRequest());
 
         assertTrue(response.isSuccess());
-        verify(WorklistMapper).findWorklistByAccessionNumber("VIEW-SM-404");
+        verify(WorklistMapper).findWorklistByStudyIdentifiers("1.2.826.0.1.3680043.8.498.direct", "direct-study-1");
         verify(WorklistMapper, never()).updateWorklistReceivedFromCallbackById(any(), any(), any(), any(), any(), any());
-        verify(dicomServerCallbackLogMapper).insertCallbackLog(anyString(), eq("VIEW-SM-404"), anyString(), anyString(), anyString(), anyString(), eq(false), anyString(), any(), anyString());
+        verify(WorklistMapper, never()).upsertWorklistStudyLink(any(), any(), any(), any());
+        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(dicomServerCallbackLogMapper).insertCallbackLog(
+                anyString(),
+                eq("DIRECT-CT-404"),
+                eq("direct-study-1"),
+                eq("direct-patient-1"),
+                eq("[\"direct-series-1\"]"),
+                anyString(),
+                eq(true),
+                eq(null),
+                eq("Callback acknowledged without a matching Worklist. Direct Study uploads are saved by the upload flow."),
+                anyString()
+        );
     }
 
     @Test
@@ -436,8 +468,140 @@ class WorklistServiceImplReceivedStudyTest {
         assertFalse(response.isSuccess());
         assertEquals(403, response.getHeader().getStatusCode());
         verify(WorklistMapper, never()).updateWorklistReceivedFromCallbackById(any(), any(), any(), any(), any(), any());
-        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(dicomServerCallbackLogMapper).insertCallbackLog(anyString(), eq("DX-KSFH-0001"), anyString(), anyString(), anyString(), anyString(), eq(false), anyString(), any(), anyString());
+    }
+
+    @Test
+    void receivedStudyShouldMoveWaitingWorklistToInProgressAndInsertHistory() throws Exception {
+        WorklistServiceImpl WorklistService = buildService();
+        authenticateMachineClient(4L);
+
+        WorklistReceivedStudyRequest request = callbackRequest("DX-WAITING-0001", "1.2.826.waiting", "waiting-study");
+        WorklistDetailRow Worklist = callbackWorklist(25L, WorklistStatus.WAITING);
+        Worklist.setAccessionNumber("DX-WAITING-0001");
+        when(WorklistMapper.findWorklistByAccessionNumber("DX-WAITING-0001")).thenReturn(Worklist);
+        when(dicomServerMapper.findActiveDicomServerByWorklist(1L, 25L)).thenReturn(dicomServer(4L));
+        when(studyMapper.upsertFromWorklist(
+                eq(1L), eq(35L), eq("1.2.826.waiting"), eq("DX-WAITING-0001"), eq(4L), eq("DX"),
+                any(), eq("Callback test"), any(), eq(4L), any(), eq("waiting-study"), eq("callback-patient"),
+                eq("callback-series"), eq(2), anyString()
+        )).thenReturn(603L);
+        when(WorklistMapper.updateWorklistReceivedFromCallbackById(
+                eq(1L), eq(25L), eq(603L), eq(WorklistStatus.IN_PROGRESS.code()), eq(null), anyString()
+        )).thenReturn(1);
+        WorklistDetailRow refreshed = callbackWorklist(25L, WorklistStatus.IN_PROGRESS);
+        refreshed.setStudyInstanceUid("1.2.826.waiting");
+        when(WorklistMapper.findWorklistById(1L, 25L)).thenReturn(refreshed);
+
+        ResponseMessage<BaseResult> response = WorklistService.receivedStudy(request, new MockHttpServletRequest());
+
+        assertTrue(response.isSuccess());
+        verify(WorklistMapper).insertHistory(
+                eq(1L), eq(25L), eq(35L), eq(WorklistStatus.WAITING.code()), eq(WorklistStatus.IN_PROGRESS.code()),
+                eq(WorklistConstants.ACTION_RECEIVED_STUDY), anyString(), eq(null)
+        );
+    }
+
+    @Test
+    void receivedStudyShouldRecoverFailedWorklistAndInsertHistory() throws Exception {
+        WorklistServiceImpl WorklistService = buildService();
+        authenticateMachineClient(4L);
+
+        WorklistReceivedStudyRequest request = callbackRequest("DX-FAILED-0001", "1.2.826.failed", "failed-study");
+        WorklistDetailRow Worklist = callbackWorklist(26L, WorklistStatus.FAILED);
+        Worklist.setAccessionNumber("DX-FAILED-0001");
+        when(WorklistMapper.findWorklistByAccessionNumber("DX-FAILED-0001")).thenReturn(Worklist);
+        when(dicomServerMapper.findActiveDicomServerByWorklist(1L, 26L)).thenReturn(dicomServer(4L));
+        when(studyMapper.upsertFromWorklist(
+                eq(1L), eq(35L), eq("1.2.826.failed"), eq("DX-FAILED-0001"), eq(4L), eq("DX"),
+                any(), eq("Callback test"), any(), eq(4L), any(), eq("failed-study"), eq("callback-patient"),
+                eq("callback-series"), eq(2), anyString()
+        )).thenReturn(604L);
+        when(WorklistMapper.updateWorklistReceivedFromCallbackById(
+                eq(1L), eq(26L), eq(604L), eq(WorklistStatus.IN_PROGRESS.code()), eq(null), anyString()
+        )).thenReturn(1);
+        WorklistDetailRow refreshed = callbackWorklist(26L, WorklistStatus.IN_PROGRESS);
+        refreshed.setStudyInstanceUid("1.2.826.failed");
+        when(WorklistMapper.findWorklistById(1L, 26L)).thenReturn(refreshed);
+
+        ResponseMessage<BaseResult> response = WorklistService.receivedStudy(request, new MockHttpServletRequest());
+
+        assertTrue(response.isSuccess());
+        verify(WorklistMapper).insertHistory(
+                eq(1L), eq(26L), eq(35L), eq(WorklistStatus.FAILED.code()), eq(WorklistStatus.IN_PROGRESS.code()),
+                eq(WorklistConstants.ACTION_RECEIVED_STUDY), anyString(), eq(null)
+        );
+    }
+
+    @Test
+    void receivedStudyShouldAcknowledgeCancelledWorklistWithoutChangingStudy() throws Exception {
+        WorklistServiceImpl WorklistService = buildService();
+        authenticateMachineClient(4L);
+
+        WorklistReceivedStudyRequest request = callbackRequest("DX-CANCELLED-0001", "1.2.826.cancelled", "cancelled-study");
+        WorklistDetailRow Worklist = callbackWorklist(27L, WorklistStatus.CANCELLED);
+        Worklist.setAccessionNumber("DX-CANCELLED-0001");
+        when(WorklistMapper.findWorklistByAccessionNumber("DX-CANCELLED-0001")).thenReturn(Worklist);
+
+        ResponseMessage<BaseResult> response = WorklistService.receivedStudy(request, new MockHttpServletRequest());
+
+        assertTrue(response.isSuccess());
+        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(WorklistMapper, never()).updateWorklistReceivedFromCallbackById(any(), any(), any(), any(), any(), any());
+        verify(WorklistMapper, never()).insertHistory(any(), any(), any(), any(), any(), anyString(), any(), any());
+    }
+
+    @Test
+    void receivedStudyShouldRejectMismatchedAccessionResolvedByVisitCode() throws Exception {
+        WorklistServiceImpl WorklistService = buildService();
+        authenticateMachineClient(4L);
+
+        WorklistReceivedStudyRequest request = callbackRequest("WRONG-ACCESSION", "1.2.826.mismatch", "mismatch-study");
+        request.setVisitCode("DX-VISIT-0001");
+        WorklistDetailRow Worklist = callbackWorklist(28L, WorklistStatus.IN_PROGRESS);
+        Worklist.setVisitCode("DX-VISIT-0001");
+        Worklist.setAccessionNumber("DX-CORRECT-0001");
+        when(WorklistMapper.findWorklistByAccessionNumber("WRONG-ACCESSION")).thenReturn(null);
+        when(WorklistMapper.findWorklistByVisitCodeAnyHospital("DX-VISIT-0001")).thenReturn(Worklist);
+        when(dicomServerMapper.findActiveDicomServerByWorklist(1L, 28L)).thenReturn(dicomServer(4L));
+
+        ResponseMessage<BaseResult> response = WorklistService.receivedStudy(request, new MockHttpServletRequest());
+
+        assertFalse(response.isSuccess());
+        verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(WorklistMapper, never()).updateWorklistReceivedFromCallbackById(any(), any(), any(), any(), any(), any());
+        verify(dicomServerCallbackLogMapper).insertCallbackLog(
+                anyString(), eq("WRONG-ACCESSION"), eq("mismatch-study"), eq("callback-patient"),
+                eq("[\"callback-series\"]"), anyString(), eq(false), eq("Callback accession does not match this Worklist."), any(), anyString()
+        );
+    }
+
+    private static WorklistReceivedStudyRequest callbackRequest(String accessionNumber, String studyInstanceUid, String dicomServerStudyId) {
+        WorklistReceivedStudyRequest request = new WorklistReceivedStudyRequest();
+        request.setEvent("STUDY_RECEIVED");
+        request.setAccessionNumber(accessionNumber);
+        request.setDicomServerStudyId(dicomServerStudyId);
+        request.setDicomServerPatientId("callback-patient");
+        request.setDicomServerSeriesIds(List.of("callback-series"));
+        request.setStudyInstanceUid(studyInstanceUid);
+        request.setStudyDescription("Callback test");
+        request.setStudyDate("20260615");
+        request.setImageInstanceCount(2);
+        return request;
+    }
+
+    private static WorklistDetailRow callbackWorklist(Long id, WorklistStatus status) {
+        WorklistDetailRow Worklist = new WorklistDetailRow();
+        Worklist.setId(id);
+        Worklist.setHospitalId(1L);
+        Worklist.setPatientId(35L);
+        Worklist.setModalityId(4L);
+        Worklist.setModalityCode("DX");
+        Worklist.setDicomServerId(4L);
+        Worklist.setStudyDescription("Callback test");
+        Worklist.setStatus(status.name());
+        return Worklist;
     }
 
     private void authenticateMachineClient() {

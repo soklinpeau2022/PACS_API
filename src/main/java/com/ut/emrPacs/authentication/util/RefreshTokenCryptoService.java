@@ -47,10 +47,6 @@ public class RefreshTokenCryptoService {
             logEncryptionDisabled("security.jwt.refresh-token-encryption-key is not set.", strictProfile);
         }
 
-        if (!enabled && strictProfile) {
-            throw new IllegalStateException("security.jwt.refresh-token-encryption-key must be configured in strict profile (qa/prod).");
-        }
-
         this.secretKey = parsedKey;
         this.encryptionEnabled = enabled;
     }
@@ -154,10 +150,9 @@ public class RefreshTokenCryptoService {
 
     private void logEncryptionDisabled(String reason, boolean strictProfile) {
         if (strictProfile) {
-            LOGGER.warn("{} Refresh token encryption disabled.", reason);
+            LOGGER.info("{} Refresh token encryption disabled; bearer refresh tokens are returned in response bodies.", reason);
             return;
         }
         LOGGER.info("{} Refresh token encryption disabled for non-production profile.", reason);
     }
 }
-

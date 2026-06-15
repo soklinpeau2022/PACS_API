@@ -25,6 +25,8 @@ import com.ut.emrPacs.model.dto.request.pacs.result.PacsResultImageRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsResultImageUploadRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsResultSaveRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsResultTemplateListRequest;
+import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateChunkCompleteRequest;
+import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateChunkRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateRequest;
 import com.ut.emrPacs.model.dto.response.pacs.worklist.WorklistDetailRow;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
@@ -60,6 +62,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
@@ -69,12 +72,17 @@ import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 @Service
 public class PacsResultServiceImpl implements PacsResultService {
@@ -85,14 +93,19 @@ public class PacsResultServiceImpl implements PacsResultService {
     private static final String DEFAULT_VIEWER_STATE_TYPE = "OHIF_VIEWER_STATE";
     private static final int DEFAULT_VIEWER_STATE_SCHEMA_VERSION = 2;
     private static final int MAX_VIEWER_STATE_SCHEMA_VERSION = 1000;
-    private static final int MAX_VIEWER_STATE_JSON_BYTES = 10 * 1024 * 1024;
+    private static final long DEFAULT_MAX_VIEWER_STATE_JSON_BYTES = 64L * 1024L * 1024L;
     private static final int MAX_VIEWER_STATE_JSON_DEPTH = 64;
     private static final long MAX_VIEWER_STATE_JSON_NODES = 1_000_000L;
     private static final int MAX_VIEWER_STATE_ARRAY_ITEMS = 250_000;
+    private static final int MAX_VIEWER_STATE_CHUNK_BYTES = 1024 * 1024;
+    private static final int MAX_VIEWER_STATE_CHUNKS = 128;
+    private static final int MAX_VIEWER_STATE_CHUNK_UPLOAD_ID_LENGTH = 128;
+    private static final long VIEWER_STATE_CHUNK_TTL_MS = 10L * 60L * 1000L;
 
     @Autowired
     private PacsResultMapper pacsResultMapper;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ConcurrentMap<String, ViewerStateChunkUpload> viewerStateChunkUploads = new ConcurrentHashMap<>();
     @Autowired
     private WorklistMapper WorklistMapper;
     @Autowired
@@ -120,6 +133,8 @@ public class PacsResultServiceImpl implements PacsResultService {
     private String uploadRoot;
     @Value("${pacs.result.max-image-bytes:10485760}")
     private long maxImageBytes;
+    @Value("${pacs.viewer-state.max-json-bytes:67108864}")
+    private long maxViewerStateJsonBytes;
 
     @Override
     public boolean hasStaticResultAuth(HttpServletRequest request) {
@@ -139,10 +154,25 @@ public class PacsResultServiceImpl implements PacsResultService {
     @Override
     @Transactional
     public ResponseMessage<BaseResult> create(PacsResultSaveRequest request, List<MultipartFile> images, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return createInternal(request, images, httpServletRequest, true);
+    }
+
+    @Override
+    @Transactional
+    public ResponseMessage<BaseResult> createBrowser(PacsResultSaveRequest request, List<MultipartFile> images, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return createInternal(request, images, httpServletRequest, false);
+    }
+
+    private ResponseMessage<BaseResult> createInternal(
+            PacsResultSaveRequest request,
+            List<MultipartFile> images,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         boolean transactionMutated = false;
         try {
             resolveSavePublicKeys(request);
-            ResultAccess access = authorizeSaveRequest(request, httpServletRequest);
+            ResultAccess access = authorizeSaveRequest(request, httpServletRequest, requireServerApiKey);
             applyAccessClaims(request, access.claims());
             PacsResultSaveRequest safeRequest = normalizeAndEnrich(request);
             validateRequestScope(access.claims(), safeRequest);
@@ -184,10 +214,23 @@ public class PacsResultServiceImpl implements PacsResultService {
 
     @Override
     public ResponseMessage<BaseResult> findByStudy(PacsResultFindByStudyRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return findByStudyInternal(request, httpServletRequest, true);
+    }
+
+    @Override
+    public ResponseMessage<BaseResult> findBrowserByStudy(PacsResultFindByStudyRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return findByStudyInternal(request, httpServletRequest, false);
+    }
+
+    private ResponseMessage<BaseResult> findByStudyInternal(
+            PacsResultFindByStudyRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         ResultAccess access;
         try {
             resolveFindByStudyPublicKeys(request);
-            access = authorizeFindByStudyRequest(request, httpServletRequest, false);
+            access = authorizeFindByStudyRequest(request, httpServletRequest, false, requireServerApiKey);
         } catch (ResultAccessException accessError) {
             return resultAccessDenied(accessError);
         } catch (IllegalArgumentException validation) {
@@ -217,10 +260,23 @@ public class PacsResultServiceImpl implements PacsResultService {
 
     @Override
     public ResponseMessage<BaseResult> findByWorklist(PacsResultFindByWorklistRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return findByWorklistInternal(request, httpServletRequest, true);
+    }
+
+    @Override
+    public ResponseMessage<BaseResult> findBrowserByWorklist(PacsResultFindByWorklistRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return findByWorklistInternal(request, httpServletRequest, false);
+    }
+
+    private ResponseMessage<BaseResult> findByWorklistInternal(
+            PacsResultFindByWorklistRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         ResultAccess access;
         try {
             resolveFindByWorklistPublicKeys(request);
-            access = authorizeFindByWorklistRequest(request, httpServletRequest, false);
+            access = authorizeFindByWorklistRequest(request, httpServletRequest, false, requireServerApiKey);
         } catch (ResultAccessException accessError) {
             return resultAccessDenied(accessError);
         } catch (IllegalArgumentException validation) {
@@ -243,10 +299,23 @@ public class PacsResultServiceImpl implements PacsResultService {
 
     @Override
     public ResponseMessage<BaseResult> getContext(PacsResultContextRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return getContextInternal(request, httpServletRequest, true);
+    }
+
+    @Override
+    public ResponseMessage<BaseResult> getBrowserContext(PacsResultContextRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return getContextInternal(request, httpServletRequest, false);
+    }
+
+    private ResponseMessage<BaseResult> getContextInternal(
+            PacsResultContextRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         ResultAccess access;
         try {
             resolveContextPublicKeys(request);
-            access = authorizeContextRequest(request, httpServletRequest, false);
+            access = authorizeContextRequest(request, httpServletRequest, false, requireServerApiKey);
         } catch (ResultAccessException accessError) {
             return resultAccessDenied(accessError);
         } catch (IllegalArgumentException validation) {
@@ -286,10 +355,25 @@ public class PacsResultServiceImpl implements PacsResultService {
     @Override
     @Transactional
     public ResponseMessage<BaseResult> update(PacsResultSaveRequest request, List<MultipartFile> images, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return updateInternal(request, images, httpServletRequest, true);
+    }
+
+    @Override
+    @Transactional
+    public ResponseMessage<BaseResult> updateBrowser(PacsResultSaveRequest request, List<MultipartFile> images, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return updateInternal(request, images, httpServletRequest, false);
+    }
+
+    private ResponseMessage<BaseResult> updateInternal(
+            PacsResultSaveRequest request,
+            List<MultipartFile> images,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         boolean transactionMutated = false;
         try {
             resolveSavePublicKeys(request);
-            ResultAccess access = authorizeSaveRequest(request, httpServletRequest);
+            ResultAccess access = authorizeSaveRequest(request, httpServletRequest, requireServerApiKey);
             PacsResultResponse existing = findExistingForUpdate(request);
             if (existing == null) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("PACS result not found.", false));
@@ -331,6 +415,21 @@ public class PacsResultServiceImpl implements PacsResultService {
     @Override
     @Transactional
     public ResponseMessage<BaseResult> uploadImages(PacsResultImageUploadRequest request, List<MultipartFile> images, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return uploadImagesInternal(request, images, httpServletRequest, true);
+    }
+
+    @Override
+    @Transactional
+    public ResponseMessage<BaseResult> uploadBrowserImages(PacsResultImageUploadRequest request, List<MultipartFile> images, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return uploadImagesInternal(request, images, httpServletRequest, false);
+    }
+
+    private ResponseMessage<BaseResult> uploadImagesInternal(
+            PacsResultImageUploadRequest request,
+            List<MultipartFile> images,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         boolean transactionMutated = false;
         try {
             PacsResultResponse result = findExistingForImageUpload(request);
@@ -338,7 +437,7 @@ public class PacsResultServiceImpl implements PacsResultService {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("PACS result not found.", false));
             }
             Long resultId = result.getId();
-            ResultAccess access = authorizeExistingResult(result, httpServletRequest, true);
+            ResultAccess access = authorizeExistingResult(result, httpServletRequest, true, requireServerApiKey);
             validateWritableResult(result, findViewerStateForResult(result), access.claims());
             if (images == null || images.isEmpty()) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("At least one image file is required.", false));
@@ -384,6 +483,20 @@ public class PacsResultServiceImpl implements PacsResultService {
     @Override
     @Transactional
     public ResponseMessage<BaseResult> deleteImage(PacsResultImageRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return deleteImageInternal(request, httpServletRequest, true);
+    }
+
+    @Override
+    @Transactional
+    public ResponseMessage<BaseResult> deleteBrowserImage(PacsResultImageRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return deleteImageInternal(request, httpServletRequest, false);
+    }
+
+    private ResponseMessage<BaseResult> deleteImageInternal(
+            PacsResultImageRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         PacsResultImageRequest safeRequest;
         try {
             safeRequest = normalizeImageRequest(request);
@@ -396,7 +509,7 @@ public class PacsResultServiceImpl implements PacsResultService {
         }
         PacsResultResponse result = pacsResultMapper.findById(image.getResultId());
         try {
-            ResultAccess access = authorizeExistingResult(result, httpServletRequest, true);
+            ResultAccess access = authorizeExistingResult(result, httpServletRequest, true, requireServerApiKey);
             validateWritableResult(result, findViewerStateForResult(result), access.claims());
         } catch (ResultAccessException accessError) {
             return resultAccessDenied(accessError);
@@ -408,6 +521,19 @@ public class PacsResultServiceImpl implements PacsResultService {
 
     @Override
     public ResponseEntity<Resource> readImage(PacsResultImageRequest request, HttpServletRequest httpServletRequest) {
+        return readImageInternal(request, httpServletRequest, true);
+    }
+
+    @Override
+    public ResponseEntity<Resource> readBrowserImage(PacsResultImageRequest request, HttpServletRequest httpServletRequest) {
+        return readImageInternal(request, httpServletRequest, false);
+    }
+
+    private ResponseEntity<Resource> readImageInternal(
+            PacsResultImageRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         PacsResultImageRequest safeRequest;
         try {
             safeRequest = normalizeImageRequest(request);
@@ -420,7 +546,7 @@ public class PacsResultServiceImpl implements PacsResultService {
         }
         PacsResultResponse result = pacsResultMapper.findById(image.getResultId());
         try {
-            authorizeExistingResult(result, httpServletRequest, false);
+            authorizeExistingResult(result, httpServletRequest, false, requireServerApiKey);
         } catch (ResultAccessException accessError) {
             return ResponseEntity.status(accessError.statusCode()).build();
         }
@@ -439,11 +565,24 @@ public class PacsResultServiceImpl implements PacsResultService {
 
     @Override
     public ResponseEntity<Resource> readHospitalLogo(PacsResultContextRequest request, HttpServletRequest httpServletRequest) {
+        return readHospitalLogoInternal(request, httpServletRequest, true);
+    }
+
+    @Override
+    public ResponseEntity<Resource> readBrowserHospitalLogo(PacsResultContextRequest request, HttpServletRequest httpServletRequest) {
+        return readHospitalLogoInternal(request, httpServletRequest, false);
+    }
+
+    private ResponseEntity<Resource> readHospitalLogoInternal(
+            PacsResultContextRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         PacsResultContextRequest safeRequest = request == null ? new PacsResultContextRequest() : request;
         ResultAccess access;
         try {
             resolveContextPublicKeys(safeRequest);
-            access = authorizeContextRequest(safeRequest, httpServletRequest, false);
+            access = authorizeContextRequest(safeRequest, httpServletRequest, false, requireServerApiKey);
         } catch (ResultAccessException accessError) {
             return ResponseEntity.status(accessError.statusCode()).build();
         } catch (IllegalArgumentException validation) {
@@ -475,9 +614,22 @@ public class PacsResultServiceImpl implements PacsResultService {
 
     @Override
     public ResponseMessage<BaseResult> listTemplates(PacsResultTemplateListRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return listTemplatesInternal(request, httpServletRequest, true);
+    }
+
+    @Override
+    public ResponseMessage<BaseResult> listBrowserTemplates(PacsResultTemplateListRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return listTemplatesInternal(request, httpServletRequest, false);
+    }
+
+    private ResponseMessage<BaseResult> listTemplatesInternal(
+            PacsResultTemplateListRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         try {
             resolveTemplatePublicKeys(request);
-            authorizeTemplateRequest(request, httpServletRequest, false);
+            authorizeTemplateRequest(request, httpServletRequest, false, requireServerApiKey);
         } catch (ResultAccessException accessError) {
             return resultAccessDenied(accessError);
         } catch (IllegalArgumentException validation) {
@@ -492,10 +644,24 @@ public class PacsResultServiceImpl implements PacsResultService {
 
     @Override
     public ResponseMessage<BaseResult> findTemplate(String templateKey, PacsResultTemplateListRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return findTemplateInternal(templateKey, request, httpServletRequest, true);
+    }
+
+    @Override
+    public ResponseMessage<BaseResult> findBrowserTemplate(String templateKey, PacsResultTemplateListRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        return findTemplateInternal(templateKey, request, httpServletRequest, false);
+    }
+
+    private ResponseMessage<BaseResult> findTemplateInternal(
+            String templateKey,
+            PacsResultTemplateListRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         Long templateId;
         try {
             resolveTemplatePublicKeys(request);
-            authorizeTemplateRequest(request, httpServletRequest, false);
+            authorizeTemplateRequest(request, httpServletRequest, false, requireServerApiKey);
             templateId = resolveEntityKey(Entity.PACS_RESULT_TEMPLATE, templateKey, null);
             if (templateId == null || templateId <= 0) {
                 throw new IllegalArgumentException("Template not found.");
@@ -565,6 +731,99 @@ public class PacsResultServiceImpl implements PacsResultService {
     @Transactional
     public ResponseMessage<BaseResult> saveBrowserViewerState(PacsViewerStateRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
         return saveViewerStateInternal(request, httpServletRequest, false);
+    }
+
+    @Override
+    public ResponseMessage<BaseResult> saveBrowserViewerStateChunk(
+            PacsViewerStateChunkRequest request,
+            HttpServletRequest httpServletRequest
+    ) throws UnknownHostException {
+        try {
+            cleanupExpiredViewerStateChunkUploads();
+            PacsViewerStateRequest safeRequest =
+                    prepareViewerStateRequest(request, httpServletRequest, true, false);
+            ViewerAccessClaims claims = decodeViewerAccess(httpServletRequest);
+            String uploadId = validateViewerStateUploadId(request.getUploadId());
+            int chunkIndex = validateViewerStateChunkIndex(request.getChunkIndex());
+            int chunkCount = validateViewerStateChunkCount(request.getChunkCount());
+            if (chunkIndex >= chunkCount) {
+                throw new IllegalArgumentException("chunkIndex is invalid.");
+            }
+            long payloadSizeBytes = validateViewerStateChunkPayloadSize(request.getPayloadSizeBytes());
+            String payloadSha256 = validateViewerStatePayloadSha256(request.getPayloadSha256());
+            byte[] chunkBytes = decodeViewerStateChunk(request.getChunkData());
+            String uploadKey = viewerStateChunkKey(safeRequest, claims, uploadId);
+
+            ViewerStateChunkUpload upload = viewerStateChunkUploads.compute(uploadKey, (key, existing) -> {
+                if (existing == null || existing.isExpired(System.currentTimeMillis())) {
+                    return new ViewerStateChunkUpload(uploadId, chunkCount, payloadSizeBytes, payloadSha256);
+                }
+                existing.requireSameMetadata(chunkCount, payloadSizeBytes, payloadSha256);
+                return existing;
+            });
+            upload.put(chunkIndex, chunkBytes);
+
+            return ResponseMessageUtils.makeResponse(
+                    true,
+                    messageService.message(
+                            "Success",
+                            List.of(Map.of(
+                                    "uploadId", uploadId,
+                                    "chunkIndex", chunkIndex,
+                                    "chunkCount", chunkCount,
+                                    "receivedChunks", upload.receivedCount(),
+                                    "complete", upload.isComplete()
+                            )),
+                            true
+                    )
+            );
+        } catch (IllegalArgumentException validation) {
+            return ResponseMessageUtils.makeResponse(false, messageService.message(validation.getMessage(), false));
+        } catch (ResultAccessException accessError) {
+            return resultAccessDenied(accessError);
+        } catch (Exception error) {
+            throw new IllegalStateException("Unable to upload PACS viewer state chunk.", error);
+        }
+    }
+
+    @Override
+    @Transactional
+    public ResponseMessage<BaseResult> completeBrowserViewerStateChunk(
+            PacsViewerStateChunkCompleteRequest request,
+            HttpServletRequest httpServletRequest
+    ) throws UnknownHostException {
+        try {
+            cleanupExpiredViewerStateChunkUploads();
+            PacsViewerStateRequest safeRequest =
+                    prepareViewerStateRequest(request, httpServletRequest, true, false);
+            ViewerAccessClaims claims = decodeViewerAccess(httpServletRequest);
+            String uploadId = validateViewerStateUploadId(request.getUploadId());
+            int chunkCount = validateViewerStateChunkCount(request.getChunkCount());
+            long payloadSizeBytes = validateViewerStateChunkPayloadSize(request.getPayloadSizeBytes());
+            String payloadSha256 = validateViewerStatePayloadSha256(request.getPayloadSha256());
+            String uploadKey = viewerStateChunkKey(safeRequest, claims, uploadId);
+            ViewerStateChunkUpload upload = viewerStateChunkUploads.get(uploadKey);
+            if (upload == null || upload.isExpired(System.currentTimeMillis())) {
+                viewerStateChunkUploads.remove(uploadKey);
+                throw new IllegalArgumentException("Viewer state chunk upload was not found or expired.");
+            }
+            upload.requireSameMetadata(chunkCount, payloadSizeBytes, payloadSha256);
+            byte[] payload = upload.assemble();
+            validateViewerStateChunkedPayload(payload, payloadSizeBytes, payloadSha256);
+            PacsViewerStateRequest assembledRequest = objectMapper.readValue(payload, PacsViewerStateRequest.class);
+            applyPreparedViewerStateScope(safeRequest, assembledRequest);
+            ResponseMessage<BaseResult> response = saveViewerStateInternal(assembledRequest, httpServletRequest, false);
+            if (response.isSuccess()) {
+                viewerStateChunkUploads.remove(uploadKey);
+            }
+            return response;
+        } catch (IllegalArgumentException validation) {
+            return ResponseMessageUtils.makeResponse(false, messageService.message(validation.getMessage(), false));
+        } catch (ResultAccessException accessError) {
+            return resultAccessDenied(accessError);
+        } catch (Exception error) {
+            throw new IllegalStateException("Unable to complete PACS viewer state chunk upload.", error);
+        }
     }
 
     private ResponseMessage<BaseResult> saveViewerStateInternal(
@@ -675,6 +934,14 @@ public class PacsResultServiceImpl implements PacsResultService {
     }
 
     private ResultAccess authorizeSaveRequest(PacsResultSaveRequest request, HttpServletRequest httpServletRequest) {
+        return authorizeSaveRequest(request, httpServletRequest, true);
+    }
+
+    private ResultAccess authorizeSaveRequest(
+            PacsResultSaveRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean requireServerApiKey
+    ) {
         ViewerAccessClaims claims = decodeViewerAccess(httpServletRequest);
         if (!ViewerAccessKeyService.canWrite(claims)) {
             throw ResultAccessException.forbidden("This viewer is read-only for PACS result.");
@@ -682,7 +949,7 @@ public class PacsResultServiceImpl implements PacsResultService {
         if (claims.userId() == null || claims.userId() <= 0L) {
             throw ResultAccessException.forbidden("Doctor identity is required to save PACS result.");
         }
-        if (!hasServerResultAuth(httpServletRequest, claims)) {
+        if (requireServerApiKey && !hasServerResultAuth(httpServletRequest, claims)) {
             throw ResultAccessException.unauthorized("Invalid PACS Result proxy API key.");
         }
         if (request != null && !ViewerAccessKeyService.matchesScope(
@@ -840,7 +1107,16 @@ public class PacsResultServiceImpl implements PacsResultService {
     }
 
     private ResultAccess authorizeFindByWorklistRequest(PacsResultFindByWorklistRequest request, HttpServletRequest httpServletRequest, boolean write) {
-        ViewerAccessClaims claims = authorizeReadWrite(httpServletRequest, write);
+        return authorizeFindByWorklistRequest(request, httpServletRequest, write, true);
+    }
+
+    private ResultAccess authorizeFindByWorklistRequest(
+            PacsResultFindByWorklistRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean write,
+            boolean requireServerApiKey
+    ) {
+        ViewerAccessClaims claims = authorizeReadWrite(httpServletRequest, write, requireServerApiKey);
         Long hospitalId = firstNonNull(request == null ? null : request.getHospitalId(), claims.hospitalId());
         Long worklistId = firstNonNull(request == null ? null : request.getWorklistId(), claims.worklistId());
         if (!ViewerAccessKeyService.matchesScope(claims, hospitalId, worklistId, null, null, null)) {
@@ -850,7 +1126,16 @@ public class PacsResultServiceImpl implements PacsResultService {
     }
 
     private ResultAccess authorizeFindByStudyRequest(PacsResultFindByStudyRequest request, HttpServletRequest httpServletRequest, boolean write) {
-        ViewerAccessClaims claims = authorizeReadWrite(httpServletRequest, write);
+        return authorizeFindByStudyRequest(request, httpServletRequest, write, true);
+    }
+
+    private ResultAccess authorizeFindByStudyRequest(
+            PacsResultFindByStudyRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean write,
+            boolean requireServerApiKey
+    ) {
+        ViewerAccessClaims claims = authorizeReadWrite(httpServletRequest, write, requireServerApiKey);
         Long hospitalId = firstNonNull(request == null ? null : request.getHospitalId(), claims.hospitalId());
         Long modalityId = firstNonNull(request == null ? null : request.getModalityId(), claims.modalityId());
         Long studyId = null;
@@ -870,7 +1155,16 @@ public class PacsResultServiceImpl implements PacsResultService {
     }
 
     private ResultAccess authorizeContextRequest(PacsResultContextRequest request, HttpServletRequest httpServletRequest, boolean write) {
-        ViewerAccessClaims claims = authorizeReadWrite(httpServletRequest, write);
+        return authorizeContextRequest(request, httpServletRequest, write, true);
+    }
+
+    private ResultAccess authorizeContextRequest(
+            PacsResultContextRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean write,
+            boolean requireServerApiKey
+    ) {
+        ViewerAccessClaims claims = authorizeReadWrite(httpServletRequest, write, requireServerApiKey);
         if (request != null && !ViewerAccessKeyService.matchesScope(
                 claims,
                 firstNonNull(request.getHospitalId(), claims.hospitalId()),
@@ -885,7 +1179,16 @@ public class PacsResultServiceImpl implements PacsResultService {
     }
 
     private ResultAccess authorizeTemplateRequest(PacsResultTemplateListRequest request, HttpServletRequest httpServletRequest, boolean write) {
-        ViewerAccessClaims claims = authorizeReadWrite(httpServletRequest, write);
+        return authorizeTemplateRequest(request, httpServletRequest, write, true);
+    }
+
+    private ResultAccess authorizeTemplateRequest(
+            PacsResultTemplateListRequest request,
+            HttpServletRequest httpServletRequest,
+            boolean write,
+            boolean requireServerApiKey
+    ) {
+        ViewerAccessClaims claims = authorizeReadWrite(httpServletRequest, write, requireServerApiKey);
         if (request != null && !ViewerAccessKeyService.matchesScope(
                 claims,
                 firstNonNull(request.getHospitalId(), claims.hospitalId()),
@@ -900,7 +1203,16 @@ public class PacsResultServiceImpl implements PacsResultService {
     }
 
     private ResultAccess authorizeExistingResult(PacsResultResponse result, HttpServletRequest httpServletRequest, boolean write) {
-        ViewerAccessClaims claims = authorizeReadWrite(httpServletRequest, write);
+        return authorizeExistingResult(result, httpServletRequest, write, true);
+    }
+
+    private ResultAccess authorizeExistingResult(
+            PacsResultResponse result,
+            HttpServletRequest httpServletRequest,
+            boolean write,
+            boolean requireServerApiKey
+    ) {
+        ViewerAccessClaims claims = authorizeReadWrite(httpServletRequest, write, requireServerApiKey);
         if (result == null) {
             throw ResultAccessException.forbidden("PACS result not found.");
         }
@@ -1335,6 +1647,144 @@ public class PacsResultServiceImpl implements PacsResultService {
         }
     }
 
+    private String validateViewerStateUploadId(String value) {
+        String uploadId = trimToNull(value);
+        if (!hasText(uploadId)) {
+            throw new IllegalArgumentException("uploadId is required.");
+        }
+        if (uploadId.length() > MAX_VIEWER_STATE_CHUNK_UPLOAD_ID_LENGTH
+                || !uploadId.matches("^[A-Za-z0-9._:-]+$")) {
+            throw new IllegalArgumentException("uploadId is invalid.");
+        }
+        return uploadId;
+    }
+
+    private int validateViewerStateChunkIndex(Integer value) {
+        if (value == null || value < 0) {
+            throw new IllegalArgumentException("chunkIndex is invalid.");
+        }
+        return value;
+    }
+
+    private int validateViewerStateChunkCount(Integer value) {
+        if (value == null || value <= 0 || value > MAX_VIEWER_STATE_CHUNKS) {
+            throw new IllegalArgumentException("chunkCount is invalid.");
+        }
+        return value;
+    }
+
+    private long validateViewerStateChunkPayloadSize(Long value) {
+        long maxBytes = maxChunkedViewerStateRequestBytes();
+        if (value == null || value <= 0L || value > maxBytes) {
+            throw new IllegalArgumentException("payloadSizeBytes is invalid.");
+        }
+        return value;
+    }
+
+    private String validateViewerStatePayloadSha256(String value) {
+        String hash = trimToNull(value);
+        if (!hasText(hash) || !hash.matches("^[A-Fa-f0-9]{64}$")) {
+            throw new IllegalArgumentException("payloadSha256 is invalid.");
+        }
+        return hash.toLowerCase(Locale.ROOT);
+    }
+
+    private byte[] decodeViewerStateChunk(String chunkData) {
+        String encoded = trimToNull(chunkData);
+        if (!hasText(encoded)) {
+            throw new IllegalArgumentException("chunkData is required.");
+        }
+        long maxEncodedLength = ((long) MAX_VIEWER_STATE_CHUNK_BYTES * 4L / 3L) + 8L;
+        if (encoded.length() > maxEncodedLength) {
+            throw new IllegalArgumentException("Viewer state chunk is too large.");
+        }
+        byte[] bytes;
+        try {
+            bytes = Base64.getDecoder().decode(encoded);
+        } catch (IllegalArgumentException ex) {
+            throw new IllegalArgumentException("chunkData must be base64 encoded.");
+        }
+        if (bytes.length == 0 || bytes.length > MAX_VIEWER_STATE_CHUNK_BYTES) {
+            throw new IllegalArgumentException("Viewer state chunk is too large.");
+        }
+        return bytes;
+    }
+
+    private void validateViewerStateChunkedPayload(byte[] payload, long expectedBytes, String expectedSha256) {
+        if (payload == null || payload.length == 0) {
+            throw new IllegalArgumentException("Viewer state chunk upload is empty.");
+        }
+        if (payload.length != expectedBytes) {
+            throw new IllegalArgumentException("Viewer state chunk upload size does not match.");
+        }
+        if (payload.length > maxChunkedViewerStateRequestBytes()) {
+            throw new IllegalArgumentException("Viewer state is too large.");
+        }
+        String actualSha256 = sha256Hex(payload);
+        if (!actualSha256.equalsIgnoreCase(expectedSha256)) {
+            throw new IllegalArgumentException("Viewer state chunk upload checksum does not match.");
+        }
+    }
+
+    private String viewerStateChunkKey(PacsViewerStateRequest request, ViewerAccessClaims claims, String uploadId) {
+        return String.join(
+                "|",
+                uploadId,
+                String.valueOf(claims == null ? null : claims.userId()),
+                String.valueOf(request == null ? null : request.getHospitalId()),
+                String.valueOf(request == null ? null : request.getModalityId()),
+                String.valueOf(request == null ? null : request.getWorklistId()),
+                String.valueOf(request == null ? null : request.getStudyId()),
+                firstNonBlank(request == null ? null : request.getStudyInstanceUid(), ""),
+                firstNonBlank(request == null ? null : request.getAccessionNumber(), ""),
+                firstNonBlank(request == null ? null : request.getStateType(), DEFAULT_VIEWER_STATE_TYPE)
+        );
+    }
+
+    private static void applyPreparedViewerStateScope(PacsViewerStateRequest source, PacsViewerStateRequest target) {
+        if (source == null || target == null) {
+            return;
+        }
+        target.setViewerStateKey(firstNonBlank(source.getViewerStateKey(), target.getViewerStateKey()));
+        target.setHospitalKey(source.getHospitalKey());
+        target.setHospitalId(source.getHospitalId());
+        target.setModalityKey(source.getModalityKey());
+        target.setModalityId(source.getModalityId());
+        target.setStudyKey(source.getStudyKey());
+        target.setStudyId(source.getStudyId());
+        target.setWorklistKey(source.getWorklistKey());
+        target.setWorklistId(source.getWorklistId());
+        target.setPatientKey(source.getPatientKey());
+        target.setPatientId(source.getPatientId());
+        target.setStudyInstanceUid(source.getStudyInstanceUid());
+        target.setAccessionNumber(source.getAccessionNumber());
+        target.setPatientCode(source.getPatientCode());
+        target.setStateType(source.getStateType());
+        target.setSchemaVersion(source.getSchemaVersion());
+    }
+
+    private void cleanupExpiredViewerStateChunkUploads() {
+        long now = System.currentTimeMillis();
+        viewerStateChunkUploads.entrySet().removeIf(entry -> entry.getValue().isExpired(now));
+    }
+
+    private long maxViewerStateJsonBytes() {
+        return maxViewerStateJsonBytes > 0 ? maxViewerStateJsonBytes : DEFAULT_MAX_VIEWER_STATE_JSON_BYTES;
+    }
+
+    private long maxChunkedViewerStateRequestBytes() {
+        return maxViewerStateJsonBytes() + (2L * 1024L * 1024L);
+    }
+
+    private String sha256Hex(byte[] payload) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(payload));
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to hash viewer state payload.", ex);
+        }
+    }
+
     private void normalizeViewerStatePayload(PacsViewerStateRequest request) {
         validateViewerStatePayloadTypes(request);
         JsonNode segmentations = arrayOrEmpty(request.getSegmentations());
@@ -1383,7 +1833,7 @@ public class PacsResultServiceImpl implements PacsResultService {
                 request.getMetadataJson()
         };
         long totalBytes = viewerStateJsonBytes(payloadParts);
-        if (totalBytes > MAX_VIEWER_STATE_JSON_BYTES) {
+        if (totalBytes > maxViewerStateJsonBytes()) {
             throw new IllegalArgumentException("Viewer state is too large.");
         }
         request.setPayloadSizeBytes(totalBytes);
@@ -1618,6 +2068,80 @@ public class PacsResultServiceImpl implements PacsResultService {
 
     private static final class ViewerStateJsonBudget {
         private long nodes;
+    }
+
+    private static final class ViewerStateChunkUpload {
+        private final String uploadId;
+        private final int chunkCount;
+        private final long payloadSizeBytes;
+        private final String payloadSha256;
+        private final byte[][] chunks;
+        private final long createdAtMs;
+        private long lastTouchedMs;
+        private int receivedCount;
+
+        private ViewerStateChunkUpload(
+                String uploadId,
+                int chunkCount,
+                long payloadSizeBytes,
+                String payloadSha256
+        ) {
+            this.uploadId = uploadId;
+            this.chunkCount = chunkCount;
+            this.payloadSizeBytes = payloadSizeBytes;
+            this.payloadSha256 = payloadSha256;
+            this.chunks = new byte[chunkCount][];
+            this.createdAtMs = System.currentTimeMillis();
+            this.lastTouchedMs = this.createdAtMs;
+        }
+
+        private synchronized void requireSameMetadata(int chunkCount, long payloadSizeBytes, String payloadSha256) {
+            if (this.chunkCount != chunkCount
+                    || this.payloadSizeBytes != payloadSizeBytes
+                    || !this.payloadSha256.equalsIgnoreCase(payloadSha256)) {
+                throw new IllegalArgumentException("Viewer state chunk upload metadata does not match.");
+            }
+        }
+
+        private synchronized void put(int chunkIndex, byte[] chunkBytes) {
+            if (chunkIndex < 0 || chunkIndex >= chunkCount) {
+                throw new IllegalArgumentException("chunkIndex is invalid.");
+            }
+            if (chunks[chunkIndex] == null) {
+                receivedCount++;
+            }
+            chunks[chunkIndex] = Arrays.copyOf(chunkBytes, chunkBytes.length);
+            lastTouchedMs = System.currentTimeMillis();
+        }
+
+        private synchronized int receivedCount() {
+            return receivedCount;
+        }
+
+        private synchronized boolean isComplete() {
+            return receivedCount == chunkCount && Arrays.stream(chunks).noneMatch(chunk -> chunk == null);
+        }
+
+        private synchronized byte[] assemble() {
+            if (!isComplete()) {
+                throw new IllegalArgumentException("Viewer state chunk upload is incomplete.");
+            }
+            ByteArrayOutputStream output = new ByteArrayOutputStream(Math.toIntExact(payloadSizeBytes));
+            for (byte[] chunk : chunks) {
+                output.write(chunk, 0, chunk.length);
+            }
+            return output.toByteArray();
+        }
+
+        private synchronized boolean isExpired(long nowMs) {
+            return nowMs - lastTouchedMs > VIEWER_STATE_CHUNK_TTL_MS
+                    || nowMs - createdAtMs > (VIEWER_STATE_CHUNK_TTL_MS * 2L);
+        }
+
+        @Override
+        public String toString() {
+            return uploadId + ":" + receivedCount + "/" + chunkCount;
+        }
     }
 
     private String jsonToStringOrDefault(JsonNode node, String fallback) {

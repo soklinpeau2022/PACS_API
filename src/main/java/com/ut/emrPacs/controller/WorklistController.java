@@ -123,7 +123,7 @@ public class WorklistController {
     }
 
     @PostMapping(ApiConstants.Worklist.RECEIVED_STUDY_PATH)
-    @Operation(summary = "Receive DicomServer stable-study callback", description = "Module -> Worklist. Endpoint -> POST /worklist/worklist-received-study. Internal callback for DicomServer stable-study notifications. Requires a machine-client Bearer token, verifies image instances exist, and links the received study to the Worklist.")
+    @Operation(summary = "Receive DicomServer stable-study callback", description = "Module -> Worklist. Endpoint -> POST /worklist/worklist-received-study. Internal callback for DicomServer stable-study notifications. Requires a machine-client Bearer token, verifies image instances exist, and links the received study when a matching Worklist exists. Callbacks for direct Study uploads are acknowledged without creating or updating a Worklist.")
     public ResponseMessage<BaseResult> receivedStudy(@Valid @RequestBody WorklistReceivedStudyRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
         return worklistService.receivedStudy(request, httpServletRequest);
     }

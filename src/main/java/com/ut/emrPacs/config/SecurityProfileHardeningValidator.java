@@ -25,9 +25,6 @@ public class SecurityProfileHardeningValidator implements InitializingBean {
     @Value("${security.jwt.key-id:}")
     private String jwtKeyId;
 
-    @Value("${security.jwt.refresh-token-encryption-key:}")
-    private String refreshTokenEncryptionKey;
-
     @Value("${spring.datasource.password:}")
     private String datasourcePassword;
 
@@ -43,14 +40,14 @@ public class SecurityProfileHardeningValidator implements InitializingBean {
     @Value("${pacs.result.static-auth.api-key:}")
     private String pacsResultApiKey;
 
-    @Value("${app.security.cookies.secure:false}")
-    private boolean secureCookies;
-
     @Value("${security.jwt.refresh-token-allow-body:false}")
     private boolean refreshTokenAllowBody;
 
     @Value("${security.jwt.refresh-token-return-in-body:false}")
     private boolean refreshTokenReturnInBody;
+
+    @Value("${security.jwt.access-token-return-in-body:false}")
+    private boolean accessTokenReturnInBody;
 
     @Value("${app.security.permissions.deny-when-unknown:false}")
     private boolean denyWhenUnknownPermission;
@@ -96,9 +93,6 @@ public class SecurityProfileHardeningValidator implements InitializingBean {
         if (isMissingOrPlaceholder(jwtKeyId)) {
             throw new IllegalStateException("SECURITY_JWT_KEY_ID must be set in qa/prod.");
         }
-        if (isMissingOrPlaceholder(refreshTokenEncryptionKey)) {
-            throw new IllegalStateException("Refresh token encryption key must be set in qa/prod.");
-        }
         if (isMissingOrPlaceholder(datasourcePassword)) {
             throw new IllegalStateException("SPRING_DATASOURCE_PASSWORD must be set in qa/prod.");
         }
@@ -111,14 +105,14 @@ public class SecurityProfileHardeningValidator implements InitializingBean {
         if (pacsResultStaticAuthEnabled && isMissingOrPlaceholder(pacsResultApiKey)) {
             throw new IllegalStateException("PACS_RESULT_API_KEY must be set when PACS result static auth is enabled in qa/prod.");
         }
-        if (!secureCookies) {
-            throw new IllegalStateException("app.security.cookies.secure must be true in qa/prod.");
+        if (!refreshTokenAllowBody) {
+            throw new IllegalStateException("security.jwt.refresh-token-allow-body must be true in qa/prod for Bearer-only auth.");
         }
-        if (refreshTokenAllowBody) {
-            throw new IllegalStateException("security.jwt.refresh-token-allow-body must be false in qa/prod.");
+        if (!refreshTokenReturnInBody) {
+            throw new IllegalStateException("security.jwt.refresh-token-return-in-body must be true in qa/prod for Bearer-only auth.");
         }
-        if (refreshTokenReturnInBody) {
-            throw new IllegalStateException("security.jwt.refresh-token-return-in-body must be false in qa/prod.");
+        if (!accessTokenReturnInBody) {
+            throw new IllegalStateException("security.jwt.access-token-return-in-body must be true in qa/prod for Bearer-only auth.");
         }
         if (!denyWhenUnknownPermission) {
             throw new IllegalStateException("app.security.permissions.deny-when-unknown must be true in qa/prod.");

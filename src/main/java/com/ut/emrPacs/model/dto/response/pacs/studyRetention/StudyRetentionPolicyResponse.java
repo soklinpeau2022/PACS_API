@@ -26,9 +26,12 @@ public class StudyRetentionPolicyResponse {
     private String modalityName;
 
     private Integer retentionDays;
+    private Integer retentionValue;
+    private String retentionUnit;
     private Integer notifyBeforeDays;
     private Boolean requireApproval;
     private Boolean enabled;
+    private Boolean autoDelete;
     private String scopeLabel;
     private String notes;
     private String createdAt;

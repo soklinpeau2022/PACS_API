@@ -35,6 +35,8 @@ public class WorklistReceivedStudyRequest {
     private String patientSex;
     @Schema(description = "Study description from DicomServer.", example = "Viewer Microscopy")
     private String studyDescription;
+    @Schema(description = "Institution Name from DICOM study tags.", example = "TSNH HOSPITAL")
+    private String institutionName;
     @Schema(description = "Study date from DicomServer in DICOM format.", example = "20260524")
     private String studyDate;
     @Schema(description = "Study time from DicomServer in DICOM format.", example = "130000")

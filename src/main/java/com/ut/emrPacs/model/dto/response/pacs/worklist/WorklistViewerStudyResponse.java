@@ -23,10 +23,12 @@ public class WorklistViewerStudyResponse {
     private String visitCode;
     private String status;
     private String patientUid;
+    private String patientHn;
     private String patientName;
     private String accessionNumber;
     private String modalityName;
     private String studyDescription;
+    private String institutionName;
     private String dicomServerStudyId;
     private String studyInstanceUid;
     private String viewerUrl;

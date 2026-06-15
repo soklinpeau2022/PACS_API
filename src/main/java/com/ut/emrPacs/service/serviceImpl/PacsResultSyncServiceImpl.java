@@ -1,6 +1,7 @@
 package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.config.WorklistConstants;
+import com.ut.emrPacs.config.DicomTagConstants;
 import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
 import com.ut.emrPacs.helper.dicomServer.DicomServerWorklistMapperHelper;
 import com.ut.emrPacs.mapper.pacs.WorklistMapper;
@@ -450,6 +451,7 @@ public class PacsResultSyncServiceImpl implements PacsResultSyncService {
                 firstNonBlank(Worklist.getModalityCode(), Worklist.getModalityName(), readDicomTag(studyResponse, "ModalitiesInStudy"), readDicomTag(studyResponse, "Modality")),
                 parseDicomStudyDate(readDicomTag(studyResponse, "StudyDate")),
                 firstNonBlank(readDicomTag(studyResponse, "StudyDescription"), Worklist.getStudyDescription()),
+                readDicomTag(studyResponse, DicomTagConstants.INSTITUTION_NAME),
                 Worklist.getDicomServerId(),
                 StudyStatus.IMAGE_RECEIVED.code(),
                 dicomServerStudyId,

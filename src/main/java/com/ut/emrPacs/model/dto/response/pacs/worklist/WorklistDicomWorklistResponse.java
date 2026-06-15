@@ -16,6 +16,7 @@ public class WorklistDicomWorklistResponse {
     private String visitCode;
     private String status;
     private String patientUid;
+    private String patientHn;
     private String patientName;
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
     private LocalDate patientBirthDate;

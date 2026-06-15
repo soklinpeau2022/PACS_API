@@ -7,6 +7,7 @@ public class StudyRetentionSummaryResponse {
     private Long nearExpiry;
     private Long expiredWaitingApproval;
     private Long pendingApproval;
+    private Long autoDeleteReady;
     private Long deleteFailed;
     private Long rejected;
     private Long keepPermanent;

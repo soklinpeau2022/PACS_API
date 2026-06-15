@@ -298,8 +298,8 @@ public class OpenApiConfig {
         Map<String, String> examples = new HashMap<>();
 
         examples.put("/auth/auth-login", "{\"clientId\":\"pacs-web\",\"username\":\"replace_with_username\",\"password\":\"replace_with_password\"}");
-        examples.put("/auth/auth-logout", "{}");
-        examples.put("/auth/auth-refresh", "{}");
+        examples.put("/auth/auth-logout", "{\"clientId\":\"pacs-web\",\"refreshToken\":\"replace_with_refresh_token\"}");
+        examples.put("/auth/auth-refresh", "{\"clientId\":\"pacs-web\",\"refreshToken\":\"replace_with_refresh_token\"}");
         examples.put("/auth/auth-client-credentials", "{\"clientId\":\"pacs-web\",\"clientSecret\":\"replace_with_client_secret\"}");
 
         examples.put("/dropdown/dropdown-nationality", "{\"searchText\":\"th\",\"rowsPerPage\":20,\"page\":1}");
@@ -386,6 +386,5 @@ public class OpenApiConfig {
         return examples;
     }
 }
-
 
 

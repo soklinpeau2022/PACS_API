@@ -15,6 +15,8 @@ import com.ut.emrPacs.model.dto.request.pacs.result.PacsResultContextRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsResultFindByWorklistRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsResultImageUploadRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsResultSaveRequest;
+import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateChunkCompleteRequest;
+import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateChunkRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateRequest;
 import com.ut.emrPacs.model.dto.response.pacs.result.PacsResultContextResponse;
 import com.ut.emrPacs.model.dto.response.pacs.result.PacsResultResponse;
@@ -33,8 +35,12 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -147,6 +153,54 @@ class PacsResultServiceImplAccessTest {
         var response = service.create(saveRequest, List.of(), request);
 
         assertFalse(response.isSuccess());
+    }
+
+    @Test
+    void browserResultCreateUsesViewerTokenWithoutServerApiKey() throws Exception {
+        when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
+            default -> null;
+        });
+        when(viewerAccessKeyService.decode("viewer-token"))
+                .thenReturn(claims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
+        when(worklistMapper.findWorklistById(1L, 7L)).thenReturn(worklistContext());
+        when(modalityMapper.countActiveModalitiesByIds(List.of(3L))).thenReturn(1L);
+        when(modalityMapper.countActiveHospitalModality(1L, 3L)).thenReturn(1L);
+        when(pacsResultMapper.findExisting(any(PacsResultSaveRequest.class))).thenReturn(null);
+        when(pacsResultMapper.insertResult(any(PacsResultSaveRequest.class), eq("COMPLETED"), eq(99L)))
+                .thenReturn(88L);
+        PacsResultResponse saved = resultResponse(88L, 99L);
+        saved.setResultText("<p>GGGG</p>");
+        when(pacsResultMapper.findById(88L)).thenReturn(saved);
+        when(pacsResultMapper.listImages(88L)).thenReturn(List.of());
+
+        PacsResultSaveRequest saveRequest = saveRequest();
+        saveRequest.setResultText("<p>GGGG</p>");
+        saveRequest.setCompleted(true);
+
+        var response = service.createBrowser(saveRequest, List.of(), request);
+
+        assertTrue(response.isSuccess());
+        verify(pacsResultMapper).insertResult(any(PacsResultSaveRequest.class), eq("COMPLETED"), eq(99L));
+    }
+
+    @Test
+    void legacyResultCreateStillRequiresServerApiKey() throws Exception {
+        when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
+            default -> null;
+        });
+        when(viewerAccessKeyService.decode("viewer-token"))
+                .thenReturn(claims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
+
+        PacsResultSaveRequest saveRequest = saveRequest();
+        saveRequest.setResultText("<p>GGGG</p>");
+        saveRequest.setCompleted(true);
+
+        var response = service.create(saveRequest, List.of(), request);
+
+        assertFalse(response.isSuccess());
+        verify(pacsResultMapper, never()).insertResult(any(PacsResultSaveRequest.class), anyString(), any());
     }
 
     @Test
@@ -416,6 +470,99 @@ class PacsResultServiceImplAccessTest {
     }
 
     @Test
+    void browserViewerStateChunkedSaveReassemblesAndPersists() throws Exception {
+        when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
+            default -> null;
+        });
+        when(viewerAccessKeyService.decode("viewer-token"))
+                .thenReturn(claims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
+
+        String payload = """
+                {"viewerState":{"source":"ohif-viewer"},"metadata":{"chunked":true},"contourSegmentations":[{"segmentationId":"seg-1","contour":{"annotationUIDsBySegment":{"1":["anno-1"]}}}]}""";
+        byte[] payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
+        String uploadId = "chunk-test-1";
+        String payloadSha256 = sha256(payloadBytes);
+        int splitAt = 80;
+        PacsViewerStateResponse savedResponse = emptyViewerStateResponse(91L);
+        when(pacsResultMapper.findViewerState(any(PacsViewerStateRequest.class)))
+                .thenReturn(null, savedResponse);
+        when(pacsResultMapper.insertViewerState(any(PacsViewerStateRequest.class), eq(99L)))
+                .thenReturn(91L);
+
+        assertTrue(service.saveBrowserViewerStateChunk(
+                chunk(uploadId, 0, 2, payloadBytes, payloadSha256, 0, splitAt),
+                request
+        ).isSuccess());
+        assertTrue(service.saveBrowserViewerStateChunk(
+                chunk(uploadId, 1, 2, payloadBytes, payloadSha256, splitAt, payloadBytes.length),
+                request
+        ).isSuccess());
+
+        PacsViewerStateChunkCompleteRequest complete = complete(uploadId, 2, payloadBytes, payloadSha256);
+        var response = service.completeBrowserViewerStateChunk(complete, request);
+
+        assertTrue(response.isSuccess());
+        ArgumentCaptor<PacsViewerStateRequest> requestCaptor =
+                ArgumentCaptor.forClass(PacsViewerStateRequest.class);
+        verify(pacsResultMapper).insertViewerState(requestCaptor.capture(), eq(99L));
+        PacsViewerStateRequest persisted = requestCaptor.getValue();
+        assertTrue(persisted.getViewerStateJson().contains("ohif-viewer"));
+        assertTrue(persisted.getMetadataJson().contains("chunked"));
+        assertTrue(persisted.getContourSegmentationsJson().contains("seg-1"));
+    }
+
+    @Test
+    void browserViewerStateChunkedSaveRejectsIncompleteUpload() throws Exception {
+        when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
+            default -> null;
+        });
+        when(viewerAccessKeyService.decode("viewer-token"))
+                .thenReturn(claims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
+
+        byte[] payloadBytes = "{\"viewerState\":{\"source\":\"ohif-viewer\"}}".getBytes(StandardCharsets.UTF_8);
+        String uploadId = "chunk-test-incomplete";
+        String payloadSha256 = sha256(payloadBytes);
+
+        assertTrue(service.saveBrowserViewerStateChunk(
+                chunk(uploadId, 0, 2, payloadBytes, payloadSha256, 0, 10),
+                request
+        ).isSuccess());
+
+        var response = service.completeBrowserViewerStateChunk(
+                complete(uploadId, 2, payloadBytes, payloadSha256),
+                request
+        );
+
+        assertFalse(response.isSuccess());
+        verify(pacsResultMapper, never()).insertViewerState(any(PacsViewerStateRequest.class), any());
+        verify(pacsResultMapper, never()).updateViewerState(any(PacsViewerStateRequest.class), any());
+    }
+
+    @Test
+    void readOnlyViewerCannotUploadViewerStateChunk() throws Exception {
+        when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
+            default -> null;
+        });
+        when(viewerAccessKeyService.decode("viewer-token"))
+                .thenReturn(claims(ViewerAccessKeyService.ACCESS_READ, 99L));
+
+        byte[] payloadBytes = "{\"viewerState\":{\"source\":\"ohif-viewer\"}}".getBytes(StandardCharsets.UTF_8);
+        String payloadSha256 = sha256(payloadBytes);
+
+        var response = service.saveBrowserViewerStateChunk(
+                chunk("chunk-test-read-only", 0, 1, payloadBytes, payloadSha256, 0, payloadBytes.length),
+                request
+        );
+
+        assertFalse(response.isSuccess());
+        verify(pacsResultMapper, never()).insertViewerState(any(PacsViewerStateRequest.class), any());
+        verify(pacsResultMapper, never()).updateViewerState(any(PacsViewerStateRequest.class), any());
+    }
+
+    @Test
     void browserViewerStateSaveRejectsUnknownViewerStateKeyBeforeInsert() throws Exception {
         when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
             case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
@@ -627,6 +774,45 @@ class PacsResultServiceImplAccessTest {
         response.setToolStateJson("{}");
         response.setMetadataJson("{}");
         return response;
+    }
+
+    private static PacsViewerStateChunkRequest chunk(
+            String uploadId,
+            int chunkIndex,
+            int chunkCount,
+            byte[] payload,
+            String payloadSha256,
+            int start,
+            int end
+    ) {
+        PacsViewerStateChunkRequest request = new PacsViewerStateChunkRequest();
+        request.setUploadId(uploadId);
+        request.setChunkIndex(chunkIndex);
+        request.setChunkCount(chunkCount);
+        request.setPayloadSizeBytes((long) payload.length);
+        request.setPayloadSha256(payloadSha256);
+        request.setChunkData(Base64.getEncoder().encodeToString(
+                java.util.Arrays.copyOfRange(payload, start, end)
+        ));
+        return request;
+    }
+
+    private static PacsViewerStateChunkCompleteRequest complete(
+            String uploadId,
+            int chunkCount,
+            byte[] payload,
+            String payloadSha256
+    ) {
+        PacsViewerStateChunkCompleteRequest request = new PacsViewerStateChunkCompleteRequest();
+        request.setUploadId(uploadId);
+        request.setChunkCount(chunkCount);
+        request.setPayloadSizeBytes((long) payload.length);
+        request.setPayloadSha256(payloadSha256);
+        return request;
+    }
+
+    private static String sha256(byte[] payload) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload));
     }
 
     private static byte[] pngBytes() {

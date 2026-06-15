@@ -16,9 +16,12 @@
         m.abbr AS modalityCode,
         m.name AS modalityName,
         p.retention_days AS retentionDays,
+        p.retention_value AS retentionValue,
+        p.retention_unit AS retentionUnit,
         p.notify_before_days AS notifyBeforeDays,
         p.require_approval AS requireApproval,
         p.enabled AS enabled,
+        p.auto_delete AS autoDelete,
         CASE
             WHEN p.hospital_id IS NULL AND p.dicom_server_id IS NULL AND p.modality_id IS NULL
                 THEN 'Global default'
@@ -116,15 +119,28 @@
           AND is_active != 2
     </select>
 
+    <select id="countModalityInHospital" resultType="java.lang.Integer">
+        SELECT COUNT(1)
+        FROM hospital_modalities hm
+        INNER JOIN modalities m ON m.id = hm.modality_id
+        WHERE hm.hospital_id = #{hospitalId}
+          AND hm.modality_id = #{modalityId}
+          AND hm.is_active = 1
+          AND m.is_active = 1
+    </select>
+
     <insert id="insertPolicy" useGeneratedKeys="true" keyProperty="request.id">
         INSERT INTO study_retention_policies (
             hospital_id,
             dicom_server_id,
             modality_id,
             retention_days,
+            retention_value,
+            retention_unit,
             notify_before_days,
             require_approval,
             enabled,
+            auto_delete,
             notes,
             is_active,
             created_by,
@@ -136,9 +152,12 @@
             #{request.dicomServerId},
             #{request.modalityId},
             #{request.retentionDays},
+            #{request.retentionValue},
+            #{request.retentionUnit},
             #{request.notifyBeforeDays},
-            COALESCE(#{request.requireApproval}, TRUE),
+            CASE WHEN COALESCE(#{request.autoDelete}, FALSE) THEN FALSE ELSE COALESCE(#{request.requireApproval}, TRUE) END,
             COALESCE(#{request.enabled}, TRUE),
+            COALESCE(#{request.autoDelete}, FALSE),
             #{request.notes},
             1,
             #{userId},
@@ -155,9 +174,12 @@
             dicom_server_id = #{request.dicomServerId},
             modality_id = #{request.modalityId},
             retention_days = #{request.retentionDays},
+            retention_value = #{request.retentionValue},
+            retention_unit = #{request.retentionUnit},
             notify_before_days = #{request.notifyBeforeDays},
-            require_approval = COALESCE(#{request.requireApproval}, TRUE),
+            require_approval = CASE WHEN COALESCE(#{request.autoDelete}, FALSE) THEN FALSE ELSE COALESCE(#{request.requireApproval}, TRUE) END,
             enabled = COALESCE(#{request.enabled}, TRUE),
+            auto_delete = COALESCE(#{request.autoDelete}, FALSE),
             notes = #{request.notes},
             modified_by = #{userId},
             modified_at = NOW()
@@ -187,6 +209,7 @@
                 WHEN candidate.latestDecisionStatus = 'REJECTED' THEN 'REJECTED'
                 WHEN candidate.latestDecisionStatus IN ('PENDING_APPROVAL', 'APPROVED') THEN 'PENDING_APPROVAL'
                 WHEN candidate.latestDecisionStatus = 'DELETED' THEN 'DELETED'
+                WHEN candidate.autoDelete = TRUE AND candidate.expires_at_value &lt;= NOW() THEN 'AUTO_DELETE_READY'
                 WHEN candidate.expires_at_value &lt;= NOW() THEN 'EXPIRED_WAITING_APPROVAL'
                 WHEN candidate.near_expiry_at_value &lt;= NOW() THEN 'NEAR_EXPIRY'
                 ELSE 'ACTIVE'
@@ -217,13 +240,17 @@
                 TO_CHAR(s.study_date, 'YYYY-MM-DD') AS studyDate,
                 TO_CHAR(COALESCE(s.image_received_at, s.received_at), 'YYYY-MM-DD HH24:MI:SS') AS imageReceivedAt,
                 policy.retention_days AS retentionDays,
+                policy.retention_value AS retentionValue,
+                policy.retention_unit AS retentionUnit,
                 policy.notify_before_days AS notifyBeforeDays,
+                policy.require_approval AS requireApproval,
+                policy.auto_delete AS autoDelete,
                 TO_CHAR(base_dates.retention_base_at, 'YYYY-MM-DD HH24:MI:SS') AS retentionBaseAt,
-                TO_CHAR(base_dates.retention_base_at + (policy.retention_days * INTERVAL '1 day') - (policy.notify_before_days * INTERVAL '1 day'), 'YYYY-MM-DD HH24:MI:SS') AS nearExpiryAt,
-                TO_CHAR(base_dates.retention_base_at + (policy.retention_days * INTERVAL '1 day'), 'YYYY-MM-DD HH24:MI:SS') AS expiresAt,
-                base_dates.retention_base_at + (policy.notify_before_days * INTERVAL '0 day') AS retention_base_value,
-                base_dates.retention_base_at + (policy.retention_days * INTERVAL '1 day') - (policy.notify_before_days * INTERVAL '1 day') AS near_expiry_at_value,
-                base_dates.retention_base_at + (policy.retention_days * INTERVAL '1 day') AS expires_at_value,
+                TO_CHAR(expiry_dates.near_expiry_at, 'YYYY-MM-DD HH24:MI:SS') AS nearExpiryAt,
+                TO_CHAR(expiry_dates.expires_at, 'YYYY-MM-DD HH24:MI:SS') AS expiresAt,
+                base_dates.retention_base_at AS retention_base_value,
+                expiry_dates.near_expiry_at AS near_expiry_at_value,
+                expiry_dates.expires_at AS expires_at_value,
                 latest.status AS latestDecisionStatus,
                 latest.decision_note AS decisionNote,
                 latest.error_message AS errorMessage,
@@ -277,6 +304,19 @@
                     p.id DESC
                 LIMIT 1
             ) policy ON TRUE
+            CROSS JOIN LATERAL (
+                SELECT
+                    CASE policy.retention_unit
+                        WHEN 'MONTH' THEN base_dates.retention_base_at + (policy.retention_value * INTERVAL '1 month')
+                        WHEN 'YEAR' THEN base_dates.retention_base_at + (policy.retention_value * INTERVAL '1 year')
+                        ELSE base_dates.retention_base_at + (policy.retention_value * INTERVAL '1 day')
+                    END AS expires_at,
+                    CASE policy.retention_unit
+                        WHEN 'MONTH' THEN base_dates.retention_base_at + (policy.retention_value * INTERVAL '1 month')
+                        WHEN 'YEAR' THEN base_dates.retention_base_at + (policy.retention_value * INTERVAL '1 year')
+                        ELSE base_dates.retention_base_at + (policy.retention_value * INTERVAL '1 day')
+                    END - (policy.notify_before_days * INTERVAL '1 day') AS near_expiry_at
+            ) expiry_dates
             LEFT JOIN LATERAL (
                 SELECT request.*
                 FROM study_retention_delete_requests request
@@ -373,6 +413,55 @@
         LIMIT 1
     </select>
 
+    <select id="listReviewCandidatesByStudyPublicKeys" resultType="com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionReviewResponse">
+        WITH retention_rows AS (
+            <include refid="RETENTION_CANDIDATE_ROWS"/>
+        )
+        SELECT *
+        FROM retention_rows
+        WHERE status != 'DELETED'
+          <if test="studyPublicKeys != null and studyPublicKeys.size() > 0">
+              AND studyPublicKey IN
+              <foreach collection="studyPublicKeys" item="studyPublicKey" open="(" separator="," close=")">
+                  #{studyPublicKey}
+              </foreach>
+          </if>
+        ORDER BY expires_at_value ASC, studyId DESC
+    </select>
+
+    <select id="listAutoDeleteCandidates" resultType="com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionReviewResponse">
+        WITH retention_rows AS (
+            <include refid="RETENTION_CANDIDATE_ROWS"/>
+        )
+        SELECT *
+        FROM retention_rows
+        WHERE status = 'AUTO_DELETE_READY'
+        ORDER BY expires_at_value ASC, studyId ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="listDashboardRetentionAlerts" resultType="com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionReviewResponse">
+        WITH retention_rows AS (
+            <include refid="RETENTION_CANDIDATE_ROWS"/>
+        )
+        SELECT *
+        FROM retention_rows
+        WHERE status != 'DELETED'
+          AND status IN ('DELETE_FAILED', 'EXPIRED_WAITING_APPROVAL', 'AUTO_DELETE_READY', 'PENDING_APPROVAL', 'NEAR_EXPIRY')
+        ORDER BY
+            CASE status
+                WHEN 'DELETE_FAILED' THEN 0
+                WHEN 'EXPIRED_WAITING_APPROVAL' THEN 1
+                WHEN 'AUTO_DELETE_READY' THEN 2
+                WHEN 'PENDING_APPROVAL' THEN 3
+                WHEN 'NEAR_EXPIRY' THEN 4
+                ELSE 5
+            END,
+            expires_at_value ASC,
+            studyId DESC
+        LIMIT #{limit}
+    </select>
+
     <select id="summary" resultType="com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionSummaryResponse">
         WITH retention_rows AS (
             <include refid="RETENTION_CANDIDATE_ROWS"/>
@@ -381,10 +470,11 @@
             COALESCE(SUM(CASE WHEN status = 'NEAR_EXPIRY' THEN 1 ELSE 0 END), 0)::BIGINT AS nearExpiry,
             COALESCE(SUM(CASE WHEN status = 'EXPIRED_WAITING_APPROVAL' THEN 1 ELSE 0 END), 0)::BIGINT AS expiredWaitingApproval,
             COALESCE(SUM(CASE WHEN status = 'PENDING_APPROVAL' THEN 1 ELSE 0 END), 0)::BIGINT AS pendingApproval,
+            COALESCE(SUM(CASE WHEN status = 'AUTO_DELETE_READY' THEN 1 ELSE 0 END), 0)::BIGINT AS autoDeleteReady,
             COALESCE(SUM(CASE WHEN status = 'DELETE_FAILED' THEN 1 ELSE 0 END), 0)::BIGINT AS deleteFailed,
             COALESCE(SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END), 0)::BIGINT AS rejected,
             COALESCE(SUM(CASE WHEN status = 'KEEP_PERMANENT' THEN 1 ELSE 0 END), 0)::BIGINT AS keepPermanent,
-            COALESCE(SUM(CASE WHEN status IN ('NEAR_EXPIRY', 'EXPIRED_WAITING_APPROVAL', 'PENDING_APPROVAL', 'DELETE_FAILED') THEN 1 ELSE 0 END), 0)::BIGINT AS totalOpen
+            COALESCE(SUM(CASE WHEN status IN ('NEAR_EXPIRY', 'EXPIRED_WAITING_APPROVAL', 'AUTO_DELETE_READY', 'PENDING_APPROVAL', 'DELETE_FAILED') THEN 1 ELSE 0 END), 0)::BIGINT AS totalOpen
         FROM retention_rows
         WHERE status != 'DELETED'
     </select>

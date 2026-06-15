@@ -38,8 +38,12 @@ public class AuthController {
 
     @PostMapping(ApiConstants.Auth.LOGOUT_PATH)
     @Operation(summary = "Log out", description = "Module -> Authentication. Endpoint -> POST /auth/auth-logout")
-    public ResponseMessage<BaseResult> logout(HttpServletRequest request, HttpServletResponse response) {
-        return authService.handleLogout(request, response);
+    public ResponseMessage<BaseResult> logout(
+            @Valid @RequestBody(required = false) RefreshTokenRequest refreshTokenRequest,
+            HttpServletRequest request,
+            HttpServletResponse response
+    ) {
+        return authService.handleLogout(refreshTokenRequest, request, response);
     }
 
     @PostMapping(ApiConstants.Auth.REFRESH_PATH)
@@ -61,4 +65,3 @@ public class AuthController {
         return authService.handleClientCredentials(clientCredentialsRequest, request);
     }
 }
-

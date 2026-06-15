@@ -23,15 +23,18 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final long maxRequestBytes;
+    private final long viewerStateMaxRequestBytes;
     private final long dicomUploadMaxRequestBytes;
     private final String dicomUploadPath;
 
     public GlobalRequestSizeLimitFilter(
             @Value("${app.security.max-request-bytes:12582912}") long maxRequestBytes,
+            @Value("${app.security.viewer-state.max-request-bytes:12582912}") long viewerStateMaxRequestBytes,
             @Value("${app.security.dicom-upload.max-request-bytes:268435456}") long dicomUploadMaxRequestBytes,
             @Value("${app.security.dicom-upload.path:/dicom-uploads}") String dicomUploadPath
     ) {
         this.maxRequestBytes = maxRequestBytes;
+        this.viewerStateMaxRequestBytes = viewerStateMaxRequestBytes;
         this.dicomUploadMaxRequestBytes = dicomUploadMaxRequestBytes;
         this.dicomUploadPath = normalizePath(dicomUploadPath);
     }
@@ -64,7 +67,23 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
         if (isDicomUploadRequest(request)) {
             return dicomUploadMaxRequestBytes;
         }
+        if (isViewerStateRequest(request)) {
+            return viewerStateMaxRequestBytes;
+        }
         return maxRequestBytes;
+    }
+
+    // PACS-OHIF viewer-state saves (measurements, annotations, contours, sparse
+    // labelmap voxels) legitimately exceed the strict generic JSON cap. Mirror
+    // the carve-out and path matcher used by SecurityThreatDetectionFilter so the
+    // two request-size gates stay consistent; keep both limits aligned when tuning.
+    private static boolean isViewerStateRequest(HttpServletRequest request) {
+        String requestUri = request.getRequestURI();
+        if (requestUri == null || requestUri.isBlank()) {
+            return false;
+        }
+        return requestUri.contains("/pacs-result-api/pacs-result-viewer-state-")
+                || requestUri.contains("/pacs-result/pacs-result-viewer-state-");
     }
 
     private boolean isDicomUploadRequest(HttpServletRequest request) {

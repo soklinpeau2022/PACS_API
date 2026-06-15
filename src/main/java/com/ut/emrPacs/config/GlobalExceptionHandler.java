@@ -20,6 +20,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
@@ -71,7 +72,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler({MissingServletRequestPartException.class, MultipartException.class})
     public ResponseEntity<ResponseMessage<BaseResult>> handleInvalidMultipart(Exception exception) {
-        LOGGER.warn("Invalid multipart request: {}", exception.getMessage());
+        Throwable cause = exception.getCause();
+        LOGGER.warn(
+                "Invalid multipart request: {}; cause={}",
+                exception.getMessage(),
+                cause == null ? "n/a" : cause.toString()
+        );
         return buildError(HttpStatus.BAD_REQUEST, "BAD_REQUEST", MESSAGE_BAD_REQUEST);
     }
 
@@ -115,6 +121,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ResponseMessage<BaseResult>> handleDataErrors(Exception exception) {
         LOGGER.error("Data access error", exception);
         return buildError(HttpStatus.CONFLICT, "CONFLICT", MESSAGE_CONFLICT);
+    }
+
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleClientDisconnect(AsyncRequestNotUsableException exception) {
+        // The client (browser/viewer) closed the connection before the response finished streaming.
+        // This is normal when the viewer cancels in-flight frame prefetches; the response can no
+        // longer be written, so there is nothing to return. Log at DEBUG to avoid flooding ERROR.
+        LOGGER.debug("Client disconnected before the response completed: {}", exception.getMessage());
     }
 
     @ExceptionHandler(Exception.class)

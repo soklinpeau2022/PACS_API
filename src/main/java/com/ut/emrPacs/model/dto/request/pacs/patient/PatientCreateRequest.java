@@ -18,6 +18,8 @@ public class PatientCreateRequest {
 
     @JsonAlias("patientUid")
     private String patientCode;
+    @JsonAlias({"patientHN", "patientHn", "dicomPatientId", "dicomPatientID"})
+    private String patientHn;
 
     @NotBlank
     private String firstName;

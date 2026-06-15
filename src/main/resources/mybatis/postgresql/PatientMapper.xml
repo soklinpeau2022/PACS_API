@@ -11,6 +11,7 @@
             h.code AS hospitalCode,
             h.name AS hospitalName,
             p.patient_uid AS patientCode,
+            p.patient_hn AS patientHn,
             p.first_name AS firstName,
             p.last_name AS lastName,
             p.phone_number AS phoneNumber,
@@ -28,8 +29,10 @@
         <if test="filter != null and filter.searchText != null and filter.searchText != ''">
           AND (
             LOWER(p.patient_uid) = LOWER(#{filter.searchText})
+            OR LOWER(COALESCE(p.patient_hn, '')) = LOWER(#{filter.searchText})
             OR LOWER(COALESCE(p.phone_number, '')) = LOWER(#{filter.searchText})
             OR p.patient_uid ILIKE '%' || #{filter.searchText} || '%'
+            OR COALESCE(p.patient_hn, '') ILIKE '%' || #{filter.searchText} || '%'
             OR p.first_name ILIKE '%' || #{filter.searchText} || '%'
             OR p.last_name ILIKE '%' || #{filter.searchText} || '%'
             OR TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.searchText} || '%'
@@ -39,7 +42,10 @@
           )
         </if>
         <if test="filter != null and filter.patientCode != null and filter.patientCode != ''">
-          AND LOWER(p.patient_uid) = LOWER(#{filter.patientCode})
+          AND (
+              LOWER(p.patient_uid) = LOWER(#{filter.patientCode})
+              OR LOWER(COALESCE(p.patient_hn, '')) = LOWER(#{filter.patientCode})
+          )
         </if>
         <if test="filter != null and filter.firstName != null and filter.firstName != ''">
           AND p.first_name ILIKE '%' || #{filter.firstName} || '%'
@@ -77,8 +83,10 @@
         <if test="filter != null and filter.searchText != null and filter.searchText != ''">
           AND (
             LOWER(p.patient_uid) = LOWER(#{filter.searchText})
+            OR LOWER(COALESCE(p.patient_hn, '')) = LOWER(#{filter.searchText})
             OR LOWER(COALESCE(p.phone_number, '')) = LOWER(#{filter.searchText})
             OR p.patient_uid ILIKE '%' || #{filter.searchText} || '%'
+            OR COALESCE(p.patient_hn, '') ILIKE '%' || #{filter.searchText} || '%'
             OR p.first_name ILIKE '%' || #{filter.searchText} || '%'
             OR p.last_name ILIKE '%' || #{filter.searchText} || '%'
             OR TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.searchText} || '%'
@@ -88,7 +96,10 @@
           )
         </if>
         <if test="filter != null and filter.patientCode != null and filter.patientCode != ''">
-          AND LOWER(p.patient_uid) = LOWER(#{filter.patientCode})
+          AND (
+              LOWER(p.patient_uid) = LOWER(#{filter.patientCode})
+              OR LOWER(COALESCE(p.patient_hn, '')) = LOWER(#{filter.patientCode})
+          )
         </if>
         <if test="filter != null and filter.firstName != null and filter.firstName != ''">
           AND p.first_name ILIKE '%' || #{filter.firstName} || '%'
@@ -113,6 +124,7 @@
             h.code AS hospitalCode,
             h.name AS hospitalName,
             p.patient_uid AS patientCode,
+            p.patient_hn AS patientHn,
             p.first_name AS firstName,
             p.last_name AS lastName,
             p.phone_number AS phoneNumber,
@@ -137,6 +149,7 @@
             h.code AS hospitalCode,
             h.name AS hospitalName,
             p.patient_uid AS patientCode,
+            p.patient_hn AS patientHn,
             p.first_name AS firstName,
             p.last_name AS lastName,
             p.phone_number AS phoneNumber,
@@ -150,6 +163,31 @@
           AND LOWER(BTRIM(COALESCE(p.last_name, ''))) = LOWER(BTRIM(COALESCE(#{lastName}, '')))
           AND p.date_of_birth = #{dateOfBirth}
           AND UPPER(BTRIM(COALESCE(p.gender, ''))) = UPPER(BTRIM(COALESCE(#{gender}, '')))
+        ORDER BY p.id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findByPatientHn" resultType="com.ut.emrPacs.model.dto.response.pacs.patient.PatientResponse">
+        SELECT
+            p.id,
+            p.public_id::text AS publicKey,
+            p.hospital_id AS hospitalId,
+            h.public_id::text AS hospitalPublicKey,
+            h.code AS hospitalCode,
+            h.name AS hospitalName,
+            p.patient_uid AS patientCode,
+            p.patient_hn AS patientHn,
+            p.first_name AS firstName,
+            p.last_name AS lastName,
+            p.phone_number AS phoneNumber,
+            p.gender,
+            p.date_of_birth AS dateOfBirth
+        FROM patients p
+        INNER JOIN hospitals h ON h.id = p.hospital_id
+        WHERE p.hospital_id = #{hospitalId}
+          AND p.is_active = 1
+          AND LOWER(BTRIM(COALESCE(p.patient_hn, ''))) = LOWER(BTRIM(COALESCE(#{patientHn}, '')))
+          AND BTRIM(COALESCE(#{patientHn}, '')) &lt;&gt; ''
         ORDER BY p.id DESC
         LIMIT 1
     </select>
@@ -198,10 +236,11 @@
     </select>
 
     <select id="create" resultType="java.lang.Long">
-        INSERT INTO patients (hospital_id, patient_uid, first_name, last_name, phone_number, gender, date_of_birth, is_active, created)
+        INSERT INTO patients (hospital_id, patient_uid, patient_hn, first_name, last_name, phone_number, gender, date_of_birth, is_active, created)
         VALUES (
             #{hospitalId},
             #{request.patientCode},
+            #{request.patientHn},
             #{request.firstName},
             #{request.lastName},
             #{request.phoneNumber},
@@ -212,6 +251,17 @@
         )
         RETURNING id
     </select>
+
+    <update id="updatePatientHnIfBlank">
+        UPDATE patients
+        SET patient_hn = #{patientHn},
+            modified = NOW()
+        WHERE hospital_id = #{hospitalId}
+          AND id = #{patientId}
+          AND is_active = 1
+          AND BTRIM(COALESCE(#{patientHn}, '')) &lt;&gt; ''
+          AND BTRIM(COALESCE(patient_hn, '')) = ''
+    </update>
 
     <update id="update">
         UPDATE patients

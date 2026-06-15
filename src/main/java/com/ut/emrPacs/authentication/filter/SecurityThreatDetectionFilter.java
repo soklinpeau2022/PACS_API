@@ -84,7 +84,8 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
             "additionalFindings",
             "presentationState",
             "toolState",
-            "metadata"
+            "metadata",
+            "chunkData"
     );
 
     private static final List<ThreatPattern> THREAT_PATTERNS = List.of(
@@ -483,11 +484,14 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
         byte[] buffer = new byte[8192];
         int total = 0;
         boolean tooLarge = false;
+        long contentLength = request.getContentLengthLong();
+        long remaining = contentLength >= 0 ? contentLength : Long.MAX_VALUE;
         try (ServletInputStream in = request.getInputStream()) {
             java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
             int read;
-            while ((read = in.read(buffer)) != -1) {
+            while (remaining > 0 && (read = in.read(buffer, 0, (int) Math.min(buffer.length, remaining))) != -1) {
                 total += read;
+                remaining -= read;
                 if (total > maxBytes) {
                     tooLarge = true;
                     break;

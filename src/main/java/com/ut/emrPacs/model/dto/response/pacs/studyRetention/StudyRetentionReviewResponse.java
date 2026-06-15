@@ -38,7 +38,11 @@ public class StudyRetentionReviewResponse {
     private String studyDate;
     private String imageReceivedAt;
     private Integer retentionDays;
+    private Integer retentionValue;
+    private String retentionUnit;
     private Integer notifyBeforeDays;
+    private Boolean requireApproval;
+    private Boolean autoDelete;
     private String retentionBaseAt;
     private String nearExpiryAt;
     private String expiresAt;

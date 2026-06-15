@@ -3,8 +3,10 @@ param(
     [string]$ClientId = $(if ($env:PACS_TEST_CLIENT_ID) { $env:PACS_TEST_CLIENT_ID } else { "pacs-web" }),
     [string]$Username = $(if ($env:PACS_TEST_USERNAME) { $env:PACS_TEST_USERNAME } else { "admin" }),
     [string]$Password = $(if ($env:PACS_TEST_PASSWORD) { $env:PACS_TEST_PASSWORD } else { "1" }),
-    [ValidateRange(100, 9000)]
+    [ValidateRange(100, 60000)]
     [int]$TargetPayloadKb = 800,
+    [ValidateRange(1, 60000)]
+    [int]$ChunkThresholdKb = 1024,
     [ValidateRange(1, 20)]
     [int]$Iterations = 5,
     [ValidateRange(1000, 120000)]
@@ -38,7 +40,7 @@ function Invoke-Json {
         TimeoutSec = [Math]::Max(1, [Math]::Ceiling($MaxRequestMs / 1000))
     }
     if ($null -ne $Body) {
-        $parameters.Body = $Body | ConvertTo-Json -Depth 40 -Compress
+        $parameters.Body = if ($Body -is [string]) { $Body } else { $Body | ConvertTo-Json -Depth 40 -Compress }
     }
     return Invoke-RestMethod @parameters
 }
@@ -63,6 +65,83 @@ function Add-IfPresent {
     param([hashtable]$Target, [string]$Name, [object]$Value)
     if ($null -ne $Value -and -not [string]::IsNullOrWhiteSpace([string]$Value)) {
         $Target[$Name] = $Value
+    }
+}
+
+function Copy-Hashtable {
+    param([hashtable]$Source)
+    $copy = @{}
+    foreach ($key in $Source.Keys) {
+        $copy[$key] = $Source[$key]
+    }
+    return $copy
+}
+
+function Get-Sha256Hex {
+    param([byte[]]$Bytes)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash($Bytes)
+        return (($hash | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-ByteSlice {
+    param([byte[]]$Bytes, [int]$Start, [int]$End)
+    $length = [Math]::Max(0, $End - $Start)
+    $slice = New-Object byte[] $length
+    if ($length -gt 0) {
+        [Array]::Copy($Bytes, $Start, $slice, 0, $length)
+    }
+    return $slice
+}
+
+function Invoke-ViewerStateSave {
+    param(
+        [hashtable]$Body,
+        [hashtable]$ScopeBody,
+        [hashtable]$Headers
+    )
+
+    $json = $Body | ConvertTo-Json -Depth 40 -Compress
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    if ($bytes.Length -le ($ChunkThresholdKb * 1024)) {
+        return [pscustomobject]@{
+            Response = Invoke-Json -Method "POST" -Uri "$BaseUrl/pacs-result-api/pacs-result-viewer-state-save" -Body $json -Headers $Headers
+            Chunked = $false
+            ChunkCount = 0
+        }
+    }
+
+    $uploadId = [Guid]::NewGuid().ToString("N")
+    $chunkSize = 768 * 1024
+    $chunkCount = [Math]::Ceiling($bytes.Length / $chunkSize)
+    $payloadSha256 = Get-Sha256Hex $bytes
+    for ($chunkIndex = 0; $chunkIndex -lt $chunkCount; $chunkIndex++) {
+        $start = $chunkIndex * $chunkSize
+        $end = [Math]::Min($start + $chunkSize, $bytes.Length)
+        $chunkBody = Copy-Hashtable $ScopeBody
+        $chunkBody.uploadId = $uploadId
+        $chunkBody.chunkIndex = $chunkIndex
+        $chunkBody.chunkCount = $chunkCount
+        $chunkBody.payloadSizeBytes = $bytes.Length
+        $chunkBody.payloadSha256 = $payloadSha256
+        $chunkBody.chunkData = [Convert]::ToBase64String((Get-ByteSlice -Bytes $bytes -Start $start -End $end))
+        $chunkResponse = Invoke-Json -Method "POST" -Uri "$BaseUrl/pacs-result-api/pacs-result-viewer-state-save-chunk" -Body $chunkBody -Headers $Headers
+        Require-Success $chunkResponse "Large viewer-state chunk upload"
+    }
+
+    $completeBody = Copy-Hashtable $ScopeBody
+    $completeBody.uploadId = $uploadId
+    $completeBody.chunkCount = $chunkCount
+    $completeBody.payloadSizeBytes = $bytes.Length
+    $completeBody.payloadSha256 = $payloadSha256
+    return [pscustomobject]@{
+        Response = Invoke-Json -Method "POST" -Uri "$BaseUrl/pacs-result-api/pacs-result-viewer-state-save-chunk-complete" -Body $completeBody -Headers $Headers
+        Chunked = $true
+        ChunkCount = $chunkCount
     }
 }
 
@@ -213,10 +292,15 @@ try {
 
     $saveTimes = New-Object System.Collections.Generic.List[double]
     $findTimes = New-Object System.Collections.Generic.List[double]
+    $usedChunkedSave = $false
+    $lastChunkCount = 0
     for ($iteration = 1; $iteration -le $Iterations; $iteration++) {
         $saveBody.metadata.iteration = $iteration
         $saveWatch = [Diagnostics.Stopwatch]::StartNew()
-        $saveResponse = Invoke-Json -Method "POST" -Uri "$BaseUrl/pacs-result-api/pacs-result-viewer-state-save" -Body $saveBody -Headers $editHeaders
+        $saveResult = Invoke-ViewerStateSave -Body $saveBody -ScopeBody $scopeBody -Headers $editHeaders
+        $saveResponse = $saveResult.Response
+        $usedChunkedSave = $usedChunkedSave -or $saveResult.Chunked
+        $lastChunkCount = [Math]::Max($lastChunkCount, [int]$saveResult.ChunkCount)
         $saveWatch.Stop()
         Require-Success $saveResponse "Large viewer-state save"
         $saveTimes.Add($saveWatch.Elapsed.TotalMilliseconds)
@@ -294,6 +378,9 @@ try {
         TargetPayloadKb = $TargetPayloadKb
         ActualRequestKb = [Math]::Round($actualBytes / 1024, 2)
         Iterations = $Iterations
+        ChunkThresholdKb = $ChunkThresholdKb
+        ChunkedSaveUsed = $usedChunkedSave
+        MaxChunkCount = $lastChunkCount
         AverageSaveMs = [Math]::Round(($saveTimes | Measure-Object -Average).Average, 2)
         P95SaveMs = $p95SaveMs
         MaxSaveP95Ms = $MaxSaveP95Ms

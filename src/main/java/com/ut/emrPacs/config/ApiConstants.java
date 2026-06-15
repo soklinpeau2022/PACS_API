@@ -170,11 +170,14 @@ public final class ApiConstants {
     public static final class StudyRetention {
         public static final String BASE_PATH = "/study-retention";
         public static final String POLICY_LIST_PATH = "/policy-list";
+        public static final String POLICY_FIND_PATH = "/policy-find/{publicKey}";
         public static final String POLICY_SAVE_PATH = "/policy-save";
         public static final String POLICY_DELETE_PATH = "/policy-delete/{id}";
         public static final String REVIEW_LIST_PATH = "/review-list";
         public static final String SUMMARY_PATH = "/summary";
         public static final String APPROVE_DELETE_PATH = "/approve-delete/{studyId}";
+        public static final String BULK_DELETE_PATH = "/bulk-delete";
+        public static final String AUTO_DELETE_RUN_PATH = "/auto-delete-run";
         public static final String REJECT_DELETE_PATH = "/reject-delete/{studyId}";
 
         private StudyRetention() {
@@ -211,8 +214,21 @@ public final class ApiConstants {
 
     public static final class PacsResultApi {
         public static final String BASE_PATH = "/pacs-result-api";
+        public static final String CREATE_PATH = "/pacs-result-create";
+        public static final String UPDATE_PATH = "/pacs-result-update";
+        public static final String FIND_BY_STUDY_PATH = "/pacs-result-find-by-study";
+        public static final String FIND_BY_WORKLIST_PATH = "/pacs-result-find-by-worklist";
+        public static final String CONTEXT_PATH = "/pacs-result-context";
+        public static final String IMAGE_UPLOAD_PATH = "/pacs-result-image-upload";
+        public static final String IMAGE_DELETE_PATH = "/pacs-result-image-delete";
+        public static final String IMAGE_CONTENT_PATH = "/pacs-result-image-content";
+        public static final String HOSPITAL_LOGO_CONTENT_PATH = "/pacs-result-hospital-logo-content";
+        public static final String TEMPLATE_LIST_PATH = "/pacs-result-template-list";
+        public static final String TEMPLATE_FIND_PATH = "/pacs-result-template-find/{templateKey}";
         public static final String VIEWER_STATE_FIND_PATH = "/pacs-result-viewer-state-find";
         public static final String VIEWER_STATE_SAVE_PATH = "/pacs-result-viewer-state-save";
+        public static final String VIEWER_STATE_SAVE_CHUNK_PATH = "/pacs-result-viewer-state-save-chunk";
+        public static final String VIEWER_STATE_SAVE_CHUNK_COMPLETE_PATH = "/pacs-result-viewer-state-save-chunk-complete";
         public static final String VIEWER_STATE_DELETE_PATH = "/pacs-result-viewer-state-delete";
         public static final String PUBLIC_VIEWER_AUTHORIZE_PATH = "/public-viewer-authorize";
 
@@ -353,9 +369,6 @@ public final class ApiConstants {
     }
 
     public static final class Security {
-        public static final String ACCESS_TOKEN_COOKIE = "accessToken";
-        public static final String REFRESH_TOKEN_COOKIE = "refreshToken";
-
         public static final String PRINCIPAL_TYPE_USER = "USER";
         public static final String PRINCIPAL_TYPE_CLIENT = "CLIENT";
 

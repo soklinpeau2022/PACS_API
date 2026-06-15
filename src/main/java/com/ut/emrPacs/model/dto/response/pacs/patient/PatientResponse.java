@@ -17,6 +17,7 @@ public class PatientResponse {
     private String hospitalCode;
     private String hospitalName;
     private String patientCode;
+    private String patientHn;
     private String firstName;
     private String lastName;
     private String phoneNumber;

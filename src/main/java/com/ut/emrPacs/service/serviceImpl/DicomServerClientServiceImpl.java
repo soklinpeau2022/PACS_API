@@ -19,6 +19,8 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -44,6 +46,13 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     private final HttpClient uploadHttpClient;
     private final ObjectMapper objectMapper;
     private final Duration uploadTimeout;
+
+    // DICOMweb frame/pixel retrieval is idempotent (GET/HEAD). The archive can transiently
+    // fail or reset connections when it is momentarily saturated (e.g. its HTTP worker threads
+    // are blocked on slow modality C-FIND/C-MOVE associations). Retry those transient failures a
+    // few times with a short backoff so a single hiccup does not surface to the viewer as a 502.
+    private static final int DICOMWEB_PROXY_MAX_ATTEMPTS = 3;
+    private static final long DICOMWEB_PROXY_RETRY_BACKOFF_MS = 200L;
 
     DicomServerClientServiceImpl(RestTemplate restTemplate) {
         this(restTemplate, new ObjectMapper(), 10000, 7200000);
@@ -278,12 +287,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
             requestHeaders.set(HttpHeaders.ACCEPT, acceptHeader.trim());
         }
 
-        ResponseEntity<byte[]> upstream = restTemplate.exchange(
-                url,
-                HttpMethod.GET,
-                new HttpEntity<>(requestHeaders),
-                byte[].class
-        );
+        ResponseEntity<byte[]> upstream = exchangeDicomWebWithRetry(url, new HttpEntity<>(requestHeaders));
 
         HttpHeaders responseHeaders = new HttpHeaders();
         MediaType contentType = upstream.getHeaders().getContentType();
@@ -302,6 +306,33 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         byte[] responseBody = body == null ? new byte[0] : body;
         StreamingResponseBody stream = outputStream -> outputStream.write(responseBody);
         return new ResponseEntity<>(stream, responseHeaders, upstream.getStatusCode());
+    }
+
+    private ResponseEntity<byte[]> exchangeDicomWebWithRetry(String url, HttpEntity<?> entity) {
+        RuntimeException lastError = null;
+        for (int attempt = 1; attempt <= DICOMWEB_PROXY_MAX_ATTEMPTS; attempt++) {
+            try {
+                return restTemplate.exchange(url, HttpMethod.GET, entity, byte[].class);
+            } catch (HttpClientErrorException error) {
+                // 4xx is a deterministic client error (not found, forbidden, etc.); retrying will not help.
+                throw error;
+            } catch (HttpServerErrorException | ResourceAccessException error) {
+                lastError = error;
+                if (attempt < DICOMWEB_PROXY_MAX_ATTEMPTS) {
+                    sleepQuietly(DICOMWEB_PROXY_RETRY_BACKOFF_MS * attempt);
+                }
+            }
+        }
+        throw lastError;
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while retrying DICOMweb proxy request", interrupted);
+        }
     }
 
     private static void copyHeader(ResponseEntity<?> source, HttpHeaders target, String headerName) {

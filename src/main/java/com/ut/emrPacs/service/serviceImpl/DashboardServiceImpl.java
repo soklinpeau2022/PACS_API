@@ -110,7 +110,9 @@ public class DashboardServiceImpl implements DashboardService {
             response.setRetentionNearExpiry(nullSafeLong(retentionSummary == null ? null : retentionSummary.getNearExpiry()));
             response.setRetentionExpiredWaitingApproval(nullSafeLong(retentionSummary == null ? null : retentionSummary.getExpiredWaitingApproval()));
             response.setRetentionPendingApproval(nullSafeLong(retentionSummary == null ? null : retentionSummary.getPendingApproval()));
+            response.setRetentionAutoDeleteReady(nullSafeLong(retentionSummary == null ? null : retentionSummary.getAutoDeleteReady()));
             response.setRetentionDeleteFailed(nullSafeLong(retentionSummary == null ? null : retentionSummary.getDeleteFailed()));
+            response.setRetentionAlerts(studyRetentionMapper.listDashboardRetentionAlerts(hospitalId, 8));
 
             response.setWorklistSnapshot(dashboardMapper.listWorklistSnapshot(hospitalId, snapshotLimit));
             response.setActionAlerts(buildActionAlerts(response, waitingThresholdMinutes, includeTodayMetrics));
@@ -292,6 +294,16 @@ public class DashboardServiceImpl implements DashboardService {
                     "Studies reached retention expiry and need Super Admin approval.",
                     overview.getRetentionExpiredWaitingApproval(),
                     "/study-retention?status=EXPIRED_WAITING_APPROVAL"
+            ));
+        }
+        if (overview.getRetentionAutoDeleteReady() != null && overview.getRetentionAutoDeleteReady() > 0L) {
+            alerts.add(buildAlert(
+                    "STUDY_RETENTION_AUTO_DELETE_READY",
+                    "warning",
+                    "Auto-delete studies ready",
+                    "Expired studies match auto-delete policies and will be cleaned in chunks.",
+                    overview.getRetentionAutoDeleteReady(),
+                    "/study-retention?status=AUTO_DELETE_READY"
             ));
         }
         if (overview.getRetentionNearExpiry() != null && overview.getRetentionNearExpiry() > 0L) {

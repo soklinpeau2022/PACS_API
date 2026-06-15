@@ -17,6 +17,7 @@ public class StudyResponse {
     private Long patientId;
     private String patientName;
     private String mrn;
+    private String patientHn;
     private String studyInstanceUid;
     private String accessionNumber;
     private String referenceVisitCode;
@@ -28,6 +29,7 @@ public class StudyResponse {
     private LocalDate studyDate;
     private String studyDateTime;
     private String studyDescription;
+    private String institutionName;
     @JsonIgnore
     private Long dicomServerId;
     private String status;

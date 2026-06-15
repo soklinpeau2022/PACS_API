@@ -28,9 +28,11 @@ public class ViewerInfoResponse {
     private String studyInstanceUid;
     private String accessionNumber;
     private String patientUid;
+    private String patientHn;
     private String patientName;
     private String modalityName;
     private String studyDescription;
+    private String institutionName;
     private String imageReceivedAt;
     private Integer imageInstanceCount;
     private Integer totalInstances;

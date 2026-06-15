@@ -20,6 +20,7 @@ import com.ut.emrPacs.controller.PatientController;
 import com.ut.emrPacs.controller.PermissionController;
 import com.ut.emrPacs.controller.RoleController;
 import com.ut.emrPacs.controller.StudyController;
+import com.ut.emrPacs.controller.StudyRetentionController;
 import com.ut.emrPacs.controller.SystemActivityController;
 import com.ut.emrPacs.controller.UserController;
 import com.ut.emrPacs.controller.UserLogController;
@@ -72,6 +73,7 @@ public final class EndpointTestCatalog {
             PermissionController.class,
             RoleController.class,
             StudyController.class,
+            StudyRetentionController.class,
             SystemActivityController.class,
             UserController.class,
             UserLogController.class,

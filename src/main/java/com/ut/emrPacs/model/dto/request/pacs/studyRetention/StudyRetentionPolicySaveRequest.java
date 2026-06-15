@@ -37,12 +37,20 @@ public class StudyRetentionPolicySaveRequest {
     @Max(3650)
     private Integer retentionDays;
 
+    @Min(1)
+    @Max(3650)
+    private Integer retentionValue;
+
+    @Size(max = 20)
+    private String retentionUnit;
+
     @Min(0)
     @Max(365)
     private Integer notifyBeforeDays;
 
     private Boolean requireApproval;
     private Boolean enabled;
+    private Boolean autoDelete;
 
     @Size(max = 1000)
     private String notes;
@@ -65,6 +73,10 @@ public class StudyRetentionPolicySaveRequest {
 
     public void setNotes(String notes) {
         this.notes = trimToNull(notes);
+    }
+
+    public void setRetentionUnit(String retentionUnit) {
+        this.retentionUnit = trimToNull(retentionUnit);
     }
 
     private String trimToNull(String value) {

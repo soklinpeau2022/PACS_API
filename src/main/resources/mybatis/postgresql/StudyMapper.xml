@@ -28,7 +28,9 @@
                 OR p.last_name ILIKE '%' || #{filter.searchText} || '%'
                 OR TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.searchText} || '%'
                 OR p.patient_uid ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(p.patient_hn, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(s.study_description, '') ILIKE '%' || #{filter.searchText} || '%'
+                OR COALESCE(s.institution_name, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(s.accession_number, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(s.reference_visit_code, '') ILIKE '%' || #{filter.searchText} || '%'
                 OR COALESCE(s.modality, '') ILIKE '%' || #{filter.searchText} || '%'
@@ -51,7 +53,10 @@
             AND TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.patientName} || '%'
         </if>
         <if test="filter != null and filter.mrn != null and filter.mrn != ''">
-            AND p.patient_uid ILIKE '%' || #{filter.mrn} || '%'
+            AND (
+                p.patient_uid ILIKE '%' || #{filter.mrn} || '%'
+                OR COALESCE(p.patient_hn, '') ILIKE '%' || #{filter.mrn} || '%'
+            )
         </if>
         <if test="filter != null and filter.modalityId != null and filter.modalityId > 0">
             AND (
@@ -113,6 +118,7 @@
             modality,
             study_date,
             study_description,
+            institution_name,
             dicom_server_id,
             status,
             dicom_server_study_id,
@@ -132,6 +138,7 @@
             #{modality},
             #{studyDate},
             #{studyDescription},
+            #{institutionName},
             #{dicomServerId},
             #{statusCode},
             #{dicomServerStudyId},
@@ -150,6 +157,7 @@
             modality = COALESCE(EXCLUDED.modality, pacs_studies.modality),
             study_date = COALESCE(EXCLUDED.study_date, pacs_studies.study_date),
             study_description = COALESCE(EXCLUDED.study_description, pacs_studies.study_description),
+            institution_name = COALESCE(EXCLUDED.institution_name, pacs_studies.institution_name),
             dicom_server_id = COALESCE(EXCLUDED.dicom_server_id, pacs_studies.dicom_server_id),
             status = CASE
                 WHEN pacs_studies.status = 2 THEN pacs_studies.status
@@ -175,6 +183,7 @@
             modality,
             study_date,
             study_description,
+            institution_name,
             dicom_server_id,
             status,
             dicom_server_study_id,
@@ -198,6 +207,7 @@
             #{modality},
             #{studyDate},
             #{studyDescription},
+            #{institutionName},
             #{dicomServerId},
             #{statusCode},
             #{dicomServerStudyId},
@@ -221,6 +231,7 @@
             modality = COALESCE(EXCLUDED.modality, pacs_studies.modality),
             study_date = COALESCE(EXCLUDED.study_date, pacs_studies.study_date),
             study_description = COALESCE(EXCLUDED.study_description, pacs_studies.study_description),
+            institution_name = COALESCE(EXCLUDED.institution_name, pacs_studies.institution_name),
             dicom_server_id = COALESCE(EXCLUDED.dicom_server_id, pacs_studies.dicom_server_id),
             status = CASE
                 WHEN pacs_studies.status = 2 THEN pacs_studies.status
@@ -268,6 +279,7 @@
         s.patient_id AS patientId,
         NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '') AS patientName,
         p.patient_uid AS mrn,
+        p.patient_hn AS patientHn,
         s.study_instance_uid AS studyInstanceUid,
         s.accession_number AS accessionNumber,
         s.reference_visit_code AS referenceVisitCode,
@@ -279,6 +291,7 @@
         TO_CHAR(COALESCE(s.study_date::timestamp, s.received_at, s.created), 'DD-Mon-YYYY HH12:MI AM') AS studyDateTime,
         s.study_description AS studyDescription,
         s.study_description AS description,
+        s.institution_name AS institutionName,
         s.dicom_server_id AS dicomServerId,
         <include refid="STUDY_STATUS_NAME"/> AS status,
         COALESCE(s.instance_count, 0) AS instances,

@@ -6,8 +6,8 @@ import com.ut.emrPacs.model.dto.response.systemSettings.hospital.HospitalRespons
 import com.ut.emrPacs.model.dto.response.systemSettings.hospital.HospitalResponseDetail;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
 import java.lang.reflect.Field;
+import java.util.Arrays;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -21,7 +21,7 @@ class ResponseProjectionAuditTest {
                 PatientResponse.class,
                 Set.of(
                         "id", "hospitalId", "hospitalPublicKey", "hospitalCode", "hospitalName",
-                        "publicKey", "patientCode", "firstName", "lastName", "phoneNumber", "gender", "dateOfBirth"
+                        "publicKey", "patientCode", "patientHn", "firstName", "lastName", "phoneNumber", "gender", "dateOfBirth"
                 )
         );
     }

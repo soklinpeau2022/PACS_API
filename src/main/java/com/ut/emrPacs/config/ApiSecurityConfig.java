@@ -56,6 +56,7 @@ import com.ut.emrPacs.authentication.filter.RevokedTokenFilter;
 import com.ut.emrPacs.authentication.filter.SecurityRateLimitFilter;
 import com.ut.emrPacs.authentication.filter.SecurityThreatDetectionFilter;
 import com.ut.emrPacs.authentication.util.AuthorityUtils;
+import com.ut.emrPacs.authentication.util.HeaderBearerTokenResolver;
 import com.ut.emrPacs.authentication.util.PacsJwtAuthenticationConverter;
 import com.ut.emrPacs.authentication.util.RsaKeyLoader;
 import com.ut.emrPacs.mapper.user.UserMapper;
@@ -105,6 +106,7 @@ public class ApiSecurityConfig {
 
     private static final String[] PUBLIC_AUTH_ENDPOINTS = {
             ApiConstants.Auth.LOGIN_FULL_PATH,
+            ApiConstants.Auth.LOGOUT_FULL_PATH,
             ApiConstants.Auth.REFRESH_FULL_PATH,
             ApiConstants.Auth.CLIENT_CREDENTIALS_FULL_PATH
     };
@@ -143,6 +145,7 @@ public class ApiSecurityConfig {
     private final ModulePermissionFilter modulePermissionFilter;
     private final RsaKeyLoader rsaKeyLoader;
     private final PacsJwtAuthenticationConverter pacsJwtAuthenticationConverter;
+    private final HeaderBearerTokenResolver headerBearerTokenResolver;
 
     @Value("${app.security.swagger-public:false}")
     private boolean swaggerPublic;
@@ -194,7 +197,8 @@ public class ApiSecurityConfig {
             ActiveHospitalFilter activeHospitalFilter,
             ModulePermissionFilter modulePermissionFilter,
             RsaKeyLoader rsaKeyLoader,
-            PacsJwtAuthenticationConverter pacsJwtAuthenticationConverter
+            PacsJwtAuthenticationConverter pacsJwtAuthenticationConverter,
+            HeaderBearerTokenResolver headerBearerTokenResolver
     ) {
         this.authService = authService;
         this.userMapper = userMapper;
@@ -206,6 +210,7 @@ public class ApiSecurityConfig {
         this.modulePermissionFilter = modulePermissionFilter;
         this.rsaKeyLoader = rsaKeyLoader;
         this.pacsJwtAuthenticationConverter = pacsJwtAuthenticationConverter;
+        this.headerBearerTokenResolver = headerBearerTokenResolver;
     }
 
     @Bean
@@ -330,6 +335,7 @@ public class ApiSecurityConfig {
                 })
                 // Resource server: validates Bearer JWT using RS256 public key
                 .oauth2ResourceServer(oauth2 -> oauth2
+                        .bearerTokenResolver(headerBearerTokenResolver)
                         .jwt(jwt -> jwt
                                 .decoder(jwtDecoder())
                                 .jwtAuthenticationConverter(pacsJwtAuthenticationConverter)

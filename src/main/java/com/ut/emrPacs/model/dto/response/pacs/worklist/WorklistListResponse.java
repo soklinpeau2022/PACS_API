@@ -22,6 +22,7 @@ public class WorklistListResponse {
     private Long patientId;
     private String patientPublicKey;
     private String patientUid;
+    private String patientHn;
     private String patientName;
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
     private LocalDate dob;
@@ -62,6 +63,7 @@ public class WorklistListResponse {
     private String receivedAt;
     private String startedAt;
     private String imageReceivedAt;
+    private String institutionName;
     private String cancelledAt;
     private String errorMessage;
 

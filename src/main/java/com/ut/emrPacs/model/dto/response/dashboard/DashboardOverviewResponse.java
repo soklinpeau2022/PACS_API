@@ -1,6 +1,7 @@
 package com.ut.emrPacs.model.dto.response.dashboard;
 
 import com.ut.emrPacs.model.dto.response.pacs.dicom.DicomServerHealthResponse;
+import com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionReviewResponse;
 import lombok.Data;
 
 import java.util.List;
@@ -34,7 +35,9 @@ public class DashboardOverviewResponse {
     private Long retentionNearExpiry;
     private Long retentionExpiredWaitingApproval;
     private Long retentionPendingApproval;
+    private Long retentionAutoDeleteReady;
     private Long retentionDeleteFailed;
+    private List<StudyRetentionReviewResponse> retentionAlerts;
 
     private List<DashboardWorklistSnapshotItemResponse> WorklistSnapshot;
     private List<DashboardActionAlertResponse> actionAlerts;

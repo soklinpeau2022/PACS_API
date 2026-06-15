@@ -919,8 +919,8 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             HospitalDicomServerResponse callbackServer = resolveCallbackDicomServer(callbackDicomServerId);
             WorklistDetailRow Worklist = resolveCallbackWorklist(accessionNumber, visitCode, requestedStudyInstanceUid, requestedDicomServerStudyId, callbackServer);
             if (Worklist == null) {
-                String notFoundMessage = "Callback received but Worklist not found.";
-                insertDicomServerCallbackLog(request, false, notFoundMessage, null, receivedAtIso);
+                String notFoundMessage = "Callback acknowledged without a matching Worklist. Direct Study uploads are saved by the upload flow.";
+                insertDicomServerCallbackLog(request, true, null, notFoundMessage, receivedAtIso);
                 LocalTime endDuration = LocalTime.now();
                 activityLogService.insert(ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH, null, notFoundMessage, WorklistConstants.MODULE_CODE, WorklistConstants.LABEL_RECEIVED_STUDY, WorklistConstants.ACTION_RECEIVED_STUDY, WorklistConstants.LOG_STATUS_SUCCESS, WorklistConstants.RESULT_SUCCESS, startDuration, endDuration, httpServletRequest);
                 return ResponseMessageUtils.makeResponse(true, messageService.message(notFoundMessage, true));
@@ -3291,6 +3291,9 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         Map<String, Object> studyTags = verifiedStudy != null && verifiedStudy.getMainDicomTags() != null
                 ? verifiedStudy.getMainDicomTags()
                 : Collections.emptyMap();
+        Map<String, Object> patientTags = verifiedStudy != null && verifiedStudy.getPatientMainDicomTags() != null
+                ? verifiedStudy.getPatientMainDicomTags()
+                : Collections.emptyMap();
 
         String dicomServerStudyId = firstNonBlank(
                 verifiedStudy == null ? null : verifiedStudy.getId(),
@@ -3320,6 +3323,16 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         String viewerUrl = hasText(dicomServerStudyId)
                 ? buildViewerUrl(dicomServerStudyId, server)
                 : firstNonBlank(Worklist.getViewerUrl(), "");
+        String patientHn = firstNonBlank(
+                readDicomTag(patientTags, DicomTagConstants.PATIENT_ID),
+                normalizedOrEmpty(request == null ? null : request.getPatientId())
+        );
+        syncPatientHnFromDicom(Worklist, patientHn);
+        String institutionName = firstNonBlank(
+                readDicomTag(studyTags, DicomTagConstants.INSTITUTION_NAME),
+                normalizedOrEmpty(request == null ? null : request.getInstitutionName()),
+                Worklist.getInstitutionName()
+        );
 
         Long studyId = null;
         if (hasText(studyInstanceUid)) {
@@ -3332,6 +3345,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                     firstNonBlank(Worklist.getModalityCode(), Worklist.getModalityName()),
                     parseDicomStudyDate(firstNonBlank(readDicomTag(studyTags, DicomTagConstants.STUDY_DATE), normalizedOrEmpty(request == null ? null : request.getStudyDate()))),
                     firstNonBlank(readDicomTag(studyTags, DicomTagConstants.STUDY_DESCRIPTION), normalizedOrEmpty(request == null ? null : request.getStudyDescription()), Worklist.getStudyDescription()),
+                    institutionName,
                     resolveStudyDicomServerId(Worklist, server),
                     StudyStatus.IMAGE_RECEIVED.code(),
                     dicomServerStudyId,
@@ -3380,10 +3394,11 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             mainDicomTags.put(DicomTagConstants.STUDY_DATE, normalizedOrEmpty(request.getStudyDate()));
             mainDicomTags.put("StudyTime", normalizedOrEmpty(request.getStudyTime()));
             mainDicomTags.put(DicomTagConstants.STUDY_DESCRIPTION, firstNonBlank(normalizedOrEmpty(request.getStudyDescription()), Worklist.getStudyDescription()));
+            mainDicomTags.put(DicomTagConstants.INSTITUTION_NAME, firstNonBlank(normalizedOrEmpty(request.getInstitutionName()), Worklist.getInstitutionName()));
             callbackStudy.setMainDicomTags(mainDicomTags);
 
             Map<String, Object> patientTags = new HashMap<>();
-            patientTags.put("PatientID", firstNonBlank(normalizedOrEmpty(request.getPatientId()), Worklist.getPatientUid()));
+            patientTags.put(DicomTagConstants.PATIENT_ID, firstNonBlank(normalizedOrEmpty(request.getPatientId()), Worklist.getPatientHn()));
             patientTags.put(DicomTagConstants.PATIENT_NAME, firstNonBlank(normalizedOrEmpty(request.getPatientName()), Worklist.getPatientName()));
             patientTags.put("PatientBirthDate", normalizedOrEmpty(request.getPatientBirthDate()));
             patientTags.put("PatientSex", normalizedOrEmpty(request.getPatientSex()));
@@ -3682,6 +3697,10 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         String viewerUrl = hasText(resolvedDicomServerStudyId)
                 ? buildViewerUrl(resolvedDicomServerStudyId, server)
                 : firstNonBlank(Worklist.getViewerUrl(), "");
+        Map<String, Object> patientTags = studyResponse != null && studyResponse.getPatientMainDicomTags() != null
+                ? studyResponse.getPatientMainDicomTags()
+                : Collections.emptyMap();
+        syncPatientHnFromDicom(Worklist, readDicomTag(patientTags, DicomTagConstants.PATIENT_ID));
 
         Long studyId = upsertStudyArchiveRecord(
                 Worklist,
@@ -3723,6 +3742,10 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         if (Worklist == null || !hasText(studyInstanceUid)) {
             return Worklist != null ? Worklist.getStudyId() : null;
         }
+        Map<String, Object> patientTags = studyResponse != null && studyResponse.getPatientMainDicomTags() != null
+                ? studyResponse.getPatientMainDicomTags()
+                : Collections.emptyMap();
+        syncPatientHnFromDicom(Worklist, readDicomTag(patientTags, DicomTagConstants.PATIENT_ID));
         return studyMapper.upsertFromWorklist(
                 Worklist.getHospitalId(),
                 Worklist.getPatientId(),
@@ -3732,6 +3755,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 firstNonBlank(Worklist.getModalityCode(), Worklist.getModalityName(), readDicomTag(studyResponse, "ModalitiesInStudy"), readDicomTag(studyResponse, "Modality")),
                 resolveStudyDate(Worklist, studyResponse),
                 firstNonBlank(readDicomTag(studyResponse, DicomTagConstants.STUDY_DESCRIPTION), Worklist.getStudyDescription()),
+                firstNonBlank(readDicomTag(studyResponse, DicomTagConstants.INSTITUTION_NAME), Worklist.getInstitutionName()),
                 resolveStudyDicomServerId(Worklist, server),
                 StudyStatus.IMAGE_RECEIVED.code(),
                 dicomServerStudyId,
@@ -3740,6 +3764,20 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 resolveStudyInstanceCount(dicomServerStudyId, studyResponse, server),
                 receivedAtIso
         );
+    }
+
+    private void syncPatientHnFromDicom(WorklistDetailRow Worklist, String patientHn) {
+        if (Worklist == null || Worklist.getHospitalId() == null || Worklist.getPatientId() == null || !hasText(patientHn)) {
+            return;
+        }
+        try {
+            patientMapper.updatePatientHnIfBlank(Worklist.getHospitalId(), Worklist.getPatientId(), patientHn.trim());
+            if (!hasText(Worklist.getPatientHn())) {
+                Worklist.setPatientHn(patientHn.trim());
+            }
+        } catch (Exception error) {
+            LOGGER.warn("Unable to sync DICOM PatientID as Patient HN for Worklist {}: {}", Worklist.getId(), error.getMessage());
+        }
     }
 
     private void markLinkedStudyStatus(WorklistDetailRow Worklist, StudyStatus status) {
@@ -3893,10 +3931,12 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         response.setDicomServerSeriesId(dicomServerSeriesId);
         response.setStudyInstanceUid(resolvedStudyInstanceUid);
         response.setAccessionNumber(firstNonBlank(readDicomTag(studyTags, DicomTagConstants.ACCESSION_NUMBER), Worklist.getAccessionNumber(), ""));
-        response.setPatientUid(firstNonBlank(readDicomTag(patientTags, "PatientID"), Worklist.getPatientUid(), ""));
+        response.setPatientUid(firstNonBlank(Worklist.getPatientUid(), ""));
+        response.setPatientHn(firstNonBlank(readDicomTag(patientTags, DicomTagConstants.PATIENT_ID), Worklist.getPatientHn(), ""));
         response.setPatientName(firstNonBlank(readDicomTag(patientTags, DicomTagConstants.PATIENT_NAME), Worklist.getPatientName(), ""));
         response.setModalityName(firstNonBlank(Worklist.getModalityName(), Worklist.getModalityCode(), readDicomTag(studyTags, "ModalitiesInStudy"), readDicomTag(studyTags, "Modality"), ""));
         response.setStudyDescription(firstNonBlank(readDicomTag(studyTags, DicomTagConstants.STUDY_DESCRIPTION), Worklist.getStudyDescription(), ""));
+        response.setInstitutionName(firstNonBlank(readDicomTag(studyTags, DicomTagConstants.INSTITUTION_NAME), Worklist.getInstitutionName(), ""));
         response.setImageReceivedAt(Worklist.getImageReceivedAt());
         response.setImageInstanceCount(totalInstances);
         response.setTotalInstances(totalInstances);
@@ -4102,11 +4142,13 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         response.setPatientPublicKey(Worklist.getPatientPublicKey());
         response.setVisitCode(Worklist.getVisitCode());
         response.setStatus(Worklist.getStatus());
-        response.setPatientUid(firstNonBlank(readDicomTag(patientTags, "PatientID"), Worklist.getPatientUid(), ""));
+        response.setPatientUid(firstNonBlank(Worklist.getPatientUid(), ""));
+        response.setPatientHn(firstNonBlank(readDicomTag(patientTags, DicomTagConstants.PATIENT_ID), Worklist.getPatientHn(), ""));
         response.setPatientName(firstNonBlank(readDicomTag(patientTags, DicomTagConstants.PATIENT_NAME), Worklist.getPatientName(), ""));
         response.setAccessionNumber(firstNonBlank(readDicomTag(studyTags, DicomTagConstants.ACCESSION_NUMBER), Worklist.getAccessionNumber(), ""));
         response.setModalityName(firstNonBlank(Worklist.getModalityName(), Worklist.getModalityCode(), ""));
         response.setStudyDescription(firstNonBlank(readDicomTag(studyTags, DicomTagConstants.STUDY_DESCRIPTION), Worklist.getStudyDescription(), ""));
+        response.setInstitutionName(firstNonBlank(readDicomTag(studyTags, DicomTagConstants.INSTITUTION_NAME), Worklist.getInstitutionName(), ""));
         response.setDicomServerStudyId(dicomServerStudyId);
         String resolvedStudyInstanceUid = firstNonBlank(Worklist.getStudyInstanceUid(), Worklist.getStudyUuid(), readDicomTag(studyTags, DicomTagConstants.STUDY_INSTANCE_UID));
         response.setStudyInstanceUid(resolvedStudyInstanceUid);

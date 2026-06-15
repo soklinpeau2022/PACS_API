@@ -24,6 +24,7 @@
             q.patient_id AS patientId,
             p.public_id::text AS patientPublicKey,
             p.patient_uid AS patientUid,
+            p.patient_hn AS patientHn,
             NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '') AS patientName,
             p.date_of_birth AS dob,
             p.gender AS sex,
@@ -50,6 +51,7 @@
             s.dicom_server_patient_id AS dicomServerPatientId,
             s.dicom_server_series_id AS dicomServerSeriesId,
             NULL::TEXT AS viewerUrl,
+            s.institution_name AS institutionName,
             q.error_message AS errorMessage,
             TO_CHAR(q.sent_at, 'YYYY-MM-DD HH24:MI:SS') AS sentAt,
             TO_CHAR(q.received_at, 'YYYY-MM-DD HH24:MI:SS') AS receivedAt,
@@ -110,17 +112,22 @@
               AND (
                   LOWER(q.visit_code) = LOWER(#{filter.searchText})
                   OR LOWER(p.patient_uid) = LOWER(#{filter.searchText})
+                  OR LOWER(COALESCE(p.patient_hn, '')) = LOWER(#{filter.searchText})
                   OR
                   p.first_name ILIKE '%' || #{filter.searchText} || '%'
                   OR p.last_name ILIKE '%' || #{filter.searchText} || '%'
                   OR TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.searchText} || '%'
                   OR COALESCE(p.phone_number, '') ILIKE '%' || #{filter.searchText} || '%'
                   OR p.patient_uid ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(p.patient_hn, '') ILIKE '%' || #{filter.searchText} || '%'
                   OR q.visit_code ILIKE '%' || #{filter.searchText} || '%'
               )
           </if>
           <if test="filter != null and filter.patientCode != null and filter.patientCode != ''">
-              AND LOWER(p.patient_uid) = LOWER(#{filter.patientCode})
+              AND (
+                  LOWER(p.patient_uid) = LOWER(#{filter.patientCode})
+                  OR LOWER(COALESCE(p.patient_hn, '')) = LOWER(#{filter.patientCode})
+              )
           </if>
           <if test="filter != null and filter.patientName != null and filter.patientName != ''">
               AND TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))) ILIKE '%' || #{filter.patientName} || '%'

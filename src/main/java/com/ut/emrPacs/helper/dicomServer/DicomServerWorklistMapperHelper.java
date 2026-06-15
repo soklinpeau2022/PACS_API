@@ -40,7 +40,12 @@ public final class DicomServerWorklistMapperHelper {
         step.setScheduledProcedureStepID(accessionNumber);
 
         DicomServerWorklistCreateRequest.Tags tags = new DicomServerWorklistCreateRequest.Tags();
-        tags.setPatientID(firstNonBlank(Worklist == null ? null : Worklist.getPatientUid(), accessionNumber, "UNKNOWN"));
+        tags.setPatientID(firstNonBlank(
+                Worklist == null ? null : Worklist.getPatientHn(),
+                Worklist == null ? null : Worklist.getPatientUid(),
+                accessionNumber,
+                "UNKNOWN"
+        ));
         tags.setPatientName(firstNonBlank(Worklist == null ? null : Worklist.getPatientName(), "UNKNOWN"));
         String birthDate = formatDicomDate(Worklist == null ? null : Worklist.getDob());
         tags.setPatientBirthDate(hasText(birthDate) ? birthDate : UNKNOWN_DICOM_BIRTH_DATE);
@@ -68,6 +73,7 @@ public final class DicomServerWorklistMapperHelper {
             response.setVisitCode(Worklist.getVisitCode());
             response.setStatus(Worklist.getStatus());
             response.setPatientUid(Worklist.getPatientUid());
+            response.setPatientHn(Worklist.getPatientHn());
             response.setPatientName(Worklist.getPatientName());
             response.setPatientBirthDate(Worklist.getDob());
             response.setPatientSex(Worklist.getSex());
@@ -90,7 +96,7 @@ public final class DicomServerWorklistMapperHelper {
             }
             DicomServerWorklistResponse.Tags tags = worklist.getTags();
             if (tags != null) {
-                response.setPatientUid(firstNonBlank(tags.getPatientID(), response.getPatientUid()));
+                response.setPatientHn(firstNonBlank(tags.getPatientID(), response.getPatientHn()));
                 response.setPatientName(firstNonBlank(tags.getPatientName(), response.getPatientName()));
                 response.setPatientSex(firstNonBlank(tags.getPatientSex(), response.getPatientSex()));
                 response.setAccessionNumber(firstNonBlank(tags.getAccessionNumber(), response.getAccessionNumber()));

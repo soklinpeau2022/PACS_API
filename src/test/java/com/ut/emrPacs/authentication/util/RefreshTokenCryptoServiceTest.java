@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class RefreshTokenCryptoServiceTest {
 
@@ -22,8 +21,12 @@ class RefreshTokenCryptoServiceTest {
     }
 
     @Test
-    void shouldRequireEncryptionKeyInProdProfile() {
-        assertThrows(IllegalStateException.class, () -> new RefreshTokenCryptoService("", "prod"));
+    void shouldPassThroughTokenWhenEncryptionDisabledInProdBearerMode() {
+        RefreshTokenCryptoService service = new RefreshTokenCryptoService("", "prod");
+        String token = "plain-refresh-token";
+
+        assertEquals(token, service.encrypt(token));
+        assertEquals(token, service.decrypt(token));
     }
 
     @Test

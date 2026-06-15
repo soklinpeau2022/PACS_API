@@ -7,6 +7,7 @@ public class DicomUploadStudySummary {
     private String studyPublicKey;
     private String patientPublicKey;
     private String patientCode;
+    private String patientHn;
     private String firstName;
     private String lastName;
     private String patientBirthDate;
@@ -19,6 +20,7 @@ public class DicomUploadStudySummary {
     private Boolean worklistCreated;
     private String studyInstanceUid;
     private String studyDescription;
+    private String institutionName;
     private String modality;
     private String modalityPublicKey;
     private String modalityName;
