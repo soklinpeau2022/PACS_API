@@ -574,10 +574,25 @@
         INNER JOIN patients p ON p.id = q.patient_id
         LEFT JOIN modalities m ON m.id = q.modality_id
         <include refid="Worklist_STUDY_JOINS"/>
-        WHERE (
-            (#{studyInstanceUid} IS NOT NULL AND #{studyInstanceUid} != '' AND LOWER(s.study_instance_uid) = LOWER(#{studyInstanceUid}))
-            OR (#{dicomServerStudyId} IS NOT NULL AND #{dicomServerStudyId} != '' AND LOWER(s.dicom_server_study_id) = LOWER(#{dicomServerStudyId}))
-        )
+        WHERE
+        <choose>
+            <when test="(studyInstanceUid != null and studyInstanceUid != '')
+                    or (dicomServerStudyId != null and dicomServerStudyId != '')">
+                (
+                <trim prefixOverrides="OR">
+                    <if test="studyInstanceUid != null and studyInstanceUid != ''">
+                        OR LOWER(s.study_instance_uid) = LOWER(#{studyInstanceUid})
+                    </if>
+                    <if test="dicomServerStudyId != null and dicomServerStudyId != ''">
+                        OR LOWER(s.dicom_server_study_id) = LOWER(#{dicomServerStudyId})
+                    </if>
+                </trim>
+                )
+            </when>
+            <otherwise>
+                1 = 0
+            </otherwise>
+        </choose>
         ORDER BY q.id DESC
         LIMIT 1
     </select>
@@ -591,10 +606,24 @@
         LEFT JOIN modalities m ON m.id = q.modality_id
         <include refid="Worklist_STUDY_JOINS"/>
         WHERE q.hospital_id = #{hospitalId}
-          AND (
-              (#{studyInstanceUid} IS NOT NULL AND #{studyInstanceUid} != '' AND LOWER(s.study_instance_uid) = LOWER(#{studyInstanceUid}))
-              OR (#{dicomServerStudyId} IS NOT NULL AND #{dicomServerStudyId} != '' AND LOWER(s.dicom_server_study_id) = LOWER(#{dicomServerStudyId}))
-          )
+        <choose>
+            <when test="(studyInstanceUid != null and studyInstanceUid != '')
+                    or (dicomServerStudyId != null and dicomServerStudyId != '')">
+                AND (
+                <trim prefixOverrides="OR">
+                    <if test="studyInstanceUid != null and studyInstanceUid != ''">
+                        OR LOWER(s.study_instance_uid) = LOWER(#{studyInstanceUid})
+                    </if>
+                    <if test="dicomServerStudyId != null and dicomServerStudyId != ''">
+                        OR LOWER(s.dicom_server_study_id) = LOWER(#{dicomServerStudyId})
+                    </if>
+                </trim>
+                )
+            </when>
+            <otherwise>
+                AND 1 = 0
+            </otherwise>
+        </choose>
         ORDER BY q.id DESC
         LIMIT 1
     </select>

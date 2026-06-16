@@ -18,9 +18,11 @@ import com.ut.emrPacs.model.dto.request.pacs.result.PacsResultSaveRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateChunkCompleteRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateChunkRequest;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateRequest;
+import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
 import com.ut.emrPacs.model.dto.response.pacs.result.PacsResultContextResponse;
 import com.ut.emrPacs.model.dto.response.pacs.result.PacsResultResponse;
 import com.ut.emrPacs.model.dto.response.pacs.result.PacsViewerStateResponse;
+import com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse;
 import com.ut.emrPacs.model.dto.response.pacs.worklist.WorklistDetailRow;
 import com.ut.emrPacs.model.dto.response.systemSettings.hospital.HospitalResponseDetail;
 import com.ut.emrPacs.model.dto.response.systemSettings.modality.ModalityResponse;
@@ -46,6 +48,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -138,6 +141,90 @@ class PacsResultServiceImplAccessTest {
     }
 
     @Test
+    void studyScopedBrowserTokenWithoutModalityCanResolveStudyContext() throws Exception {
+        when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
+            default -> null;
+        });
+        ViewerAccessClaims studyScopedClaims = new ViewerAccessClaims(
+                1L,
+                null,
+                22L,
+                null,
+                "1.2.3",
+                99L,
+                "doctor",
+                ViewerAccessKeyService.ACCESS_EDIT
+        );
+        when(viewerAccessKeyService.decode("viewer-token")).thenReturn(studyScopedClaims);
+
+        PacsResultContextRequest contextRequest = new PacsResultContextRequest();
+        contextRequest.setStudyInstanceUid("1.2.3");
+
+        PacsResultContextResponse context = new PacsResultContextResponse();
+        context.setHospitalId(1L);
+        context.setStudyId(22L);
+        context.setModalityId(3L);
+        context.setStudyInstanceUid("1.2.3");
+        context.setStatus("IMAGE_RECEIVED");
+        when(pacsResultMapper.findContextByStudyId(contextRequest)).thenReturn(context);
+
+        var response = service.getBrowserContext(contextRequest, request);
+
+        assertTrue(response.isSuccess());
+    }
+
+    @Test
+    void browserContextIncludesStudyPublicViewerUrlForDirectStudyPrintQr() throws Exception {
+        when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
+            default -> null;
+        });
+        ViewerAccessClaims studyScopedClaims = new ViewerAccessClaims(
+                1L,
+                null,
+                22L,
+                3L,
+                "1.2.3",
+                99L,
+                "doctor",
+                ViewerAccessKeyService.ACCESS_EDIT
+        );
+        when(viewerAccessKeyService.decode("viewer-token")).thenReturn(studyScopedClaims);
+
+        PacsResultContextRequest contextRequest = new PacsResultContextRequest();
+        contextRequest.setStudyInstanceUid("1.2.3");
+
+        PacsResultContextResponse context = new PacsResultContextResponse();
+        context.setHospitalId(1L);
+        context.setHospitalKey("hospital-public-key");
+        context.setStudyId(22L);
+        context.setStudyKey("study-public-key");
+        context.setModalityId(3L);
+        context.setStudyInstanceUid("1.2.3");
+        context.setStatus("IMAGE_RECEIVED");
+        when(pacsResultMapper.findContextByStudyId(contextRequest)).thenReturn(context);
+
+        StudyResponse study = new StudyResponse();
+        study.setId(22L);
+        study.setHospitalId(1L);
+        study.setDicomServerId(4L);
+        when(studyMapper.findById(1L, 22L)).thenReturn(study);
+
+        HospitalDicomServerResponse server = new HospitalDicomServerResponse();
+        server.setViewerBaseUrl("http://localhost:3005");
+        when(dicomServerMapper.getDicomServerById(4L, 1L)).thenReturn(List.of(server));
+
+        var response = service.getBrowserContext(contextRequest, request);
+
+        assertTrue(response.isSuccess());
+        PacsResultContextResponse body = (PacsResultContextResponse) response.getBody().getData().get(0);
+        assertNotNull(body.getPublicViewerUrl());
+        assertTrue(body.getPublicViewerUrl().contains("publicViewer=1"));
+        assertTrue(body.getPublicViewerUrl().contains("studyKey=study-public-key"));
+    }
+
+    @Test
     void publicViewerTokenCannotCreateResult() throws Exception {
         when(viewerAccessKeyService.decode("viewer-token"))
                 .thenReturn(claims(ViewerAccessKeyService.ACCESS_PUBLIC, null));
@@ -182,6 +269,42 @@ class PacsResultServiceImplAccessTest {
 
         assertTrue(response.isSuccess());
         verify(pacsResultMapper).insertResult(any(PacsResultSaveRequest.class), eq("COMPLETED"), eq(99L));
+    }
+
+    @Test
+    void browserResultCreateAllowsDirectUploadedStudyWithoutWorklist() throws Exception {
+        when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
+            default -> null;
+        });
+        when(viewerAccessKeyService.decode("viewer-token"))
+                .thenReturn(studyOnlyClaims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
+        when(studyMapper.findById(1L, 22L)).thenReturn(studyContext());
+        when(modalityMapper.countActiveModalitiesByIds(List.of(3L))).thenReturn(1L);
+        when(modalityMapper.countActiveHospitalModality(1L, 3L)).thenReturn(1L);
+        when(pacsResultMapper.findExisting(any(PacsResultSaveRequest.class))).thenReturn(null);
+        when(pacsResultMapper.insertResult(any(PacsResultSaveRequest.class), eq("COMPLETED"), eq(99L)))
+                .thenReturn(89L);
+        PacsResultResponse saved = resultResponse(89L, 99L);
+        saved.setWorklistId(null);
+        saved.setResultText("<p>IRM PELVIEN</p>");
+        when(pacsResultMapper.findById(89L)).thenReturn(saved);
+        when(pacsResultMapper.listImages(89L)).thenReturn(List.of());
+
+        PacsResultSaveRequest saveRequest = directStudySaveRequest();
+        saveRequest.setResultText("<p>IRM PELVIEN</p>");
+        saveRequest.setCompleted(true);
+
+        var response = service.createBrowser(saveRequest, List.of(), request);
+
+        assertTrue(response.isSuccess());
+        ArgumentCaptor<PacsResultSaveRequest> captor = ArgumentCaptor.forClass(PacsResultSaveRequest.class);
+        verify(pacsResultMapper).insertResult(captor.capture(), eq("COMPLETED"), eq(99L));
+        PacsResultSaveRequest persisted = captor.getValue();
+        assertEquals(22L, persisted.getStudyId());
+        assertNull(persisted.getWorklistId());
+        assertEquals(501L, persisted.getPatientId());
+        assertEquals("ACC-22", persisted.getAccessionNumber());
     }
 
     @Test
@@ -274,6 +397,26 @@ class PacsResultServiceImplAccessTest {
         var response = service.update(saveRequest, List.of(), request);
 
         assertFalse(response.isSuccess());
+    }
+
+    @Test
+    void editingDoctorCannotUpdateCompletedResult() throws Exception {
+        when(viewerAccessKeyService.decode("viewer-token"))
+                .thenReturn(claims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
+
+        PacsResultResponse existing = resultResponse(12L, 99L);
+        existing.setCompleted(Boolean.TRUE);
+        existing.setStatus("COMPLETED");
+        when(pacsResultMapper.findById(12L)).thenReturn(existing);
+
+        PacsResultSaveRequest saveRequest = saveRequest();
+        saveRequest.setId(12L);
+        saveRequest.setResultText("Try to reopen");
+
+        var response = service.update(saveRequest, List.of(), request);
+
+        assertFalse(response.isSuccess());
+        verify(pacsResultMapper, never()).updateResult(any(PacsResultSaveRequest.class), anyString(), any());
     }
 
     @Test
@@ -513,6 +656,33 @@ class PacsResultServiceImplAccessTest {
     }
 
     @Test
+    void browserViewerStateChunkedSaveRejectsCompletedResult() throws Exception {
+        when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
+            default -> null;
+        });
+        when(viewerAccessKeyService.decode("viewer-token"))
+                .thenReturn(claims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
+        PacsResultResponse completed = resultResponse(81L, 99L);
+        completed.setCompleted(Boolean.TRUE);
+        completed.setStatus("COMPLETED");
+        when(pacsResultMapper.findByWorklist(any(PacsResultFindByWorklistRequest.class)))
+                .thenReturn(completed);
+
+        byte[] payloadBytes = "{\"viewerState\":{\"source\":\"ohif-viewer\"}}".getBytes(StandardCharsets.UTF_8);
+        String payloadSha256 = sha256(payloadBytes);
+
+        var response = service.saveBrowserViewerStateChunk(
+                chunk("chunk-test-completed", 0, 1, payloadBytes, payloadSha256, 0, payloadBytes.length),
+                request
+        );
+
+        assertFalse(response.isSuccess());
+        verify(pacsResultMapper, never()).insertViewerState(any(PacsViewerStateRequest.class), any());
+        verify(pacsResultMapper, never()).updateViewerState(any(PacsViewerStateRequest.class), any());
+    }
+
+    @Test
     void browserViewerStateChunkedSaveRejectsIncompleteUpload() throws Exception {
         when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
             case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
@@ -649,6 +819,25 @@ class PacsResultServiceImplAccessTest {
     }
 
     @Test
+    void editingDoctorCannotCreateViewerStateAfterResultCompleted() throws Exception {
+        when(viewerAccessKeyService.decode("viewer-token"))
+                .thenReturn(claims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
+
+        when(pacsResultMapper.findViewerState(any(PacsViewerStateRequest.class))).thenReturn(null);
+        PacsResultResponse completed = resultResponse(81L, 99L);
+        completed.setCompleted(Boolean.TRUE);
+        completed.setStatus("COMPLETED");
+        when(pacsResultMapper.findByWorklist(any(PacsResultFindByWorklistRequest.class)))
+                .thenReturn(completed);
+
+        var response = service.saveBrowserViewerState(new PacsViewerStateRequest(), request);
+
+        assertFalse(response.isSuccess());
+        verify(pacsResultMapper, never()).insertViewerState(any(PacsViewerStateRequest.class), any());
+        verify(pacsResultMapper, never()).updateViewerState(any(PacsViewerStateRequest.class), any());
+    }
+
+    @Test
     void reportingDoctorCanRecoverLegacyViewerStateCreatedByAnotherDoctor() throws Exception {
         when(viewerAccessKeyService.decode("viewer-token"))
                 .thenReturn(claims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
@@ -714,6 +903,19 @@ class PacsResultServiceImplAccessTest {
         );
     }
 
+    private static ViewerAccessClaims studyOnlyClaims(String accessMode, Long userId) {
+        return new ViewerAccessClaims(
+                1L,
+                null,
+                22L,
+                3L,
+                "1.2.3",
+                userId,
+                userId == null ? null : "doctor",
+                accessMode
+        );
+    }
+
     private static PacsResultSaveRequest saveRequest() {
         PacsResultSaveRequest request = new PacsResultSaveRequest();
         request.setHospitalId(1L);
@@ -723,6 +925,29 @@ class PacsResultServiceImplAccessTest {
         request.setStudyInstanceUid("1.2.3");
         request.setResultText("Normal");
         return request;
+    }
+
+    private static PacsResultSaveRequest directStudySaveRequest() {
+        PacsResultSaveRequest request = new PacsResultSaveRequest();
+        request.setHospitalId(1L);
+        request.setStudyId(22L);
+        request.setModalityId(3L);
+        request.setStudyInstanceUid("1.2.3");
+        request.setResultText("Normal");
+        return request;
+    }
+
+    private static StudyResponse studyContext() {
+        StudyResponse study = new StudyResponse();
+        study.setHospitalId(1L);
+        study.setPatientId(501L);
+        study.setPatientName("HEL SOK");
+        study.setMrn("26-H001-P0000003");
+        study.setStudyInstanceUid("1.2.3");
+        study.setAccessionNumber("ACC-22");
+        study.setModalityId(3L);
+        study.setModality("CT");
+        return study;
     }
 
     private static WorklistDetailRow worklistContext() {

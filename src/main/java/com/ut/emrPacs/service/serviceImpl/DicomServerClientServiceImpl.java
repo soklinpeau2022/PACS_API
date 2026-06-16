@@ -301,9 +301,9 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         responseHeaders.setCacheControl("no-store");
         responseHeaders.add("X-Content-Type-Options", "nosniff");
 
-        copyHeader(upstream, responseHeaders, HttpHeaders.CONTENT_LENGTH);
         byte[] body = upstream.getBody();
         byte[] responseBody = body == null ? new byte[0] : body;
+        responseHeaders.setContentLength(responseBody.length);
         StreamingResponseBody stream = outputStream -> outputStream.write(responseBody);
         return new ResponseEntity<>(stream, responseHeaders, upstream.getStatusCode());
     }
@@ -338,8 +338,25 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     private static void copyHeader(ResponseEntity<?> source, HttpHeaders target, String headerName) {
         List<String> values = source.getHeaders().get(headerName);
         if (values != null && !values.isEmpty()) {
-            target.put(headerName, values);
+            for (String value : values) {
+                if (isSafeProxyHeaderValue(value)) {
+                    target.add(headerName, value);
+                }
+            }
         }
+    }
+
+    private static boolean isSafeProxyHeaderValue(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '\r' || ch == '\n' || ch == 0 || (ch < 32 && ch != '\t')) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String normalizePathAndQuery(String pathAndQuery) {

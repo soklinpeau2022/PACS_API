@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ut.emrPacs.mapper.notification.RealtimeNotificationMapper">
+
+    <resultMap id="RealtimeNotificationEvent" type="com.ut.emrPacs.model.dto.response.notification.RealtimeNotificationEvent">
+        <id property="eventId" column="event_id"/>
+        <result property="hospitalId" column="hospital_id"/>
+        <result property="source" column="source"/>
+        <result property="type" column="event_type"/>
+        <result property="severity" column="severity"/>
+        <result property="title" column="title"/>
+        <result property="message" column="message"/>
+        <result property="worklistId" column="worklist_id"/>
+        <result property="studyId" column="study_id"/>
+        <result property="worklistPublicKey" column="worklist_public_key"/>
+        <result property="studyPublicKey" column="study_public_key"/>
+        <result property="patientName" column="patient_name"/>
+        <result property="visitCode" column="visit_code"/>
+        <result property="accessionNumber" column="accession_number"/>
+        <result property="dedupeKey" column="dedupe_key"/>
+        <result property="createdAt" column="created_at"/>
+    </resultMap>
+
+    <insert id="insertEvent" parameterType="com.ut.emrPacs.model.dto.response.notification.RealtimeNotificationEvent">
+        INSERT INTO pacs_realtime_notification_events (
+            hospital_id,
+            source,
+            event_type,
+            severity,
+            title,
+            message,
+            worklist_id,
+            study_id,
+            worklist_public_key,
+            study_public_key,
+            patient_name,
+            visit_code,
+            accession_number,
+            dedupe_key
+        )
+        VALUES (
+            #{hospitalId},
+            #{source},
+            #{type},
+            #{severity},
+            #{title},
+            #{message},
+            #{worklistId},
+            #{studyId},
+            #{worklistPublicKey},
+            #{studyPublicKey},
+            #{patientName},
+            #{visitCode},
+            #{accessionNumber},
+            #{dedupeKey}
+        )
+        ON CONFLICT (hospital_id, dedupe_key) DO NOTHING
+    </insert>
+
+    <select id="findLatestEventId" resultType="java.lang.Long">
+        SELECT COALESCE(MAX(id), 0)
+        FROM pacs_realtime_notification_events
+        WHERE hospital_id = #{hospitalId}
+    </select>
+
+    <select id="listEventsAfter" resultMap="RealtimeNotificationEvent">
+        SELECT
+            id AS event_id,
+            hospital_id,
+            source,
+            event_type,
+            severity,
+            title,
+            message,
+            worklist_id,
+            study_id,
+            worklist_public_key,
+            study_public_key,
+            patient_name,
+            visit_code,
+            accession_number,
+            dedupe_key,
+            TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS created_at
+        FROM pacs_realtime_notification_events
+        WHERE hospital_id = #{hospitalId}
+          AND id > #{afterId}
+        ORDER BY id
+        LIMIT #{limit}
+    </select>
+
+    <delete id="deleteEventsOlderThan">
+        DELETE FROM pacs_realtime_notification_events
+        WHERE created_at &lt; NOW() - (#{retentionDays} * INTERVAL '1 day')
+    </delete>
+</mapper>

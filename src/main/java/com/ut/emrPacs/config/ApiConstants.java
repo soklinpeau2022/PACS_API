@@ -314,6 +314,7 @@ public final class ApiConstants {
     public static final class Notification {
         public static final String BASE_PATH = "/notification";
         public static final String LIST_PATH = "/notification-list";
+        public static final String STREAM_PATH = "/notification-stream";
 
         private Notification() {
         }

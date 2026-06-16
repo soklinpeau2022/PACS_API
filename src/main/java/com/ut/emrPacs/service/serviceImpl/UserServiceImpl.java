@@ -429,7 +429,7 @@ public class UserServiceImpl implements UserService {
                 return ResponseMessageUtils.makeResponse(false, "Passwords do not match.");
             }
 
-            String policyError = PasswordPolicy.validate(newPassword);
+            String policyError = PasswordPolicy.validatePasswordChange(newPassword);
             if (policyError != null) {
                 return ResponseMessageUtils.makeResponse(false, policyError);
             }
@@ -588,7 +588,7 @@ public class UserServiceImpl implements UserService {
                     SecurityAuditLogger.logBlocked(LOGGER, httpServletRequest, "bola_privilege_escalation", "update_super_admin_password", String.valueOf(targetUserId));
                     return ResponseMessageUtils.makeResponse(false, 403, "FORBIDDEN", "Forbidden");
                 }
-                String policyError = PasswordPolicy.validate(password);
+                String policyError = PasswordPolicy.validatePasswordChange(password);
                 if (policyError != null) {
                     return ResponseMessageUtils.makeResponse(false, messageService.message(policyError, false));
                 }

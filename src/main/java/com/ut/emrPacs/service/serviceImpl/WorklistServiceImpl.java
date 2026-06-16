@@ -83,6 +83,7 @@ import com.ut.emrPacs.model.enums.WorklistStatus;
 import com.ut.emrPacs.model.enums.StudyStatus;
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.DicomServerClientService;
+import com.ut.emrPacs.service.service.RealtimeNotificationService;
 import com.ut.emrPacs.service.service.WorklistService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -155,6 +156,7 @@ public class WorklistServiceImpl implements WorklistService {
     private static final String VIEWER_DICOMWEB_SCOPE = "pacs.viewer.dicomweb";
     private static final String VIEWER_DICOMWEB_CLIENT_ID = "pacs-viewer-dicomweb";
     private static final String DEFAULT_VIEWER_STATE_TYPE = "OHIF_VIEWER_STATE";
+    private static final String RESULT_STATUS_COMPLETED = "COMPLETED";
 
     @Autowired
     private WorklistMapper WorklistMapper;
@@ -192,6 +194,8 @@ public class WorklistServiceImpl implements WorklistService {
     private PublicEntityKeyResolver publicEntityKeyResolver;
     @Autowired
     private PublicViewerAttemptGuard publicViewerAttemptGuard;
+    @Autowired(required = false)
+    private RealtimeNotificationService realtimeNotificationService;
 
     @Value("${pacs.viewer.dicomweb.token-ms:86400000}")
     private long viewerDicomwebTokenMs;
@@ -1026,6 +1030,14 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                     successMessage
             );
             insertDicomServerCallbackLog(request, true, null, warningMessage, receivedAtIso);
+            if (realtimeNotificationService != null) {
+                realtimeNotificationService.publishImageReceived(
+                        responseWorklist,
+                        linkedStudy.studyId(),
+                        responseWorklist.getStudyPublicKey(),
+                        successMessage
+                );
+            }
 
             LocalTime endDuration = LocalTime.now();
             activityLogService.insert(ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH, null, null, WorklistConstants.MODULE_CODE, WorklistConstants.LABEL_RECEIVED_STUDY, WorklistConstants.ACTION_RECEIVED_STUDY, WorklistConstants.LOG_STATUS_SUCCESS, WorklistConstants.RESULT_SUCCESS, startDuration, endDuration, httpServletRequest);
@@ -1053,14 +1065,30 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         try {
             if (request == null
                     || !hasText(request.getHospitalKey())
-                    || !hasText(request.getWorklistKey())
+                    || (!hasText(request.getWorklistKey()) && !hasText(request.getStudyKey()))
                     || !hasText(request.getPhoneNumber())) {
                 return publicViewerAccessDenied();
             }
-            if (publicViewerAttemptGuard.isBlocked(request.getHospitalKey(), request.getWorklistKey())) {
+            String linkKey = firstNonBlank(request.getWorklistKey(), request.getStudyKey(), "");
+            if (publicViewerAttemptGuard.isBlocked(request.getHospitalKey(), linkKey)) {
                 return publicViewerAccessDenied();
             }
 
+            if (hasText(request.getStudyKey()) && !hasText(request.getWorklistKey())) {
+                return authorizePublicStudyViewer(request, httpServletRequest, linkKey);
+            }
+            return authorizePublicWorklistViewer(request, httpServletRequest, linkKey);
+        } catch (Exception error) {
+            LOGGER.warn("Public viewer authorization failed: {}", error.toString());
+            return publicViewerAccessDenied();
+        }
+    }
+
+    private ResponseMessage<BaseResult> authorizePublicWorklistViewer(
+            PublicViewerAuthorizeRequest request,
+            HttpServletRequest httpServletRequest,
+            String linkKey
+    ) throws UnknownHostException {
             Long hospitalId = publicEntityKeyResolver.resolve(Entity.HOSPITAL, request.getHospitalKey(), null);
             Long worklistId = publicEntityKeyResolver.resolve(Entity.WORKLIST, request.getWorklistKey(), null);
             WorklistDetailRow worklist = hospitalId == null || worklistId == null
@@ -1076,7 +1104,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                     && storedPhone.length() >= 7
                     && constantTimeEquals(storedPhone, suppliedPhone);
             if (!verified) {
-                publicViewerAttemptGuard.recordFailure(request.getHospitalKey(), request.getWorklistKey());
+                publicViewerAttemptGuard.recordFailure(request.getHospitalKey(), linkKey);
                 return publicViewerAccessDenied();
             }
 
@@ -1089,13 +1117,41 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                     true
             );
             if (response != null && response.isSuccess()) {
-                publicViewerAttemptGuard.clear(request.getHospitalKey(), request.getWorklistKey());
+                publicViewerAttemptGuard.clear(request.getHospitalKey(), linkKey);
             }
             return response != null && response.isSuccess() ? response : publicViewerAccessDenied();
-        } catch (Exception error) {
-            LOGGER.warn("Public viewer authorization failed: {}", error.toString());
+    }
+
+    private ResponseMessage<BaseResult> authorizePublicStudyViewer(
+            PublicViewerAuthorizeRequest request,
+            HttpServletRequest httpServletRequest,
+            String linkKey
+    ) {
+        Long hospitalId = publicEntityKeyResolver.resolve(Entity.HOSPITAL, request.getHospitalKey(), null);
+        Long studyId = publicEntityKeyResolver.resolve(Entity.STUDY, request.getStudyKey(), null);
+        StudyResponse study = hospitalId == null || studyId == null
+                ? null
+                : studyMapper.findById(hospitalId, studyId);
+        PatientResponse patient = study == null || study.getPatientId() == null
+                ? null
+                : patientMapper.findById(hospitalId, study.getPatientId());
+
+        String suppliedPhone = normalizePhoneNumber(request.getPhoneNumber());
+        String storedPhone = normalizePhoneNumber(patient == null ? null : patient.getPhoneNumber());
+        boolean verified = suppliedPhone.length() >= 7
+                && storedPhone.length() >= 7
+                && constantTimeEquals(storedPhone, suppliedPhone);
+        if (!verified) {
+            publicViewerAttemptGuard.recordFailure(request.getHospitalKey(), linkKey);
             return publicViewerAccessDenied();
         }
+
+        ViewerInfoResponse response = buildPublicStudyViewerInfo(study, request.getMode(), httpServletRequest);
+        if (response == null) {
+            return publicViewerAccessDenied();
+        }
+        publicViewerAttemptGuard.clear(request.getHospitalKey(), linkKey);
+        return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(response), true));
     }
 
     private ResponseMessage<BaseResult> publicViewerAccessDenied() {
@@ -2476,14 +2532,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
 
         body.put("viewerAccessToken", nextViewerAccessToken);
         body.put("viewerAccess", accessClaims.accessMode());
-        WorklistDetailRow worklist = accessClaims.worklistId() == null || accessClaims.worklistId() <= 0L
-                ? null
-                : WorklistMapper.findWorklistById(accessClaims.hospitalId(), accessClaims.worklistId());
-        ViewerEditCapabilities editCapabilities = resolveViewerEditCapabilities(
-                worklist,
-                accessClaims.userId(),
-                accessClaims.accessMode()
-        );
+        ViewerEditCapabilities editCapabilities = resolveViewerEditCapabilities(accessClaims);
         body.put("canEditResult", editCapabilities.canEditResult());
         body.put("canEditViewerState", editCapabilities.canEditViewerState());
     }
@@ -3957,7 +4006,95 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 viewerBaseUrl,
                 mode,
                 Worklist.getHospitalPublicKey(),
-                Worklist.getPublicKey()
+                Worklist.getPublicKey(),
+                null
+        ));
+        return response;
+    }
+
+    private ViewerInfoResponse buildPublicStudyViewerInfo(
+            StudyResponse study,
+            String mode,
+            HttpServletRequest httpServletRequest
+    ) {
+        if (study == null
+                || study.getHospitalId() == null
+                || study.getId() == null
+                || !hasText(study.getHospitalPublicKey())
+                || !hasText(study.getPublicKey())
+                || !hasText(study.getStudyInstanceUid())) {
+            return null;
+        }
+
+        HospitalDicomServerResponse server = resolveStudyDicomServer(study, study.getHospitalId());
+        String viewerBaseUrl = resolvePublicViewerBaseUrl(server);
+        String dicomwebBaseUrl = resolvePublicDicomwebBaseUrl(server);
+        if (!hasText(viewerBaseUrl) || !hasText(dicomwebBaseUrl)) {
+            return null;
+        }
+
+        String viewerToken = issueViewerDicomwebToken(
+                study.getHospitalId(),
+                null,
+                study.getId(),
+                study.getStudyInstanceUid()
+        );
+        String viewerApiKey = issueViewerApiKey(
+                study.getHospitalId(),
+                null,
+                study.getId(),
+                study.getModalityId(),
+                study.getStudyInstanceUid(),
+                null,
+                null,
+                ViewerAccessKeyService.ACCESS_PUBLIC
+        );
+        if (!hasText(viewerToken) || !hasText(viewerApiKey)) {
+            return null;
+        }
+
+        ViewerInfoResponse response = new ViewerInfoResponse();
+        response.setSuccess(Boolean.TRUE);
+        response.setDirectDicomweb(Boolean.FALSE);
+        response.setPublicKey(study.getPublicKey());
+        response.setHospitalPublicKey(study.getHospitalPublicKey());
+        response.setStudyPublicKey(study.getPublicKey());
+        response.setModalityPublicKey(study.getModalityPublicKey());
+        response.setPatientPublicKey(study.getPatientPublicKey());
+        response.setStatus(firstNonBlank(study.getStatus(), StudyStatus.IMAGE_RECEIVED.name()));
+        response.setDicomServerStudyId(study.getDicomServerStudyId());
+        response.setDicomServerPatientId(study.getDicomServerPatientId());
+        response.setDicomServerSeriesId(study.getDicomServerSeriesId());
+        response.setStudyInstanceUid(study.getStudyInstanceUid());
+        response.setAccessionNumber(study.getAccessionNumber());
+        response.setPatientUid(study.getMrn());
+        response.setPatientHn(study.getPatientHn());
+        response.setPatientName(study.getPatientName());
+        response.setModalityName(firstNonBlank(study.getModalityName(), study.getModality()));
+        response.setStudyDescription(study.getStudyDescription());
+        response.setInstitutionName(study.getInstitutionName());
+        response.setImageReceivedAt(study.getImageReceivedAt());
+        response.setImageInstanceCount(study.getInstances());
+        response.setTotalInstances(study.getInstances());
+        response.setSeriesCount(hasText(study.getDicomServerSeriesId()) ? 1 : 0);
+        response.setViewerBaseUrl(viewerBaseUrl);
+        response.setDicomwebBaseUrl(dicomwebBaseUrl);
+        response.setDicomwebGatewayBaseUrl(null);
+        response.setDicomwebAuthToken(viewerToken);
+        response.setViewerApiKey(viewerApiKey);
+        response.setViewerAccess(ViewerAccessKeyService.ACCESS_PUBLIC);
+        response.setCanEditResult(Boolean.FALSE);
+        response.setCanEditViewerState(Boolean.FALSE);
+        response.setDicomServerUiBaseUrl(resolvePublicDicomServerUiBaseUrl(server));
+        response.setViewerUrl(buildOhifViewerUrl(study.getStudyInstanceUid(), mode, viewerBaseUrl, dicomwebBaseUrl, response, viewerToken, viewerApiKey));
+        response.setBasicViewerUrl(buildOhifViewerUrl(study.getStudyInstanceUid(), "basic", viewerBaseUrl, dicomwebBaseUrl, response, viewerToken, viewerApiKey));
+        response.setSegmentationViewerUrl(buildOhifViewerUrl(study.getStudyInstanceUid(), "segmentation", viewerBaseUrl, dicomwebBaseUrl, response, viewerToken, viewerApiKey));
+        response.setPublicViewerUrl(buildPublicViewerVerificationUrl(
+                viewerBaseUrl,
+                mode,
+                study.getHospitalPublicKey(),
+                null,
+                study.getPublicKey()
         ));
         return response;
     }
@@ -3979,6 +4116,9 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             resultRequest.setHospitalId(worklist.getHospitalId());
             resultRequest.setWorklistId(worklist.getId());
             PacsResultResponse existingResult = pacsResultMapper.findByWorklist(resultRequest);
+            if (isCompletedResult(existingResult)) {
+                return ViewerEditCapabilities.READ_ONLY;
+            }
 
             PacsViewerStateRequest stateRequest = new PacsViewerStateRequest();
             stateRequest.setHospitalId(worklist.getHospitalId());
@@ -3999,10 +4139,135 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         }
     }
 
+    private ViewerEditCapabilities resolveViewerEditCapabilities(ViewerAccessClaims accessClaims) {
+        if (accessClaims == null
+                || accessClaims.hospitalId() == null
+                || accessClaims.hospitalId() <= 0L) {
+            return ViewerEditCapabilities.READ_ONLY;
+        }
+        if (accessClaims.worklistId() != null && accessClaims.worklistId() > 0L) {
+            WorklistDetailRow worklist = WorklistMapper.findWorklistById(
+                    accessClaims.hospitalId(),
+                    accessClaims.worklistId()
+            );
+            return resolveViewerEditCapabilities(
+                    worklist,
+                    accessClaims.userId(),
+                    accessClaims.accessMode()
+            );
+        }
+        StudyResponse study = resolveViewerAccessStudy(accessClaims);
+        return resolveStudyViewerEditCapabilities(
+                study,
+                accessClaims.userId(),
+                accessClaims.accessMode()
+        );
+    }
+
+    private StudyResponse resolveViewerAccessStudy(ViewerAccessClaims accessClaims) {
+        if (accessClaims == null || accessClaims.hospitalId() == null || accessClaims.hospitalId() <= 0L) {
+            return null;
+        }
+        if (accessClaims.studyId() != null && accessClaims.studyId() > 0L && studyMapper != null) {
+            StudyResponse study = studyMapper.findById(accessClaims.hospitalId(), accessClaims.studyId());
+            if (study != null) {
+                return study;
+            }
+        }
+        if ((accessClaims.studyId() == null || accessClaims.studyId() <= 0L)
+                && !hasText(accessClaims.studyInstanceUid())) {
+            return null;
+        }
+        StudyResponse study = new StudyResponse();
+        study.setHospitalId(accessClaims.hospitalId());
+        study.setId(accessClaims.studyId());
+        study.setModalityId(accessClaims.modalityId());
+        study.setStudyInstanceUid(accessClaims.studyInstanceUid());
+        return study;
+    }
+
+    private ViewerEditCapabilities resolveStudyViewerEditCapabilities(
+            StudyResponse study,
+            Long viewerUserId,
+            String viewerAccess
+    ) {
+        if (study == null
+                || viewerUserId == null
+                || viewerUserId <= 0L
+                || !ViewerAccessKeyService.ACCESS_EDIT.equals(viewerAccess)
+                || pacsResultMapper == null) {
+            return ViewerEditCapabilities.READ_ONLY;
+        }
+        try {
+            PacsResultResponse existingResult = findExistingStudyResult(study);
+            if (isCompletedResult(existingResult)) {
+                return ViewerEditCapabilities.READ_ONLY;
+            }
+
+            PacsViewerStateResponse existingState = findExistingStudyViewerState(study);
+            Long ownerId = viewerOwnerId(existingResult, existingState);
+            boolean canEdit = ownerId == null || viewerUserId.equals(ownerId);
+            return new ViewerEditCapabilities(canEdit, canEdit);
+        } catch (Exception error) {
+            LOGGER.warn(
+                    "Unable to resolve viewer edit ownership for studyId={}, studyInstanceUid={}: {}",
+                    study.getId(),
+                    study.getStudyInstanceUid(),
+                    error.toString()
+            );
+            return ViewerEditCapabilities.READ_ONLY;
+        }
+    }
+
+    private PacsResultResponse findExistingStudyResult(StudyResponse study) {
+        if (study == null
+                || study.getHospitalId() == null
+                || study.getHospitalId() <= 0L
+                || study.getModalityId() == null
+                || study.getModalityId() <= 0L) {
+            return null;
+        }
+        if (study.getId() != null && study.getId() > 0L) {
+            return pacsResultMapper.findByStudyId(
+                    study.getHospitalId(),
+                    study.getModalityId(),
+                    study.getId()
+            );
+        }
+        if (hasText(study.getStudyInstanceUid())) {
+            return pacsResultMapper.findByStudyInstanceUid(
+                    study.getHospitalId(),
+                    study.getModalityId(),
+                    study.getStudyInstanceUid()
+            );
+        }
+        return null;
+    }
+
+    private PacsViewerStateResponse findExistingStudyViewerState(StudyResponse study) {
+        if (study == null || study.getHospitalId() == null || study.getHospitalId() <= 0L) {
+            return null;
+        }
+        PacsViewerStateRequest stateRequest = new PacsViewerStateRequest();
+        stateRequest.setHospitalId(study.getHospitalId());
+        stateRequest.setModalityId(study.getModalityId());
+        stateRequest.setStudyId(study.getId());
+        stateRequest.setStudyInstanceUid(study.getStudyInstanceUid());
+        stateRequest.setAccessionNumber(study.getAccessionNumber());
+        stateRequest.setStateType(DEFAULT_VIEWER_STATE_TYPE);
+        return pacsResultMapper.findViewerState(stateRequest);
+    }
+
     private static Long viewerOwnerId(PacsResultResponse result, PacsViewerStateResponse state) {
         Long resultOwner = positiveUserId(result == null ? null : result.getCreatedBy());
         Long stateOwner = positiveUserId(state == null ? null : state.getCreatedBy());
         return FunctionHelper.firstNonNull(resultOwner, stateOwner);
+    }
+
+    private static boolean isCompletedResult(PacsResultResponse result) {
+        return result != null
+                && (Boolean.TRUE.equals(result.getCompleted())
+                || RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
     }
 
     private static Long positiveUserId(Long userId) {
@@ -4017,22 +4282,31 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             String viewerBaseUrl,
             String mode,
             String hospitalKey,
-            String worklistKey
+            String worklistKey,
+            String studyKey
     ) {
-        if (!hasText(viewerBaseUrl) || !hasText(hospitalKey) || !hasText(worklistKey)) {
+        if (!hasText(viewerBaseUrl)
+                || !hasText(hospitalKey)
+                || (!hasText(worklistKey) && !hasText(studyKey))) {
             return null;
         }
         String viewerRouteUrl = appendPublicPath(viewerBaseUrl, normalizeViewerRoute(mode));
         if (!hasText(viewerRouteUrl)) {
             return null;
         }
-        return viewerRouteUrl
-                + "?publicViewer=1&hospitalKey="
-                + URLEncoder.encode(hospitalKey.trim(), StandardCharsets.UTF_8)
-                + "&worklistKey="
-                + URLEncoder.encode(worklistKey.trim(), StandardCharsets.UTF_8)
-                + "&mode="
-                + URLEncoder.encode(firstNonBlank(mode, "segmentation"), StandardCharsets.UTF_8);
+        StringBuilder builder = new StringBuilder(viewerRouteUrl)
+                .append("?publicViewer=1&hospitalKey=")
+                .append(URLEncoder.encode(hospitalKey.trim(), StandardCharsets.UTF_8));
+        if (hasText(worklistKey)) {
+            builder.append("&worklistKey=")
+                    .append(URLEncoder.encode(worklistKey.trim(), StandardCharsets.UTF_8));
+        } else {
+            builder.append("&studyKey=")
+                    .append(URLEncoder.encode(studyKey.trim(), StandardCharsets.UTF_8));
+        }
+        builder.append("&mode=")
+                .append(URLEncoder.encode(firstNonBlank(mode, "segmentation"), StandardCharsets.UTF_8));
+        return builder.toString();
     }
 
     private String buildOhifViewerUrl(String studyInstanceUid, String mode, String viewerBaseUrl, String dicomwebBaseUrl) {

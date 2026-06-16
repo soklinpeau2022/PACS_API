@@ -15,7 +15,7 @@ class GlobalRequestSizeLimitFilterTest {
 
     private static final long GLOBAL_LIMIT_BYTES = 12L * 1024L * 1024L;
     private static final long VIEWER_STATE_LIMIT_BYTES = 16L * 1024L * 1024L;
-    private static final long DICOM_UPLOAD_LIMIT_BYTES = 256L * 1024L * 1024L;
+    private static final long DICOM_UPLOAD_LIMIT_BYTES = (4L * 1024L * 1024L * 1024L) + (64L * 1024L * 1024L);
 
     private GlobalRequestSizeLimitFilter filter;
 
@@ -51,6 +51,32 @@ class GlobalRequestSizeLimitFilterTest {
 
         assertEquals(200, response.getStatus());
         verify(chain).doFilter(request, response);
+    }
+
+    @Test
+    void shouldAllowFullFourGibDicomPayloadWithMultipartHeadroom() throws Exception {
+        FilterChain chain = Mockito.mock(FilterChain.class);
+        MockHttpServletRequest request = dicomUploadRequestWithContentLength(4L * 1024L * 1024L * 1024L);
+        request.setContextPath("/pacsApi");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, chain);
+
+        assertEquals(200, response.getStatus());
+        verify(chain).doFilter(request, response);
+    }
+
+    @Test
+    void shouldBlockDicomTransportAboveFourGibAndMultipartHeadroom() throws Exception {
+        FilterChain chain = Mockito.mock(FilterChain.class);
+        MockHttpServletRequest request = dicomUploadRequestWithContentLength(DICOM_UPLOAD_LIMIT_BYTES + 1);
+        request.setContextPath("/pacsApi");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, chain);
+
+        assertEquals(413, response.getStatus());
+        verify(chain, never()).doFilter(request, response);
     }
 
     @Test
@@ -159,5 +185,16 @@ class GlobalRequestSizeLimitFilterTest {
 
         assertEquals(200, response.getStatus());
         verify(chain).doFilter(request, response);
+    }
+
+    private static MockHttpServletRequest dicomUploadRequestWithContentLength(long contentLength) {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/pacsApi/dicom-uploads") {
+            @Override
+            public long getContentLengthLong() {
+                return contentLength;
+            }
+        };
+        request.setContentType("multipart/form-data; boundary=----pacs");
+        return request;
     }
 }

@@ -277,6 +277,7 @@
         s.hospital_id AS hospitalId,
         h.public_id::text AS hospitalPublicKey,
         s.patient_id AS patientId,
+        p.public_id::text AS patientPublicKey,
         NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '') AS patientName,
         p.patient_uid AS mrn,
         p.patient_hn AS patientHn,

@@ -41,4 +41,5 @@ public class PacsResultContextResponse {
     private String dicomServerPatientId;
     private String dicomServerSeriesId;
     private String imageReceivedAt;
+    private String publicViewerUrl;
 }

@@ -101,6 +101,38 @@
             NOW(),
             NOW()
         )
+        <choose>
+            <when test="request.studyId != null">
+                ON CONFLICT (hospital_id, modality_id, study_id)
+                WHERE is_active = 1 AND study_id IS NOT NULL
+                DO UPDATE SET
+                    worklist_id = COALESCE(EXCLUDED.worklist_id, pacs_results.worklist_id),
+                    patient_id = COALESCE(EXCLUDED.patient_id, pacs_results.patient_id),
+                    result_date = EXCLUDED.result_date,
+                    template_id = EXCLUDED.template_id,
+                    result_text = EXCLUDED.result_text,
+                    status = EXCLUDED.status,
+                    completed = EXCLUDED.completed,
+                    modified_at = NOW()
+                WHERE pacs_results.created_by IS NULL
+                   OR pacs_results.created_by = #{createdBy}
+            </when>
+            <when test="request.worklistId != null">
+                ON CONFLICT (hospital_id, modality_id, worklist_id)
+                WHERE is_active = 1 AND worklist_id IS NOT NULL
+                DO UPDATE SET
+                    study_id = COALESCE(EXCLUDED.study_id, pacs_results.study_id),
+                    patient_id = COALESCE(EXCLUDED.patient_id, pacs_results.patient_id),
+                    result_date = EXCLUDED.result_date,
+                    template_id = EXCLUDED.template_id,
+                    result_text = EXCLUDED.result_text,
+                    status = EXCLUDED.status,
+                    completed = EXCLUDED.completed,
+                    modified_at = NOW()
+                WHERE pacs_results.created_by IS NULL
+                   OR pacs_results.created_by = #{createdBy}
+            </when>
+        </choose>
         RETURNING id
     </select>
 
@@ -369,12 +401,32 @@
         WHERE pr.hospital_id = #{request.hospitalId}
           AND pr.modality_id = #{request.modalityId}
           AND pr.is_active = 1
-          AND (
-              (#{request.studyId} IS NOT NULL AND pr.study_id = #{request.studyId})
-              OR (#{request.worklistId} IS NOT NULL AND pr.worklist_id = #{request.worklistId})
-              OR (#{request.studyInstanceUid} IS NOT NULL AND #{request.studyInstanceUid} != '' AND s.study_instance_uid = #{request.studyInstanceUid})
-              OR (#{request.accessionNumber} IS NOT NULL AND #{request.accessionNumber} != '' AND COALESCE(s.accession_number, q.visit_code) = #{request.accessionNumber})
-          )
+        <choose>
+            <when test="(request.studyId != null and request.studyId > 0)
+                    or (request.worklistId != null and request.worklistId > 0)
+                    or (request.studyInstanceUid != null and request.studyInstanceUid != '')
+                    or (request.accessionNumber != null and request.accessionNumber != '')">
+                AND (
+                <trim prefixOverrides="OR">
+                    <if test="request.studyId != null and request.studyId > 0">
+                        OR pr.study_id = #{request.studyId}
+                    </if>
+                    <if test="request.worklistId != null and request.worklistId > 0">
+                        OR pr.worklist_id = #{request.worklistId}
+                    </if>
+                    <if test="request.studyInstanceUid != null and request.studyInstanceUid != ''">
+                        OR s.study_instance_uid = #{request.studyInstanceUid}
+                    </if>
+                    <if test="request.accessionNumber != null and request.accessionNumber != ''">
+                        OR COALESCE(s.accession_number, q.visit_code) = #{request.accessionNumber}
+                    </if>
+                </trim>
+                )
+            </when>
+            <otherwise>
+                AND 1 = 0
+            </otherwise>
+        </choose>
         ORDER BY pr.id DESC
         LIMIT 1
     </select>
@@ -598,12 +650,20 @@
                         '|',
                         #{request.hospitalId}::text,
                         #{request.stateType},
-                        CASE
-                            WHEN #{request.worklistId} IS NOT NULL THEN 'worklist:' || #{request.worklistId}::text
-                            WHEN #{request.studyId} IS NOT NULL THEN 'study:' || #{request.studyId}::text
-                            WHEN #{request.studyInstanceUid} IS NOT NULL THEN 'study-uid:' || #{request.studyInstanceUid}
-                            ELSE 'accession:' || #{request.accessionNumber}
-                        END
+                        <choose>
+                            <when test="request.worklistId != null and request.worklistId > 0">
+                                'worklist:' || #{request.worklistId}::text
+                            </when>
+                            <when test="request.studyId != null and request.studyId > 0">
+                                'study:' || #{request.studyId}::text
+                            </when>
+                            <when test="request.studyInstanceUid != null and request.studyInstanceUid != ''">
+                                'study-uid:' || #{request.studyInstanceUid}
+                            </when>
+                            <otherwise>
+                                'accession:' || #{request.accessionNumber}
+                            </otherwise>
+                        </choose>
                     ),
                     0
                 )

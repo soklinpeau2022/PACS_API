@@ -65,6 +65,7 @@ import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.UnknownHostException;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -170,11 +171,13 @@ public class PacsResultServiceImpl implements PacsResultService {
             boolean requireServerApiKey
     ) {
         boolean transactionMutated = false;
+        PacsResultSaveRequest activeRequest = request;
         try {
             resolveSavePublicKeys(request);
             ResultAccess access = authorizeSaveRequest(request, httpServletRequest, requireServerApiKey);
             applyAccessClaims(request, access.claims());
             PacsResultSaveRequest safeRequest = normalizeAndEnrich(request);
+            activeRequest = safeRequest;
             validateRequestScope(access.claims(), safeRequest);
             validateSaveRequest(safeRequest, images, false);
 
@@ -183,13 +186,17 @@ public class PacsResultServiceImpl implements PacsResultService {
 
             Long resultId;
             String status = resultStatus(safeRequest.getCompleted());
-            transactionMutated = true;
             if (existing != null) {
                 safeRequest.setId(existing.getId());
                 pacsResultMapper.updateResult(safeRequest, status, null);
                 resultId = existing.getId();
+                transactionMutated = true;
             } else {
                 resultId = pacsResultMapper.insertResult(safeRequest, status, access.claims().userId());
+                if (resultId == null) {
+                    throw ResultAccessException.forbidden("Another doctor already owns this PACS result.");
+                }
+                transactionMutated = true;
             }
 
             storeImages(resultId, safeRequest.getHospitalId(), safeRequest.getModalityId(), images);
@@ -208,8 +215,23 @@ public class PacsResultServiceImpl implements PacsResultService {
             }
             return resultAccessDenied(accessError);
         } catch (Exception error) {
+            logResultSaveFailure(activeRequest, error);
             throw new IllegalStateException("Unable to save PACS result.", error);
         }
+    }
+
+    private void logResultSaveFailure(PacsResultSaveRequest request, Exception error) {
+        LOGGER.error(
+                "Unable to save PACS result. hospitalId={}, modalityId={}, studyId={}, worklistId={}, studyInstanceUid={}, accessionNumber={}, completed={}",
+                request == null ? null : request.getHospitalId(),
+                request == null ? null : request.getModalityId(),
+                request == null ? null : request.getStudyId(),
+                request == null ? null : request.getWorklistId(),
+                request == null ? null : request.getStudyInstanceUid(),
+                request == null ? null : request.getAccessionNumber(),
+                request == null ? null : request.getCompleted(),
+                error
+        );
     }
 
     @Override
@@ -349,6 +371,7 @@ public class PacsResultServiceImpl implements PacsResultService {
         if (!contextMatchesAccess(context, access.claims())) {
             return resultAccessDenied(ResultAccessException.forbidden("Viewer access is not allowed for this study."));
         }
+        attachPublicViewerUrl(context);
         return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(context), true));
     }
 
@@ -751,6 +774,9 @@ public class PacsResultServiceImpl implements PacsResultService {
             }
             long payloadSizeBytes = validateViewerStateChunkPayloadSize(request.getPayloadSizeBytes());
             String payloadSha256 = validateViewerStatePayloadSha256(request.getPayloadSha256());
+            if (isCompletedResult(findResultForViewerState(safeRequest))) {
+                throw ResultAccessException.forbidden("This PACS result is completed; labels and annotations are read-only.");
+            }
             byte[] chunkBytes = decodeViewerStateChunk(request.getChunkData());
             String uploadKey = viewerStateChunkKey(safeRequest, claims, uploadId);
 
@@ -867,7 +893,7 @@ public class PacsResultServiceImpl implements PacsResultService {
                 throw new IllegalStateException("Saved viewer state could not be reloaded.");
             }
             hydrateViewerStateResponse(response);
-            response.setCanEdit(Boolean.TRUE);
+            response.setCanEdit(canEditViewerState(response, findResultForViewerState(safeRequest), claims));
             return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(response), true));
         } catch (IllegalArgumentException validation) {
             if (transactionMutated) {
@@ -1358,14 +1384,31 @@ public class PacsResultServiceImpl implements PacsResultService {
     }
 
     private static boolean contextMatchesAccess(PacsResultContextResponse context, ViewerAccessClaims claims) {
-        return ViewerAccessKeyService.matchesScope(
-                claims,
-                context == null ? null : context.getHospitalId(),
-                context == null ? null : context.getWorklistId(),
-                context == null ? null : context.getStudyId(),
-                context == null ? null : context.getModalityId(),
-                context == null ? null : context.getStudyInstanceUid()
-        );
+        if (context == null || claims == null) {
+            return false;
+        }
+        if (context.getHospitalId() == null
+                || claims.hospitalId() == null
+                || !context.getHospitalId().equals(claims.hospitalId())) {
+            return false;
+        }
+        if (!hasText(context.getStudyInstanceUid())
+                || !context.getStudyInstanceUid().trim().equals(claims.studyInstanceUid())) {
+            return false;
+        }
+        if (claims.worklistId() != null
+                && claims.worklistId() > 0L
+                && !claims.worklistId().equals(context.getWorklistId())) {
+            return false;
+        }
+        if (claims.studyId() != null
+                && claims.studyId() > 0L
+                && !claims.studyId().equals(context.getStudyId())) {
+            return false;
+        }
+        return claims.modalityId() == null
+                || claims.modalityId() <= 0L
+                || claims.modalityId().equals(context.getModalityId());
     }
 
     private static boolean resultMatchesAccess(PacsResultResponse result, ViewerAccessClaims claims) {
@@ -1468,6 +1511,9 @@ public class PacsResultServiceImpl implements PacsResultService {
         if (claims == null || claims.userId() == null || claims.userId() <= 0L) {
             throw ResultAccessException.forbidden("Doctor identity is required to save PACS result.");
         }
+        if (isCompletedResult(existing)) {
+            throw ResultAccessException.forbidden("This PACS result is completed and cannot be edited.");
+        }
         Long ownerId = viewerOwnerId(existing, existingState);
         if (ownerId != null && !claims.userId().equals(ownerId)) {
             throw ResultAccessException.forbidden("Only the reporting doctor can edit this PACS result.");
@@ -1485,6 +1531,9 @@ public class PacsResultServiceImpl implements PacsResultService {
         if (claims == null || claims.userId() == null || claims.userId() <= 0L) {
             throw ResultAccessException.forbidden("Doctor identity is required to save labels and annotations.");
         }
+        if (isCompletedResult(existingResult)) {
+            throw ResultAccessException.forbidden("This PACS result is completed; labels and annotations are read-only.");
+        }
         Long ownerId = viewerOwnerId(existingResult, existing);
         if (ownerId != null && !claims.userId().equals(ownerId)) {
             throw ResultAccessException.forbidden(
@@ -1500,11 +1549,18 @@ public class PacsResultServiceImpl implements PacsResultService {
     ) {
         Long ownerId = viewerOwnerId(existingResult, existing);
         return existing != null
+                && !isCompletedResult(existingResult)
                 && ViewerAccessKeyService.canWrite(claims)
                 && claims != null
                 && claims.userId() != null
                 && ownerId != null
                 && claims.userId().equals(ownerId);
+    }
+
+    private static boolean isCompletedResult(PacsResultResponse result) {
+        return result != null
+                && (Boolean.TRUE.equals(result.getCompleted())
+                || RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
     }
 
     private static Long viewerOwnerId(PacsResultResponse result, PacsViewerStateResponse state) {
@@ -1555,6 +1611,92 @@ public class PacsResultServiceImpl implements PacsResultService {
             }
         }
         return null;
+    }
+
+    private void attachPublicViewerUrl(PacsResultContextResponse context) {
+        if (context == null
+                || !hasText(context.getHospitalKey())
+                || (!hasText(context.getWorklistKey()) && !hasText(context.getStudyKey()))) {
+            return;
+        }
+        String viewerBaseUrl = resolvePublicViewerBaseUrl(context);
+        context.setPublicViewerUrl(buildPublicViewerVerificationUrl(
+                viewerBaseUrl,
+                context.getHospitalKey(),
+                context.getWorklistKey(),
+                context.getStudyKey()
+        ));
+    }
+
+    private String resolvePublicViewerBaseUrl(PacsResultContextResponse context) {
+        if (context == null || context.getHospitalId() == null || context.getHospitalId() <= 0L) {
+            return null;
+        }
+        HospitalDicomServerResponse server = null;
+        if (context.getStudyId() != null && context.getStudyId() > 0L) {
+            StudyResponse study = studyMapper.findById(context.getHospitalId(), context.getStudyId());
+            if (study != null && study.getDicomServerId() != null && study.getDicomServerId() > 0L) {
+                List<HospitalDicomServerResponse> servers =
+                        dicomServerMapper.getDicomServerById(study.getDicomServerId(), context.getHospitalId());
+                if (servers != null && !servers.isEmpty()) {
+                    server = servers.get(0);
+                }
+            }
+        }
+        if (server == null && context.getWorklistId() != null && context.getWorklistId() > 0L) {
+            server = dicomServerMapper.findActiveDicomServerByWorklist(context.getHospitalId(), context.getWorklistId());
+        }
+        if (server == null) {
+            server = dicomServerMapper.findPrimaryActiveDicomServerByHospital(context.getHospitalId());
+        }
+        return normalizePublicBaseUrl(server == null ? null : server.getViewerBaseUrl());
+    }
+
+    private String buildPublicViewerVerificationUrl(
+            String viewerBaseUrl,
+            String hospitalKey,
+            String worklistKey,
+            String studyKey
+    ) {
+        if (!hasText(viewerBaseUrl)
+                || !hasText(hospitalKey)
+                || (!hasText(worklistKey) && !hasText(studyKey))) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder(appendPublicPath(viewerBaseUrl, "segmentation"))
+                .append("?publicViewer=1&hospitalKey=")
+                .append(URLEncoder.encode(hospitalKey.trim(), StandardCharsets.UTF_8));
+        if (hasText(worklistKey)) {
+            builder.append("&worklistKey=")
+                    .append(URLEncoder.encode(worklistKey.trim(), StandardCharsets.UTF_8));
+        } else {
+            builder.append("&studyKey=")
+                    .append(URLEncoder.encode(studyKey.trim(), StandardCharsets.UTF_8));
+        }
+        builder.append("&mode=segmentation");
+        return builder.toString();
+    }
+
+    private String appendPublicPath(String baseUrl, String path) {
+        if (!hasText(baseUrl)) {
+            return null;
+        }
+        String cleanBase = normalizePublicBaseUrl(baseUrl);
+        if (!hasText(cleanBase)) {
+            return null;
+        }
+        String cleanPath = path == null ? "" : path.trim();
+        if (!cleanPath.startsWith("/")) {
+            cleanPath = "/" + cleanPath;
+        }
+        return cleanBase + cleanPath.replaceAll("/+$", "");
+    }
+
+    private String normalizePublicBaseUrl(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        return value.trim().replaceAll("/+$", "");
     }
 
     private static boolean hasResultContext(PacsResultContextResponse context, Long requestedModalityId) {

@@ -27,7 +27,9 @@ import com.ut.emrPacs.model.dto.response.authentication.token.AccessTokenRespons
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalModalityServerRouteResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerStudyResponse;
+import com.ut.emrPacs.model.dto.response.pacs.result.PacsResultResponse;
 import com.ut.emrPacs.model.dto.response.pacs.patient.PatientResponse;
+import com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse;
 import com.ut.emrPacs.model.dto.response.pacs.worklist.ViewerInfoResponse;
 import com.ut.emrPacs.model.dto.response.pacs.worklist.WorklistViewerStudyResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerWorklistResponse;
@@ -372,6 +374,141 @@ class WorklistServiceImplWorklistCrudTest {
     }
 
     @Test
+    void renewViewerDicomWebShouldKeepStudyScopedEditAccessAfterRefresh() {
+        Jwt jwt = Jwt.withTokenValue("viewer-token")
+                .header("alg", "none")
+                .claim("clientId", "pacs-viewer-dicomweb")
+                .claim("scope", "pacs.viewer.dicomweb")
+                .claim("hospitalId", 11L)
+                .claim("studyId", 44L)
+                .claim("studyInstanceUid", "1.2.840.113619.102201.1660")
+                .claim("jti", "viewer-jti-1")
+                .expiresAt(Instant.now().plusSeconds(1800))
+                .build();
+        when(jwtDecoder.decode("viewer-token")).thenReturn(jwt);
+        when(revokedTokenMapper.countByJti("viewer-jti-1")).thenReturn(1L);
+        when(viewerAccessKeyService.decode("viewer-access-token")).thenReturn(new ViewerAccessClaims(
+                11L,
+                null,
+                44L,
+                4L,
+                "1.2.840.113619.102201.1660",
+                99L,
+                "admin",
+                ViewerAccessKeyService.ACCESS_EDIT
+        ));
+
+        StudyResponse study = new StudyResponse();
+        study.setHospitalId(11L);
+        study.setId(44L);
+        study.setModalityId(4L);
+        study.setStudyInstanceUid("1.2.840.113619.102201.1660");
+        when(studyMapper.findById(11L, 44L)).thenReturn(study);
+        when(jwtTokenService.issueViewerDicomwebToken(
+                eq(11L),
+                eq(null),
+                eq(44L),
+                eq("1.2.840.113619.102201.1660"),
+                anyLong()
+        )).thenReturn(new AccessTokenResponse("Bearer", "viewer-token-4", null, 600L, "pacs.viewer.dicomweb"));
+        when(viewerAccessKeyService.issue(
+                eq(11L),
+                eq(null),
+                eq(44L),
+                eq(4L),
+                eq("1.2.840.113619.102201.1660"),
+                eq(99L),
+                eq("admin"),
+                eq(ViewerAccessKeyService.ACCESS_EDIT)
+        )).thenReturn("viewer-access-token-2");
+
+        var response = WorklistService.renewViewerDicomWeb(Map.of(
+                "token", "viewer-token",
+                "viewerAccessToken", "viewer-access-token"
+        ));
+
+        assertEquals(HttpStatus.OK.value(), response.getStatusCode().value());
+        assertEquals(Boolean.TRUE, response.getBody().get("success"));
+        assertEquals("viewer-token-4", response.getBody().get("token"));
+        assertEquals("viewer-access-token-2", response.getBody().get("viewerAccessToken"));
+        assertEquals(ViewerAccessKeyService.ACCESS_EDIT, response.getBody().get("viewerAccess"));
+        assertEquals(Boolean.TRUE, response.getBody().get("canEditResult"));
+        assertEquals(Boolean.TRUE, response.getBody().get("canEditViewerState"));
+    }
+
+    @Test
+    void renewViewerDicomWebShouldLockCompletedStudyScopedEditAccessAfterRefresh() {
+        Jwt jwt = Jwt.withTokenValue("viewer-token")
+                .header("alg", "none")
+                .claim("clientId", "pacs-viewer-dicomweb")
+                .claim("scope", "pacs.viewer.dicomweb")
+                .claim("hospitalId", 11L)
+                .claim("studyId", 44L)
+                .claim("studyInstanceUid", "1.2.840.113619.102201.1660")
+                .claim("jti", "viewer-jti-1")
+                .expiresAt(Instant.now().plusSeconds(1800))
+                .build();
+        when(jwtDecoder.decode("viewer-token")).thenReturn(jwt);
+        when(revokedTokenMapper.countByJti("viewer-jti-1")).thenReturn(1L);
+        when(viewerAccessKeyService.decode("viewer-access-token")).thenReturn(new ViewerAccessClaims(
+                11L,
+                null,
+                44L,
+                4L,
+                "1.2.840.113619.102201.1660",
+                99L,
+                "admin",
+                ViewerAccessKeyService.ACCESS_EDIT
+        ));
+
+        StudyResponse study = new StudyResponse();
+        study.setHospitalId(11L);
+        study.setId(44L);
+        study.setModalityId(4L);
+        study.setStudyInstanceUid("1.2.840.113619.102201.1660");
+        when(studyMapper.findById(11L, 44L)).thenReturn(study);
+        PacsResultResponse completed = new PacsResultResponse();
+        completed.setHospitalId(11L);
+        completed.setStudyId(44L);
+        completed.setModalityId(4L);
+        completed.setStudyInstanceUid("1.2.840.113619.102201.1660");
+        completed.setCreatedBy(99L);
+        completed.setCompleted(Boolean.TRUE);
+        completed.setStatus("COMPLETED");
+        when(pacsResultMapper.findByStudyId(11L, 4L, 44L)).thenReturn(completed);
+        when(jwtTokenService.issueViewerDicomwebToken(
+                eq(11L),
+                eq(null),
+                eq(44L),
+                eq("1.2.840.113619.102201.1660"),
+                anyLong()
+        )).thenReturn(new AccessTokenResponse("Bearer", "viewer-token-4", null, 600L, "pacs.viewer.dicomweb"));
+        when(viewerAccessKeyService.issue(
+                eq(11L),
+                eq(null),
+                eq(44L),
+                eq(4L),
+                eq("1.2.840.113619.102201.1660"),
+                eq(99L),
+                eq("admin"),
+                eq(ViewerAccessKeyService.ACCESS_EDIT)
+        )).thenReturn("viewer-access-token-2");
+
+        var response = WorklistService.renewViewerDicomWeb(Map.of(
+                "token", "viewer-token",
+                "viewerAccessToken", "viewer-access-token"
+        ));
+
+        assertEquals(HttpStatus.OK.value(), response.getStatusCode().value());
+        assertEquals(Boolean.TRUE, response.getBody().get("success"));
+        assertEquals("viewer-token-4", response.getBody().get("token"));
+        assertEquals("viewer-access-token-2", response.getBody().get("viewerAccessToken"));
+        assertEquals(ViewerAccessKeyService.ACCESS_EDIT, response.getBody().get("viewerAccess"));
+        assertEquals(Boolean.FALSE, response.getBody().get("canEditResult"));
+        assertEquals(Boolean.FALSE, response.getBody().get("canEditViewerState"));
+    }
+
+    @Test
     void profileViewerDicomWebShouldDenyViewerBearerToken() {
         var response = WorklistService.profileViewerDicomWeb(Map.of("token-value", "viewer-token"));
 
@@ -521,6 +658,93 @@ class WorklistServiceImplWorklistCrudTest {
         assertTrue(viewerInfo.getViewerUrl().contains("canEditResult=0"));
         assertTrue(viewerInfo.getViewerUrl().contains("canEditViewerState=0"));
         verify(publicViewerAttemptGuard).clear(hospitalKey, worklistKey);
+    }
+
+    @Test
+    void publicViewerAuthorizesMatchingPhoneForDirectStudyWithReadOnlyScopedTokens() throws Exception {
+        String hospitalKey = "d7fa6fa8-5043-4eac-ae5f-1cccf4e6a6bd";
+        String studyKey = "5509cf78-0aa8-4a79-a32c-58e6d47d40f5";
+        when(publicEntityKeyResolver.resolve(PublicEntityKeyResolver.Entity.HOSPITAL, hospitalKey, null))
+                .thenReturn(11L);
+        when(publicEntityKeyResolver.resolve(PublicEntityKeyResolver.Entity.STUDY, studyKey, null))
+                .thenReturn(44L);
+
+        StudyResponse study = new StudyResponse();
+        study.setId(44L);
+        study.setPublicKey(studyKey);
+        study.setHospitalId(11L);
+        study.setHospitalPublicKey(hospitalKey);
+        study.setPatientId(501L);
+        study.setPatientPublicKey("patient-public-key");
+        study.setPatientName("HEL SOK");
+        study.setMrn("26-H001-P0000003");
+        study.setPatientHn("23-014677");
+        study.setModalityId(5L);
+        study.setModalityPublicKey("modality-public-key");
+        study.setModality("CT");
+        study.setModalityName("Computed Tomography");
+        study.setStatus("IMAGE_RECEIVED");
+        study.setStudyInstanceUid("1.2.840.113619.102201.44");
+        study.setDicomServerStudyId("dicom-server-study-44");
+        study.setInstances(146);
+        when(studyMapper.findById(11L, 44L)).thenReturn(study);
+
+        PatientResponse patient = new PatientResponse();
+        patient.setPhoneNumber("+855 12 345 678");
+        when(patientMapper.findById(11L, 501L)).thenReturn(patient);
+
+        HospitalDicomServerResponse targetServer = new HospitalDicomServerResponse();
+        targetServer.setId(4L);
+        targetServer.setBaseUrl("http://localhost:8042");
+        targetServer.setViewerBaseUrl("http://localhost:3005");
+        when(dicomServerMapper.findPrimaryActiveDicomServerByHospital(11L)).thenReturn(targetServer);
+
+        when(jwtTokenService.issueViewerDicomwebToken(
+                eq(11L),
+                eq(null),
+                eq(44L),
+                eq("1.2.840.113619.102201.44"),
+                anyLong()
+        )).thenReturn(new AccessTokenResponse(
+                "Bearer",
+                "public-study-dicom-token",
+                null,
+                1800L,
+                "pacs.viewer.dicomweb"
+        ));
+        when(viewerAccessKeyService.issue(
+                eq(11L),
+                eq(null),
+                eq(44L),
+                eq(5L),
+                eq("1.2.840.113619.102201.44"),
+                eq(null),
+                eq(null),
+                eq(ViewerAccessKeyService.ACCESS_PUBLIC)
+        )).thenReturn("public-study-viewer-token");
+
+        PublicViewerAuthorizeRequest request = new PublicViewerAuthorizeRequest();
+        request.setHospitalKey(hospitalKey);
+        request.setStudyKey(studyKey);
+        request.setPhoneNumber("855-12-345-678");
+        request.setMode("segmentation");
+
+        var response = WorklistService.authorizePublicViewer(request, new MockHttpServletRequest());
+
+        assertTrue(response.isSuccess());
+        ViewerInfoResponse viewerInfo = (ViewerInfoResponse) response.getBody().getData().get(0);
+        assertEquals(ViewerAccessKeyService.ACCESS_PUBLIC, viewerInfo.getViewerAccess());
+        assertEquals(Boolean.FALSE, viewerInfo.getCanEditResult());
+        assertEquals(Boolean.FALSE, viewerInfo.getCanEditViewerState());
+        assertEquals("public-study-dicom-token", viewerInfo.getDicomwebAuthToken());
+        assertEquals("public-study-viewer-token", viewerInfo.getViewerApiKey());
+        assertTrue(viewerInfo.getPublicViewerUrl().contains("studyKey=" + studyKey));
+        assertTrue(viewerInfo.getViewerUrl().contains("#token=public-study-dicom-token"));
+        assertTrue(viewerInfo.getViewerUrl().contains("viewerAccessToken=public-study-viewer-token"));
+        assertTrue(viewerInfo.getViewerUrl().contains("canEditResult=0"));
+        assertTrue(viewerInfo.getViewerUrl().contains("canEditViewerState=0"));
+        verify(publicViewerAttemptGuard).clear(hospitalKey, studyKey);
+        verify(WorklistMapper, never()).findWorklistById(anyLong(), anyLong());
     }
 
     @Test

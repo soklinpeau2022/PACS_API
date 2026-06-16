@@ -15,6 +15,7 @@ public class StudyResponse {
     private String hospitalPublicKey;
     @JsonIgnore
     private Long patientId;
+    private String patientPublicKey;
     private String patientName;
     private String mrn;
     private String patientHn;

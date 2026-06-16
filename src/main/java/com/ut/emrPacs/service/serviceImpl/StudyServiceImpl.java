@@ -8,6 +8,7 @@ import com.ut.emrPacs.helper.pagination.PaginationHelper;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver.Entity;
 import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
+import com.ut.emrPacs.mapper.pacs.PacsResultMapper;
 import com.ut.emrPacs.mapper.pacs.StudyMapper;
 import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.MessageService;
@@ -15,7 +16,10 @@ import com.ut.emrPacs.model.base.Pagination;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import com.ut.emrPacs.model.base.filter.StudyListFilter;
+import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateRequest;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
+import com.ut.emrPacs.model.dto.response.pacs.result.PacsResultResponse;
+import com.ut.emrPacs.model.dto.response.pacs.result.PacsViewerStateResponse;
 import com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse;
 import com.ut.emrPacs.model.dto.response.pacs.worklist.ViewerInfoResponse;
 import com.ut.emrPacs.service.service.ActivityLogService;
@@ -35,11 +39,15 @@ import java.util.Locale;
 
 @Service
 public class StudyServiceImpl implements StudyService {
+    private static final String DEFAULT_VIEWER_STATE_TYPE = "OHIF_VIEWER_STATE";
+    private static final String RESULT_STATUS_COMPLETED = "COMPLETED";
 
     @Autowired
     private StudyMapper studyMapper;
     @Autowired
     private DicomServerMapper dicomServerMapper;
+    @Autowired(required = false)
+    private PacsResultMapper pacsResultMapper;
     @Autowired(required = false)
     private ViewerAccessKeyService viewerAccessKeyService;
     @Autowired(required = false)
@@ -131,9 +139,8 @@ public class StudyServiceImpl implements StudyService {
             String viewerAccess = ViewerAccessKeyService.normalizeAccessMode(
                     hasText(requestedViewerAccess) ? requestedViewerAccess : ViewerAccessKeyService.ACCESS_READ
             );
-            if (ViewerAccessKeyService.ACCESS_EDIT.equals(viewerAccess)) {
-                viewerAccess = ViewerAccessKeyService.ACCESS_READ;
-            }
+            ViewerEditCapabilities editCapabilities =
+                    resolveStudyViewerEditCapabilities(study, currentUserId(), viewerAccess);
             String viewerApiKey = issueViewerApiKey(study, viewerAccess);
             String dicomwebAuthToken = issueViewerDicomwebToken(study);
 
@@ -143,6 +150,8 @@ public class StudyServiceImpl implements StudyService {
             response.setPublicKey(study.getPublicKey());
             response.setHospitalPublicKey(study.getHospitalPublicKey());
             response.setStudyPublicKey(study.getPublicKey());
+            response.setModalityPublicKey(study.getModalityPublicKey());
+            response.setPatientPublicKey(study.getPatientPublicKey());
             response.setStatus(study.getStatus());
             response.setDicomServerStudyId(study.getDicomServerStudyId());
             response.setDicomServerPatientId(study.getDicomServerPatientId());
@@ -150,9 +159,11 @@ public class StudyServiceImpl implements StudyService {
             response.setStudyInstanceUid(study.getStudyInstanceUid());
             response.setAccessionNumber(study.getAccessionNumber());
             response.setPatientUid(study.getMrn());
+            response.setPatientHn(study.getPatientHn());
             response.setPatientName(study.getPatientName());
             response.setModalityName(study.getModality());
             response.setStudyDescription(study.getStudyDescription());
+            response.setInstitutionName(study.getInstitutionName());
             response.setImageReceivedAt(study.getImageReceivedAt());
             response.setImageInstanceCount(study.getInstances());
             response.setTotalInstances(study.getInstances());
@@ -163,12 +174,18 @@ public class StudyServiceImpl implements StudyService {
             response.setDicomwebAuthToken(dicomwebAuthToken);
             response.setViewerApiKey(viewerApiKey);
             response.setViewerAccess(viewerAccess);
-            response.setCanEditResult(Boolean.FALSE);
-            response.setCanEditViewerState(Boolean.FALSE);
+            response.setCanEditResult(editCapabilities.canEditResult());
+            response.setCanEditViewerState(editCapabilities.canEditViewerState());
             response.setDicomServerUiBaseUrl(resolvePublicDicomServerUiBaseUrl(server));
             response.setViewerUrl(buildOhifViewerUrl(study.getStudyInstanceUid(), mode, viewerBaseUrl, dicomwebBaseUrl, response, dicomwebAuthToken, viewerApiKey));
             response.setBasicViewerUrl(buildOhifViewerUrl(study.getStudyInstanceUid(), "basic", viewerBaseUrl, dicomwebBaseUrl, response, dicomwebAuthToken, viewerApiKey));
             response.setSegmentationViewerUrl(buildOhifViewerUrl(study.getStudyInstanceUid(), "segmentation", viewerBaseUrl, dicomwebBaseUrl, response, dicomwebAuthToken, viewerApiKey));
+            response.setPublicViewerUrl(buildPublicViewerVerificationUrl(
+                    viewerBaseUrl,
+                    mode,
+                    study.getHospitalPublicKey(),
+                    study.getPublicKey()
+            ));
 
             LocalTime endDuration = LocalTime.now();
             activityLogService.insert(ApiConstants.Study.BASE_PATH + ApiConstants.Study.VIEWER_INFO_PATH, null, null, "Study", "Study (Viewer Info)", "View", 1, "Success", startDuration, endDuration, httpServletRequest);
@@ -214,7 +231,7 @@ public class StudyServiceImpl implements StudyService {
                 study.getHospitalId(),
                 null,
                 study.getId(),
-                null,
+                study.getModalityId(),
                 study.getStudyInstanceUid(),
                 currentUserId(),
                 currentUsername(),
@@ -234,6 +251,87 @@ public class StudyServiceImpl implements StudyService {
                 viewerDicomwebTokenMs
         );
         return tokenResponse == null ? null : tokenResponse.getAccessToken();
+    }
+
+    private ViewerEditCapabilities resolveStudyViewerEditCapabilities(
+            StudyResponse study,
+            Long viewerUserId,
+            String viewerAccess
+    ) {
+        if (study == null
+                || viewerUserId == null
+                || viewerUserId <= 0L
+                || !ViewerAccessKeyService.ACCESS_EDIT.equals(viewerAccess)
+                || pacsResultMapper == null) {
+            return ViewerEditCapabilities.READ_ONLY;
+        }
+        try {
+            PacsResultResponse existingResult = findExistingStudyResult(study);
+            if (isCompletedResult(existingResult)) {
+                return ViewerEditCapabilities.READ_ONLY;
+            }
+            PacsViewerStateResponse existingState = findExistingStudyViewerState(study);
+            Long ownerId = viewerOwnerId(existingResult, existingState);
+            boolean canEdit = ownerId == null || viewerUserId.equals(ownerId);
+            return new ViewerEditCapabilities(canEdit, canEdit);
+        } catch (Exception error) {
+            return ViewerEditCapabilities.READ_ONLY;
+        }
+    }
+
+    private PacsResultResponse findExistingStudyResult(StudyResponse study) {
+        if (study == null
+                || study.getHospitalId() == null
+                || study.getHospitalId() <= 0L
+                || study.getModalityId() == null
+                || study.getModalityId() <= 0L) {
+            return null;
+        }
+        if (study.getId() != null && study.getId() > 0L) {
+            return pacsResultMapper.findByStudyId(
+                    study.getHospitalId(),
+                    study.getModalityId(),
+                    study.getId()
+            );
+        }
+        if (hasText(study.getStudyInstanceUid())) {
+            return pacsResultMapper.findByStudyInstanceUid(
+                    study.getHospitalId(),
+                    study.getModalityId(),
+                    study.getStudyInstanceUid()
+            );
+        }
+        return null;
+    }
+
+    private PacsViewerStateResponse findExistingStudyViewerState(StudyResponse study) {
+        if (study == null || study.getHospitalId() == null || study.getHospitalId() <= 0L) {
+            return null;
+        }
+        PacsViewerStateRequest request = new PacsViewerStateRequest();
+        request.setHospitalId(study.getHospitalId());
+        request.setModalityId(study.getModalityId());
+        request.setStudyId(study.getId());
+        request.setStudyInstanceUid(study.getStudyInstanceUid());
+        request.setAccessionNumber(study.getAccessionNumber());
+        request.setStateType(DEFAULT_VIEWER_STATE_TYPE);
+        return pacsResultMapper.findViewerState(request);
+    }
+
+    private static boolean isCompletedResult(PacsResultResponse result) {
+        return result != null
+                && (Boolean.TRUE.equals(result.getCompleted())
+                || RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
+    }
+
+    private static Long viewerOwnerId(PacsResultResponse result, PacsViewerStateResponse state) {
+        Long resultOwner = positiveUserId(result == null ? null : result.getCreatedBy());
+        Long stateOwner = positiveUserId(state == null ? null : state.getCreatedBy());
+        return resultOwner != null ? resultOwner : stateOwner;
+    }
+
+    private static Long positiveUserId(Long userId) {
+        return userId != null && userId > 0L ? userId : null;
     }
 
     private static Long currentUserId() {
@@ -307,12 +405,34 @@ public class StudyServiceImpl implements StudyService {
         appendViewerFragmentParam(fragment, "token", dicomwebAuthToken);
         appendViewerFragmentParam(fragment, "viewerAccessToken", viewerApiKey);
         appendViewerFragmentParam(fragment, "viewerAccess", context == null ? ViewerAccessKeyService.ACCESS_READ : context.getViewerAccess());
-        appendViewerFragmentParam(fragment, "canEditResult", "0");
-        appendViewerFragmentParam(fragment, "canEditViewerState", "0");
+        appendViewerFragmentParam(fragment, "canEditResult", Boolean.TRUE.equals(context == null ? null : context.getCanEditResult()) ? "1" : "0");
+        appendViewerFragmentParam(fragment, "canEditViewerState", Boolean.TRUE.equals(context == null ? null : context.getCanEditViewerState()) ? "1" : "0");
         if (!fragment.isEmpty()) {
             builder.append("#").append(fragment);
         }
         return builder.toString();
+    }
+
+    private String buildPublicViewerVerificationUrl(
+            String viewerBaseUrl,
+            String mode,
+            String hospitalKey,
+            String studyKey
+    ) {
+        if (!hasText(viewerBaseUrl) || !hasText(hospitalKey) || !hasText(studyKey)) {
+            return null;
+        }
+        String viewerRouteUrl = appendPublicPath(viewerBaseUrl, normalizeViewerRoute(mode));
+        if (!hasText(viewerRouteUrl)) {
+            return null;
+        }
+        return viewerRouteUrl
+                + "?publicViewer=1&hospitalKey="
+                + URLEncoder.encode(hospitalKey.trim(), StandardCharsets.UTF_8)
+                + "&studyKey="
+                + URLEncoder.encode(studyKey.trim(), StandardCharsets.UTF_8)
+                + "&mode="
+                + URLEncoder.encode(firstNonBlank(mode, "segmentation"), StandardCharsets.UTF_8);
     }
 
     private void appendViewerFragmentParam(StringBuilder builder, String name, Object value) {
@@ -377,6 +497,10 @@ public class StudyServiceImpl implements StudyService {
 
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    private record ViewerEditCapabilities(boolean canEditResult, boolean canEditViewerState) {
+        private static final ViewerEditCapabilities READ_ONLY = new ViewerEditCapabilities(false, false);
     }
 
 }

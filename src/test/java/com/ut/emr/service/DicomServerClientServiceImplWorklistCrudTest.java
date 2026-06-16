@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.util.Base64;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.client.ExpectedCount.once;
@@ -119,6 +120,31 @@ class DicomServerClientServiceImplWorklistCrudTest {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         ((StreamingResponseBody) response.getBody()).writeTo(outputStream);
         assertEquals(dicomJson, outputStream.toString(StandardCharsets.UTF_8));
+        server.verify();
+    }
+
+    @Test
+    void proxyDicomWebShouldReturnActualContentLengthForMultipartFrame() throws Exception {
+        byte[] frame = "frame-bytes".getBytes(StandardCharsets.UTF_8);
+        MediaType frameType = MediaType.parseMediaType("multipart/related; type=\"application/octet-stream; transfer-syntax=1.2.840.10008.1.2.1\"; boundary=abc");
+        server.expect(once(), requestTo("http://localhost:8042/dicom-web/studies/1/series/2/instances/3/frames/1"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header(HttpHeaders.AUTHORIZATION, basicAuth("dicom_server", "dicom_server")))
+                .andRespond(withSuccess(frame, frameType));
+
+        var response = dicomServerClientService.proxyDicomWeb(
+                "http://localhost:8042/dicom-web",
+                "dicom_server",
+                "dicom_server",
+                "/studies/1/series/2/instances/3/frames/1",
+                "multipart/related; type=\"application/octet-stream\""
+        );
+
+        assertEquals(frameType, response.getHeaders().getContentType());
+        assertEquals(frame.length, response.getHeaders().getContentLength());
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        ((StreamingResponseBody) response.getBody()).writeTo(outputStream);
+        assertArrayEquals(frame, outputStream.toByteArray());
         server.verify();
     }
 

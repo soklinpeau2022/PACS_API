@@ -30,7 +30,7 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
     public GlobalRequestSizeLimitFilter(
             @Value("${app.security.max-request-bytes:12582912}") long maxRequestBytes,
             @Value("${app.security.viewer-state.max-request-bytes:12582912}") long viewerStateMaxRequestBytes,
-            @Value("${app.security.dicom-upload.max-request-bytes:268435456}") long dicomUploadMaxRequestBytes,
+            @Value("${app.security.dicom-upload.max-transport-request-bytes:4362076160}") long dicomUploadMaxRequestBytes,
             @Value("${app.security.dicom-upload.path:/dicom-uploads}") String dicomUploadPath
     ) {
         this.maxRequestBytes = maxRequestBytes;

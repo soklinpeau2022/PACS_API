@@ -33,6 +33,7 @@ import com.ut.emrPacs.model.dto.response.systemSettings.modality.ModalityRespons
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.DicomServerClientService;
 import com.ut.emrPacs.service.service.DicomUploadService;
+import com.ut.emrPacs.service.service.RealtimeNotificationService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -99,6 +100,8 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private ActivityLogService activityLogService;
     @Autowired(required = false)
     private PlatformTransactionManager transactionManager;
+    @Autowired(required = false)
+    private RealtimeNotificationService realtimeNotificationService;
 
     @Value("${spring.servlet.multipart.location:${HOSPITAL_IMAGE_ROOT_PATH:/var/ut-image}/tmp/dicom-upload}")
     private String multipartLocation;
@@ -453,6 +456,9 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         StudyResponse savedStudy = studyMapper.findById(context.hospitalId, studyDbId);
         if (savedStudy == null) {
             throw new IllegalStateException("Uploaded DICOM Study was not available in Study Archive after save.");
+        }
+        if (realtimeNotificationService != null) {
+            realtimeNotificationService.publishImageReceived(savedStudy, "Images were uploaded and saved to the Study Archive.");
         }
 
         DicomUploadStudySummary summary = context.summariesByStudyUid.computeIfAbsent(studyInstanceUid, ignored -> new DicomUploadStudySummary());

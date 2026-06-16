@@ -118,7 +118,7 @@ public class UserProfileServiceImpl implements UserProfileService {
                     return ResponseMessageUtils.makeResponse(false, messageService.message("Passwords do not match.", false));
                 }
 
-                String policyError = PasswordPolicy.validate(newPassword);
+                String policyError = PasswordPolicy.validatePasswordChange(newPassword);
                 if (policyError != null) {
                     return ResponseMessageUtils.makeResponse(false, messageService.message(policyError, false));
                 }
@@ -164,4 +164,3 @@ public class UserProfileServiceImpl implements UserProfileService {
         }
     }
 }
-

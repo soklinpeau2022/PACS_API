@@ -18,6 +18,7 @@ import com.ut.emrPacs.model.dto.response.pacs.worklist.WorklistDetailRow;
 import com.ut.emrPacs.model.enums.WorklistStatus;
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.DicomServerClientService;
+import com.ut.emrPacs.service.service.RealtimeNotificationService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -63,6 +64,8 @@ class WorklistServiceImplReceivedStudyTest {
     private DicomServerCallbackLogMapper dicomServerCallbackLogMapper;
     @Mock
     private DicomServerClientService dicomServerClientService;
+    @Mock
+    private RealtimeNotificationService realtimeNotificationService;
 
     private WorklistServiceImpl buildService() {
         WorklistServiceImpl WorklistService = new WorklistServiceImpl();
@@ -75,6 +78,7 @@ class WorklistServiceImplReceivedStudyTest {
         ReflectionTestUtils.setField(WorklistService, "dicomServerMapper", dicomServerMapper);
         ReflectionTestUtils.setField(WorklistService, "dicomServerCallbackLogMapper", dicomServerCallbackLogMapper);
         ReflectionTestUtils.setField(WorklistService, "dicomServerClientService", dicomServerClientService);
+        ReflectionTestUtils.setField(WorklistService, "realtimeNotificationService", realtimeNotificationService);
         return WorklistService;
     }
 
@@ -195,6 +199,7 @@ class WorklistServiceImplReceivedStudyTest {
                 any(),
                 anyString()
         );
+        verify(realtimeNotificationService).publishImageReceived(any(WorklistDetailRow.class), eq(501L), any(), anyString());
     }
 
     @Test
@@ -231,6 +236,7 @@ class WorklistServiceImplReceivedStudyTest {
 
         assertFalse(response.isSuccess());
         verify(WorklistMapper, never()).updateWorklistReceivedFromCallbackById(any(), any(), any(), any(), any(), any());
+        verify(realtimeNotificationService, never()).publishImageReceived(any(WorklistDetailRow.class), any(), any(), anyString());
         verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(dicomServerCallbackLogMapper).insertCallbackLog(anyString(), eq("DX-KSFH-0001"), eq("dicom_server_empty-study"), anyString(), anyString(), anyString(), eq(false), eq("DicomServer study has no image instances yet."), any(), anyString());
     }

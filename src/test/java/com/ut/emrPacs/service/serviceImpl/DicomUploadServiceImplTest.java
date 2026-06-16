@@ -22,6 +22,7 @@ import com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse;
 import com.ut.emrPacs.model.dto.response.systemSettings.modality.ModalityResponse;
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.DicomServerClientService;
+import com.ut.emrPacs.service.service.RealtimeNotificationService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -72,6 +73,8 @@ class DicomUploadServiceImplTest {
     private PublicEntityKeyResolver publicEntityKeyResolver;
     @Mock
     private ActivityLogService activityLogService;
+    @Mock
+    private RealtimeNotificationService realtimeNotificationService;
 
     private DicomUploadServiceImpl service;
 
@@ -87,6 +90,7 @@ class DicomUploadServiceImplTest {
         ReflectionTestUtils.setField(service, "publicEntityKeyResolver", publicEntityKeyResolver);
         ReflectionTestUtils.setField(service, "messageService", new MessageService());
         ReflectionTestUtils.setField(service, "activityLogService", activityLogService);
+        ReflectionTestUtils.setField(service, "realtimeNotificationService", realtimeNotificationService);
         ReflectionTestUtils.setField(service, "maxDicomUploadRequestBytes", 4L * 1024L * 1024L * 1024L);
         ReflectionTestUtils.setField(service, "maxZipEntryBytes", 4L * 1024L * 1024L * 1024L);
         ReflectionTestUtils.setField(service, "dicomUploadTempDir", System.getProperty("java.io.tmpdir"));
@@ -142,6 +146,7 @@ class DicomUploadServiceImplTest {
         assertEquals("PID-HEL", body.getStudies().get(0).getPatientHn());
         assertEquals("TSNH HOSPITAL", body.getStudies().get(0).getInstitutionName());
         verifyNoInteractions(worklistMapper);
+        verify(realtimeNotificationService).publishImageReceived(any(StudyResponse.class), any());
     }
 
     @Test
@@ -251,7 +256,9 @@ class DicomUploadServiceImplTest {
     private static StudyResponse savedStudy() {
         StudyResponse response = new StudyResponse();
         response.setId(77L);
+        response.setHospitalId(11L);
         response.setPublicKey("study-key");
+        response.setPatientName("HEL SOK");
         response.setStudyInstanceUid("1.2.3.4");
         response.setStudyDescription("CT CHEST");
         response.setInstitutionName("TSNH HOSPITAL");

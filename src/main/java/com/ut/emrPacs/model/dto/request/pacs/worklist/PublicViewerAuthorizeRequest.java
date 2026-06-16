@@ -10,9 +10,11 @@ public class PublicViewerAuthorizeRequest {
     @Size(max = 36)
     private String hospitalKey;
 
-    @NotBlank
     @Size(max = 36)
     private String worklistKey;
+
+    @Size(max = 36)
+    private String studyKey;
 
     @NotBlank
     @Size(min = 7, max = 32)

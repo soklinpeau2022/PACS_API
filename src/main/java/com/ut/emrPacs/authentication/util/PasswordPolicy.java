@@ -3,7 +3,7 @@ package com.ut.emrPacs.authentication.util;
 import java.util.Locale;
 
 /**
- * Central password policy for all password set/reset flows.
+ * Central password policy for password set/reset flows.
  *
  * <p>Security goals:</p>
  * <ul>
@@ -71,5 +71,18 @@ public final class PasswordPolicy {
 
         return null;
     }
-}
 
+    /**
+     * Relaxed validation for password change/reset flows where users may choose
+     * their own format. Keeps only required and size safeguards.
+     */
+    public static String validatePasswordChange(String password) {
+        if (password == null || password.isEmpty()) {
+            return "Password is required.";
+        }
+        if (password.length() > MAX_LENGTH) {
+            return "Password is too long.";
+        }
+        return null;
+    }
+}
