@@ -1,7 +1,6 @@
 package com.ut.emrPacs.config;
 
 import com.ut.emrPacs.service.service.ActivityLogService;
-import com.ut.emrPacs.model.base.ResponseMessage;
 import jakarta.servlet.http.HttpServletRequest;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
@@ -32,14 +31,7 @@ public class ServiceImplErrorActivityLogAspect {
     public Object logUnhandledServiceErrors(ProceedingJoinPoint joinPoint) throws Throwable {
         LocalTime startDuration = LocalTime.now();
         try {
-            Object result = joinPoint.proceed();
-            if (result instanceof ResponseMessage<?> response && !response.isSuccess()) {
-                LocalTime endDuration = LocalTime.now();
-                if (!ErrorReportingAttributes.isErrorActivityLogged(resolveHttpRequest())) {
-                    safeInsertActivityLog(joinPoint, null, "Error", startDuration, endDuration);
-                }
-            }
-            return result;
+            return joinPoint.proceed();
         } catch (Throwable error) {
             LocalTime endDuration = LocalTime.now();
             if (!ErrorReportingAttributes.isErrorActivityLogged(resolveHttpRequest())) {

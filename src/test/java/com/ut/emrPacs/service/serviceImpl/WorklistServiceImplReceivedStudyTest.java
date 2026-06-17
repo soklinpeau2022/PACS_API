@@ -31,6 +31,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 
@@ -102,6 +103,7 @@ class WorklistServiceImplReceivedStudyTest {
         assertEquals(401, response.getHeader().getStatusCode());
         verify(WorklistMapper, never()).findWorklistByAccessionNumber(anyString());
         verify(dicomServerCallbackLogMapper).insertCallbackLog(anyString(), anyString(), anyString(), anyString(), anyString(), anyString(), eq(false), anyString(), any(), anyString());
+        verifyNoSystemErrorActivity();
     }
 
     @Test
@@ -239,6 +241,7 @@ class WorklistServiceImplReceivedStudyTest {
         verify(realtimeNotificationService, never()).publishImageReceived(any(WorklistDetailRow.class), any(), any(), anyString());
         verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(dicomServerCallbackLogMapper).insertCallbackLog(anyString(), eq("DX-KSFH-0001"), eq("dicom_server_empty-study"), anyString(), anyString(), anyString(), eq(false), eq("DicomServer study has no image instances yet."), any(), anyString());
+        verifyNoSystemErrorActivity();
     }
 
     @Test
@@ -476,6 +479,7 @@ class WorklistServiceImplReceivedStudyTest {
         verify(WorklistMapper, never()).updateWorklistReceivedFromCallbackById(any(), any(), any(), any(), any(), any());
         verify(studyMapper, never()).upsertFromWorklist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(dicomServerCallbackLogMapper).insertCallbackLog(anyString(), eq("DX-KSFH-0001"), anyString(), anyString(), anyString(), anyString(), eq(false), anyString(), any(), anyString());
+        verifyNoSystemErrorActivity();
     }
 
     @Test
@@ -616,6 +620,23 @@ class WorklistServiceImplReceivedStudyTest {
         verify(dicomServerCallbackLogMapper).insertCallbackLog(
                 anyString(), eq("WRONG-ACCESSION"), eq("mismatch-study"), eq("callback-patient"),
                 eq("[\"callback-series\"]"), anyString(), eq(false), eq("Callback accession does not match this Worklist."), any(), anyString()
+        );
+        verifyNoSystemErrorActivity();
+    }
+
+    private void verifyNoSystemErrorActivity() throws Exception {
+        verify(activityLogService, never()).insert(
+                anyString(),
+                any(),
+                any(),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq(WorklistConstants.LOG_STATUS_ERROR),
+                anyString(),
+                any(LocalTime.class),
+                any(LocalTime.class),
+                any(HttpServletRequest.class)
         );
     }
 

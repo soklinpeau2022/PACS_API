@@ -903,7 +903,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             if (!isAuthorizedDicomServerCallback(httpServletRequest)) {
                 insertDicomServerCallbackLog(request, false, "Unauthorized DICOM server callback.", null, receivedAtIso);
                 LocalTime endDuration = LocalTime.now();
-                activityLogService.insert(ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH, null, "Unauthorized DICOM server callback.", WorklistConstants.MODULE_CODE, WorklistConstants.LABEL_RECEIVED_STUDY, WorklistConstants.ACTION_RECEIVED_STUDY, WorklistConstants.LOG_STATUS_ERROR, WorklistConstants.RESULT_ERROR, startDuration, endDuration, httpServletRequest);
+                activityLogService.insert(ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH, null, "Unauthorized DICOM server callback.", WorklistConstants.MODULE_CODE, WorklistConstants.LABEL_RECEIVED_STUDY, WorklistConstants.ACTION_RECEIVED_STUDY, WorklistConstants.LOG_STATUS_SUCCESS, WorklistConstants.RESULT_REJECTED, startDuration, endDuration, httpServletRequest);
                 return ResponseMessageUtils.makeResponse(false, 401, "UNAUTHORIZED", "Unauthorized");
             }
 
@@ -934,7 +934,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 String message = "Callback DICOM server does not match this Worklist route.";
                 insertDicomServerCallbackLog(request, false, message, null, receivedAtIso);
                 LocalTime endDuration = LocalTime.now();
-                activityLogService.insert(ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH, null, message, WorklistConstants.MODULE_CODE, WorklistConstants.LABEL_RECEIVED_STUDY, WorklistConstants.ACTION_RECEIVED_STUDY, WorklistConstants.LOG_STATUS_ERROR, WorklistConstants.RESULT_ERROR, startDuration, endDuration, httpServletRequest);
+                activityLogService.insert(ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH, null, message, WorklistConstants.MODULE_CODE, WorklistConstants.LABEL_RECEIVED_STUDY, WorklistConstants.ACTION_RECEIVED_STUDY, WorklistConstants.LOG_STATUS_SUCCESS, WorklistConstants.RESULT_REJECTED, startDuration, endDuration, httpServletRequest);
                 return ResponseMessageUtils.makeResponse(false, 403, "FORBIDDEN", "Forbidden");
             }
 
@@ -959,7 +959,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 String message = validationError.getMessage();
                 insertDicomServerCallbackLog(request, false, message, null, receivedAtIso);
                 LocalTime endDuration = LocalTime.now();
-                activityLogService.insert(ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH, null, message, WorklistConstants.MODULE_CODE, WorklistConstants.LABEL_RECEIVED_STUDY, WorklistConstants.ACTION_RECEIVED_STUDY, WorklistConstants.LOG_STATUS_ERROR, WorklistConstants.RESULT_ERROR, startDuration, endDuration, httpServletRequest);
+                activityLogService.insert(ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH, null, message, WorklistConstants.MODULE_CODE, WorklistConstants.LABEL_RECEIVED_STUDY, WorklistConstants.ACTION_RECEIVED_STUDY, WorklistConstants.LOG_STATUS_SUCCESS, WorklistConstants.RESULT_REJECTED, startDuration, endDuration, httpServletRequest);
                 return ResponseMessageUtils.makeResponse(false, messageService.message(message, false));
             }
             LinkedStudyContext linkedStudy = buildCallbackLinkedStudyContext(Worklist, request, targetServer, verifiedStudy, receivedAtIso);

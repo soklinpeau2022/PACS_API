@@ -26,6 +26,7 @@ public final class WorklistConstants {
 
     /** Activity-log result labels and status codes (codebase convention: 1 = success, 2 = error). */
     public static final String RESULT_SUCCESS = "Success";
+    public static final String RESULT_REJECTED = "Rejected";
     public static final String RESULT_ERROR = "Error";
     public static final int LOG_STATUS_SUCCESS = 1;
     public static final int LOG_STATUS_ERROR = 2;
