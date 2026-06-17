@@ -778,6 +778,8 @@
             COUNT(DISTINCT route_summary.id)::bigint AS routeCount,
             COUNT(DISTINCT route_summary.modality_id)::bigint AS modalityCount,
             CASE WHEN cfg.dicom_server_id IS NULL THEN 0::bigint ELSE 1::bigint END AS dicomServerCount,
+            CASE WHEN cfg.package_built_at IS NOT NULL THEN TRUE ELSE FALSE END AS deploymentLocked,
+            TO_CHAR(cfg.package_built_at, 'YYYY-MM-DD HH24:MI:SS') AS packageBuiltAt,
             STRING_AGG(DISTINCT route_summary.modality_id::text, ',' ORDER BY route_summary.modality_id::text) AS modalityIdCsv,
             STRING_AGG(DISTINCT modality_summary.public_id::text, ',' ORDER BY modality_summary.public_id::text) AS modalityPublicKeyCsv,
             STRING_AGG(DISTINCT modality_summary.name, '~|~' ORDER BY modality_summary.name) AS modalityNameCsv,
@@ -803,7 +805,7 @@
         LEFT JOIN modalities modality_summary ON modality_summary.id = route_summary.modality_id
         LEFT JOIN hospital_dicom_machines machine_summary ON machine_summary.id = route_summary.machine_id
         <include refid="ROUTING_CONFIG_WHERE"/>
-        GROUP BY cfg.id, cfg.hospital_id, h.name, h.public_id, cfg.dicom_server_id, cfg_server.id, cfg_server.name, cfg_server.ssl_enabled, cfg_server.ip_address, cfg_server.port, cfg_server.ae_title, cfg.is_active, cfg.created_at, cfg.modified_at
+        GROUP BY cfg.id, cfg.hospital_id, h.name, h.public_id, cfg.dicom_server_id, cfg_server.id, cfg_server.name, cfg_server.ssl_enabled, cfg_server.ip_address, cfg_server.port, cfg_server.ae_title, cfg.package_built_at, cfg.is_active, cfg.created_at, cfg.modified_at
         ORDER BY cfg.id DESC
         <if test="request != null and request.page != null and request.rowsPerPage != null">
             LIMIT #{request.rowsPerPage}
@@ -824,6 +826,8 @@
             COUNT(DISTINCT route_summary.id)::bigint AS routeCount,
             COUNT(DISTINCT route_summary.modality_id)::bigint AS modalityCount,
             CASE WHEN cfg.dicom_server_id IS NULL THEN 0::bigint ELSE 1::bigint END AS dicomServerCount,
+            CASE WHEN cfg.package_built_at IS NOT NULL THEN TRUE ELSE FALSE END AS deploymentLocked,
+            TO_CHAR(cfg.package_built_at, 'YYYY-MM-DD HH24:MI:SS') AS packageBuiltAt,
             STRING_AGG(DISTINCT route_summary.modality_id::text, ',' ORDER BY route_summary.modality_id::text) AS modalityIdCsv,
             STRING_AGG(DISTINCT modality_summary.public_id::text, ',' ORDER BY modality_summary.public_id::text) AS modalityPublicKeyCsv,
             STRING_AGG(DISTINCT modality_summary.name, '~|~' ORDER BY modality_summary.name) AS modalityNameCsv,
@@ -853,7 +857,7 @@
               AND cfg.hospital_id = #{hospitalId}
           </if>
           AND cfg.is_active != 2
-        GROUP BY cfg.id, cfg.hospital_id, h.name, h.public_id, cfg.dicom_server_id, cfg_server.id, cfg_server.name, cfg_server.ssl_enabled, cfg_server.ip_address, cfg_server.port, cfg_server.ae_title, cfg.is_active, cfg.created_at, cfg.modified_at
+        GROUP BY cfg.id, cfg.hospital_id, h.name, h.public_id, cfg.dicom_server_id, cfg_server.id, cfg_server.name, cfg_server.ssl_enabled, cfg_server.ip_address, cfg_server.port, cfg_server.ae_title, cfg.package_built_at, cfg.is_active, cfg.created_at, cfg.modified_at
         LIMIT 1
     </select>
 
@@ -926,6 +930,18 @@
             modified_by = #{modifiedBy},
             modified_at = NOW()
         WHERE routing_config_id = #{routingConfigId}
+          AND hospital_id = #{hospitalId}
+          AND is_active != 2
+    </update>
+
+    <update id="markRoutingConfigPackageBuilt">
+        UPDATE hospital_dicom_routing_configs
+        SET
+            package_built_at = NOW(),
+            package_built_by = #{modifiedBy},
+            modified_by = #{modifiedBy},
+            modified_at = NOW()
+        WHERE id = #{id}
           AND hospital_id = #{hospitalId}
           AND is_active != 2
     </update>

@@ -179,50 +179,141 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                 }
             }
 
-            uploadResponse.setStudyCount(summariesByStudyUid.size());
-            uploadResponse.setStudies(new ArrayList<>(summariesByStudyUid.values()));
-            uploadResponse.setViewerAvailable(uploadResponse.getStudies().stream().anyMatch(summary -> Boolean.TRUE.equals(summary.getViewerAvailable())));
-
-            boolean success = uploadResponse.getAcceptedFiles() > 0;
-            LocalTime endDuration = LocalTime.now();
-            activityLogService.insert(
-                    ApiConstants.DicomUpload.BASE_PATH,
-                    null,
-                    success ? null : String.join("; ", uploadResponse.getErrors()),
-                    "Study",
-                    "Study (DICOM Upload)",
-                    "Upload",
-                    success ? 1 : 2,
-                    success ? "Success" : "Upload failed",
-                    startDuration,
-                    endDuration,
-                    httpServletRequest
-            );
-
-            if (!success) {
-                return ResponseMessageUtils.makeResponse(false, messageService.message("No DICOM instances were uploaded.", List.of(uploadResponse), false));
-            }
-            return ResponseMessageUtils.makeResponse(true, messageService.message("DICOM upload completed.", List.of(uploadResponse), true));
+            return finishUpload(context, startDuration, httpServletRequest);
         } catch (Exception error) {
-            LocalTime endDuration = LocalTime.now();
-            Long errorLine = error.getStackTrace() != null && error.getStackTrace().length > 0
-                    ? (long) error.getStackTrace()[0].getLineNumber()
-                    : null;
-            LOGGER.warn("DICOM upload failed: {}", error.toString());
+            return failUpload(error, startDuration, httpServletRequest);
+        }
+    }
+
+    public Path resolveUploadTempDir() throws IOException {
+        return resolveDicomUploadTempDirectory();
+    }
+
+    /**
+     * Process an already-reassembled ZIP file on disk (used by the chunked-upload flow). Mirrors
+     * the ZIP branch of {@link #uploadDicom}: resolves the hospital/DICOM server, validates the
+     * size, streams the ZIP entries to the DICOM server, and returns the same response. Runs with
+     * NO surrounding DB transaction (DicomUploadServiceImpl is excluded from the blanket tx advisor)
+     * so the long network forward never holds a pooled connection.
+     */
+    public ResponseMessage<BaseResult> uploadDicomZipFile(
+            String hospitalKey,
+            String dicomServerKey,
+            Path zipPath,
+            long zipSize,
+            HttpServletRequest httpServletRequest
+    ) {
+        LocalTime startDuration = LocalTime.now();
+        try {
+            Long hospitalId = resolveHospitalId(publicEntityKeyResolver.resolve(Entity.HOSPITAL, hospitalKey, null));
+            DicomServerResolution dicomServerResolution = resolveDicomServer(hospitalId, dicomServerKey);
+            if (dicomServerResolution.errorMessage() != null) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message(dicomServerResolution.errorMessage(), false));
+            }
+            HospitalDicomServerResponse dicomServer = dicomServerResolution.server();
+            if (dicomServer == null) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message("No active DICOM server found for the selected hospital.", false));
+            }
+            long maxRequestBytes = configuredMaxUploadBytes();
+            if (zipSize > maxRequestBytes) {
+                reportSecurityIncident(httpServletRequest, "dicom_upload_policy", "request_too_large", zipSize + "/" + maxRequestBytes);
+                return ResponseMessageUtils.makeResponse(false, messageService.message("DICOM upload can be up to " + formatBytes(maxRequestBytes) + " per request.", false));
+            }
+            DicomUploadResponse uploadResponse = createBaseResponse(dicomServer);
+            UploadContext context = new UploadContext(
+                    hospitalId,
+                    dicomServer,
+                    currentUserId(),
+                    OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+                    uploadResponse,
+                    new LinkedHashMap<>()
+            );
+            try (InputStream zipStream = Files.newInputStream(zipPath)) {
+                uploadZip(zipStream, context, httpServletRequest);
+            }
+            return finishUpload(context, startDuration, httpServletRequest);
+        } catch (Exception error) {
+            return failUpload(error, startDuration, httpServletRequest);
+        }
+    }
+
+    private ResponseMessage<BaseResult> finishUpload(UploadContext context, LocalTime startDuration, HttpServletRequest httpServletRequest) {
+        DicomUploadResponse uploadResponse = context.response;
+        uploadResponse.setStudyCount(context.summariesByStudyUid.size());
+        uploadResponse.setStudies(new ArrayList<>(context.summariesByStudyUid.values()));
+        uploadResponse.setViewerAvailable(uploadResponse.getStudies().stream().anyMatch(summary -> Boolean.TRUE.equals(summary.getViewerAvailable())));
+        boolean success = uploadResponse.getAcceptedFiles() > 0;
+        LocalTime endDuration = LocalTime.now();
+        insertUploadActivityLog(
+                ApiConstants.DicomUpload.BASE_PATH,
+                null,
+                success ? null : String.join("; ", uploadResponse.getErrors()),
+                "Study",
+                "Study (DICOM Upload)",
+                "Upload",
+                success ? 1 : 2,
+                success ? "Success" : "Upload failed",
+                startDuration,
+                endDuration,
+                httpServletRequest
+        );
+        if (!success) {
+            return ResponseMessageUtils.makeResponse(false, messageService.message("No DICOM instances were uploaded.", List.of(uploadResponse), false));
+        }
+        return ResponseMessageUtils.makeResponse(true, messageService.message("DICOM upload completed.", List.of(uploadResponse), true));
+    }
+
+    private ResponseMessage<BaseResult> failUpload(Exception error, LocalTime startDuration, HttpServletRequest httpServletRequest) {
+        LocalTime endDuration = LocalTime.now();
+        Long errorLine = error.getStackTrace() != null && error.getStackTrace().length > 0
+                ? (long) error.getStackTrace()[0].getLineNumber()
+                : null;
+        LOGGER.warn("DICOM upload failed: {}", error.toString());
+        insertUploadActivityLog(
+                ApiConstants.DicomUpload.BASE_PATH,
+                errorLine,
+                error.toString(),
+                "Study",
+                "Study (DICOM Upload)",
+                "Upload",
+                2,
+                "Error",
+                startDuration,
+                endDuration,
+                httpServletRequest
+        );
+        return ResponseMessageUtils.makeResponse(false, messageService.message("Unable to upload DICOM. Please check the selected file and DICOM server.", null, false));
+    }
+
+    private void insertUploadActivityLog(
+            String endpoint,
+            Long errorLine,
+            String errorText,
+            String moduleName,
+            String moduleId,
+            String action,
+            int status,
+            String description,
+            LocalTime startDuration,
+            LocalTime endDuration,
+            HttpServletRequest httpServletRequest
+    ) {
+        try {
             activityLogService.insert(
-                    ApiConstants.DicomUpload.BASE_PATH,
+                    endpoint,
                     errorLine,
-                    error.toString(),
-                    "Study",
-                    "Study (DICOM Upload)",
-                    "Upload",
-                    2,
-                    "Error",
+                    errorText,
+                    moduleName,
+                    moduleId,
+                    action,
+                    status,
+                    description,
                     startDuration,
                     endDuration,
                     httpServletRequest
             );
-            return ResponseMessageUtils.makeResponse(false, messageService.message("Unable to upload DICOM. Please check the selected file and DICOM server.", null, false));
+        } catch (UnknownHostException logError) {
+            LOGGER.warn("DICOM upload activity log failed: {}", logError.toString());
         }
     }
 
@@ -248,9 +339,15 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     }
 
     private void uploadZip(MultipartFile zipFile, UploadContext context, HttpServletRequest httpServletRequest) throws IOException {
+        try (InputStream zipStream = zipFile.getInputStream()) {
+            uploadZip(zipStream, context, httpServletRequest);
+        }
+    }
+
+    private void uploadZip(InputStream zipStream, UploadContext context, HttpServletRequest httpServletRequest) throws IOException {
         int entries = 0;
         long maxEntryBytes = configuredMaxZipEntryBytes();
-        try (ZipInputStream zipInputStream = new ZipInputStream(zipFile.getInputStream())) {
+        try (ZipInputStream zipInputStream = new ZipInputStream(zipStream)) {
             ZipEntry entry;
             while ((entry = zipInputStream.getNextEntry()) != null) {
                 String entryName = entry.getName();

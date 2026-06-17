@@ -250,6 +250,29 @@ class DicomUploadServiceImplTest {
         );
     }
 
+    @Test
+    void zipEntryRejectedByDicomServerReturnsUploadResultWithoutThrowing() throws Exception {
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
+                .thenThrow(new IllegalStateException("DICOM server upload failed with HTTP 400."));
+        MockMultipartFile zip = new MockMultipartFile(
+                "zipFile",
+                "bad-dicom.zip",
+                "application/zip",
+                zipBytes("entry.dcm", new byte[] {1, 2, 3, 4})
+        );
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(new DicomUploadRequest(), null, zip, new MockHttpServletRequest());
+
+        assertFalse(response.getHeader().getResult());
+        DicomUploadResponse body = (DicomUploadResponse) response.getBody().getData().get(0);
+        assertEquals(0, body.getAcceptedFiles());
+        assertEquals(1, body.getFailedFiles());
+        assertTrue(body.getErrors().get(0).contains("entry.dcm"));
+        assertTrue(body.getErrors().get(0).contains("HTTP 400"));
+        verifyNoInteractions(worklistMapper);
+    }
+
     private static HospitalDicomServerResponse server() {
         HospitalDicomServerResponse server = new HospitalDicomServerResponse();
         server.setId(5L);

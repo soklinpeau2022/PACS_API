@@ -34,11 +34,19 @@ public class ServiceImplErrorActivityLogAspect {
             return joinPoint.proceed();
         } catch (Throwable error) {
             LocalTime endDuration = LocalTime.now();
-            if (!ErrorReportingAttributes.isErrorActivityLogged(resolveHttpRequest())) {
+            if (!isExpectedDicomUploadRejection(error)
+                    && !ErrorReportingAttributes.isErrorActivityLogged(resolveHttpRequest())) {
                 safeInsertActivityLog(joinPoint, error, "Exception", startDuration, endDuration);
             }
             throw error;
         }
+    }
+
+    private static boolean isExpectedDicomUploadRejection(Throwable error) {
+        if (!(error instanceof IllegalStateException) || error.getMessage() == null) {
+            return false;
+        }
+        return error.getMessage().startsWith("DICOM server upload failed with HTTP 400");
     }
 
     private void safeInsertActivityLog(

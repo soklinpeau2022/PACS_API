@@ -177,6 +177,11 @@ public class HospitalServiceImpl implements HospitalService {
             if (hospitalRequestUpdate.getId() == null || hospitalRequestUpdate.getId() <= 0) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Hospital id is required.", false));
             }
+            List<HospitalResponseDetail> existingHospitals = hospitalMapper.getHospitalById(hospitalRequestUpdate.getId());
+            HospitalResponseDetail existingHospital = existingHospitals == null || existingHospitals.isEmpty() ? null : existingHospitals.get(0);
+            if (existingHospital == null) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message("Hospital not found.", false));
+            }
             if (hospitalRequestUpdate.getCode() == null || hospitalRequestUpdate.getCode().trim().isEmpty()) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Hospital code is required.", false));
             }
@@ -191,6 +196,11 @@ public class HospitalServiceImpl implements HospitalService {
             if (!FunctionHelper.isValidHospitalToken(trimmedAbbr)) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Hospital abbr must contain 2-20 letters or numbers for Visit Code.", false));
             }
+            String trimmedName = hospitalRequestUpdate.getName().trim();
+            String identityLockError = validateHospitalIdentityLock(existingHospital, trimmedCode, trimmedAbbr, trimmedName, hospitalRequestUpdate.getTimezone());
+            if (identityLockError != null) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message(identityLockError, false));
+            }
             if (hospitalMapper.countHospitalCode(trimmedCode, hospitalRequestUpdate.getId()) > 0) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Duplicate Hospital Code", false));
             }
@@ -200,7 +210,6 @@ public class HospitalServiceImpl implements HospitalService {
             if (hospitalMapper.countHospitalVisitToken(trimmedAbbr, hospitalRequestUpdate.getId()) > 0) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Duplicate Hospital Abbr for Visit Code", false));
             }
-            String trimmedName = hospitalRequestUpdate.getName().trim();
 
             applyPublicKeyRelations(hospitalRequestUpdate);
             List<Long> normalizedModalityIds = normalizeModalityIds(hospitalRequestUpdate.getModalityIds());
@@ -631,6 +640,39 @@ public class HospitalServiceImpl implements HospitalService {
         return FunctionHelper.normalizeHospitalToken(abbr);
     }
 
+    private String validateHospitalIdentityLock(
+            HospitalResponseDetail existingHospital,
+            String requestedCode,
+            String requestedAbbr,
+            String requestedName,
+            String requestedTimezone
+    ) {
+        if (existingHospital == null || !Boolean.TRUE.equals(existingHospital.getDeploymentLocked())) {
+            return null;
+        }
+
+        String existingCode = normalizeComparableText(existingHospital.getCode());
+        String existingAbbr = normalizeHospitalAbbrForVisitCode(existingHospital.getAbbr());
+        String existingName = normalizeComparableText(existingHospital.getHospitalName());
+        String existingTimezone = normalizeComparableText(existingHospital.getTimezone());
+        String effectiveRequestedTimezone = normalizeComparableText(requestedTimezone);
+        if (effectiveRequestedTimezone.isEmpty()) {
+            effectiveRequestedTimezone = existingTimezone;
+        }
+
+        if (!existingCode.equals(normalizeComparableText(requestedCode))
+                || !existingAbbr.equals(normalizeHospitalAbbrForVisitCode(requestedAbbr))
+                || !existingName.equals(normalizeComparableText(requestedName))
+                || !existingTimezone.equals(effectiveRequestedTimezone)) {
+            return "Hospital code, abbreviation, name, and timezone are locked because a DICOM Routing deployment zip has already been downloaded.";
+        }
+        return null;
+    }
+
+    private static String normalizeComparableText(String value) {
+        return value == null ? "" : value.trim();
+    }
+
     private static List<Long> withSuperAdminUserId(List<Long> userIds) {
         Set<Long> normalized = new LinkedHashSet<>();
         normalized.add(SUPER_ADMIN_USER_ID);
@@ -818,5 +860,4 @@ public class HospitalServiceImpl implements HospitalService {
     }
 
 }
-
 

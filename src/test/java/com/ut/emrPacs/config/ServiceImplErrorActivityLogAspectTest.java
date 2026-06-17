@@ -92,4 +92,33 @@ class ServiceImplErrorActivityLogAspectTest {
                 same(request)
         );
     }
+
+    @Test
+    void shouldNotLogDicomServerBadRequestUploadRejectionsAsSystemErrors() throws Throwable {
+        ActivityLogService activityLogService = mock(ActivityLogService.class);
+        ServiceImplErrorActivityLogAspect aspect = new ServiceImplErrorActivityLogAspect(activityLogService);
+        ProceedingJoinPoint joinPoint = mock(ProceedingJoinPoint.class);
+        IllegalStateException error = new IllegalStateException("DICOM server upload failed with HTTP 400.");
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/pacsApi/dicom-uploads/chunk/upload-1/complete");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        when(joinPoint.proceed()).thenThrow(error);
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> aspect.logUnhandledServiceErrors(joinPoint));
+
+        assertSame(error, thrown);
+        verify(activityLogService, never()).insert(
+                any(String.class),
+                any(),
+                any(),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                eq(2),
+                any(String.class),
+                any(LocalTime.class),
+                any(LocalTime.class),
+                any(HttpServletRequest.class)
+        );
+    }
 }

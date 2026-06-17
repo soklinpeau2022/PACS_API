@@ -1002,6 +1002,14 @@ public class DicomServerServiceImpl implements DicomServerService {
                 redactDicomServerBuildResponse(response);
                 configRows.add(response);
             }
+            if (configRows.isEmpty()) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message("No DICOM server deployment package was generated for this routing configuration.", false));
+            }
+            Long userId = userService.getUserAuth().getId();
+            Integer lockedRows = dicomServerMapper.markRoutingConfigPackageBuilt(routeConfig.getId(), routeConfig.getHospitalId(), userId);
+            if (lockedRows == null || lockedRows <= 0) {
+                throw new IllegalStateException("Unable to lock hospital deployment identity for this routing configuration.");
+            }
 
             LocalTime endDuration = LocalTime.now();
             activityLogService.insert(ApiConstants.DicomRouting.BASE_PATH + ApiConstants.DicomRouting.BUILD_CONFIG_PATH, null, null, "DicomRouting", "DICOM Routing (Build Config)", "View", 1, "Success", startDuration, endDuration, httpServletRequest);

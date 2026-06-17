@@ -20,6 +20,8 @@ public class HospitalResponse {
     private String logoFileType;
     private Long logoFileSize;
     private Boolean logoAvailable;
+    private Boolean deploymentLocked;
+    private String packageBuiltAt;
     @JsonIgnore
     private Long createdById;
     private String createdBy;

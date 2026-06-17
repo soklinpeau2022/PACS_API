@@ -118,6 +118,8 @@ public interface DicomServerMapper {
 
     Integer deactivateRoutesByRoutingConfigId(@Param("routingConfigId") Long routingConfigId, @Param("hospitalId") Long hospitalId, @Param("modifiedBy") Long modifiedBy);
 
+    Integer markRoutingConfigPackageBuilt(@Param("id") Long id, @Param("hospitalId") Long hospitalId, @Param("modifiedBy") Long modifiedBy);
+
     List<HospitalModalityServerRouteResponse> listRoutesByRoutingConfigIds(
             @Param("routingConfigIds") List<Long> routingConfigIds,
             @Param("hospitalId") Long hospitalId,

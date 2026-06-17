@@ -21,5 +21,7 @@ public class HospitalResponseDetail {
     private String logoFileType;
     private Long logoFileSize;
     private Boolean logoAvailable;
+    private Boolean deploymentLocked;
+    private String packageBuiltAt;
     private List<UserNameResponse> userNameResponseList;
 }

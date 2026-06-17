@@ -24,6 +24,8 @@ public class HospitalDicomRoutingConfigResponse {
     private Long routeCount;
     private Long modalityCount;
     private Long dicomServerCount;
+    private Boolean deploymentLocked;
+    private String packageBuiltAt;
     private Long isActive;
     private String createdAt;
     private String modifiedAt;

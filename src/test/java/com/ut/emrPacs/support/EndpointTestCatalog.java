@@ -2,6 +2,7 @@ package com.ut.emrPacs.support;
 
 import com.ut.emrPacs.controller.AuthController;
 import com.ut.emrPacs.controller.DashboardController;
+import com.ut.emrPacs.controller.DicomChunkUploadController;
 import com.ut.emrPacs.controller.DicomMachineController;
 import com.ut.emrPacs.controller.DicomRoutingController;
 import com.ut.emrPacs.controller.DicomServerController;
@@ -55,6 +56,7 @@ public final class EndpointTestCatalog {
     public static final List<Class<?>> CONTROLLER_CLASSES = List.of(
             AuthController.class,
             DashboardController.class,
+            DicomChunkUploadController.class,
             DicomMachineController.class,
             DicomRoutingController.class,
             DicomServerController.class,

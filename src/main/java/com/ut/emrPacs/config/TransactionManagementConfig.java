@@ -58,7 +58,13 @@ public class TransactionManagementConfig {
                 "execution(* com.ut.emrPacs.service.serviceImpl..*(..))" +
                 " && !within(com.ut.emrPacs.service.serviceImpl.ActivityLogServiceImpl)" +
                 " && !within(com.ut.emrPacs.service.serviceImpl.DicomServerClientServiceImpl)" +
-                " && !within(com.ut.emrPacs.service.serviceImpl.PacsResultSyncServiceImpl)"
+                " && !within(com.ut.emrPacs.service.serviceImpl.PacsResultSyncServiceImpl)" +
+                // DICOM upload streams instances to the DICOM server (long network I/O) and
+                // manages its own short per-instance transactions via TransactionTemplate.
+                // It must NOT be wrapped in an outer write transaction, which would hold a DB
+                // connection for the entire multi-minute upload -> HikariCP connection leak.
+                " && !within(com.ut.emrPacs.service.serviceImpl.DicomUploadServiceImpl)" +
+                " && !within(com.ut.emrPacs.service.serviceImpl.DicomChunkUploadServiceImpl)"
         );
 
         return new DefaultPointcutAdvisor(pointcut, txInterceptor);

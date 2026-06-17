@@ -41,6 +41,7 @@ class ResponseProjectionAuditTest {
                 Set.of(
                         "id", "publicKey", "code", "abbr", "name", "nameKhmer", "timezone",
                         "logoFileName", "logoFileType", "logoFileSize", "logoAvailable",
+                        "deploymentLocked", "packageBuiltAt",
                         "createdById", "createdBy", "created", "modifiedById", "modifiedBy", "modified",
                         "hospitalUserList"
                 )
@@ -54,6 +55,7 @@ class ResponseProjectionAuditTest {
                 Set.of(
                         "id", "publicKey", "code", "abbr", "hospitalName", "nameInKhmer", "timezone",
                         "logoPath", "logoFileName", "logoFileType", "logoFileSize", "logoAvailable",
+                        "deploymentLocked", "packageBuiltAt",
                         "userNameResponseList"
                 )
         );

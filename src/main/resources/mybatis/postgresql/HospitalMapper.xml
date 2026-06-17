@@ -19,6 +19,18 @@
             h.logo_file_type AS logoFileType,
             h.logo_file_size AS logoFileSize,
             CASE WHEN NULLIF(TRIM(COALESCE(h.logo_path, '')), '') IS NOT NULL THEN TRUE ELSE FALSE END AS logoAvailable,
+            EXISTS (
+                SELECT 1
+                FROM hospital_dicom_routing_configs cfg_lock
+                WHERE cfg_lock.hospital_id = h.id
+                  AND cfg_lock.package_built_at IS NOT NULL
+            ) AS deploymentLocked,
+            (
+                SELECT TO_CHAR(MAX(cfg_lock.package_built_at), 'YYYY-MM-DD HH24:MI:SS')
+                FROM hospital_dicom_routing_configs cfg_lock
+                WHERE cfg_lock.hospital_id = h.id
+                  AND cfg_lock.package_built_at IS NOT NULL
+            ) AS packageBuiltAt,
             h.created_by AS createdById,
             COALESCE(
                 NULLIF(TRIM(CONCAT(COALESCE(uc.first_name, ''), ' ', COALESCE(uc.last_name, ''))), ''),
@@ -62,7 +74,19 @@
             h.logo_file_name AS logoFileName,
             h.logo_file_type AS logoFileType,
             h.logo_file_size AS logoFileSize,
-            CASE WHEN NULLIF(TRIM(COALESCE(h.logo_path, '')), '') IS NOT NULL THEN TRUE ELSE FALSE END AS logoAvailable
+            CASE WHEN NULLIF(TRIM(COALESCE(h.logo_path, '')), '') IS NOT NULL THEN TRUE ELSE FALSE END AS logoAvailable,
+            EXISTS (
+                SELECT 1
+                FROM hospital_dicom_routing_configs cfg_lock
+                WHERE cfg_lock.hospital_id = h.id
+                  AND cfg_lock.package_built_at IS NOT NULL
+            ) AS deploymentLocked,
+            (
+                SELECT TO_CHAR(MAX(cfg_lock.package_built_at), 'YYYY-MM-DD HH24:MI:SS')
+                FROM hospital_dicom_routing_configs cfg_lock
+                WHERE cfg_lock.hospital_id = h.id
+                  AND cfg_lock.package_built_at IS NOT NULL
+            ) AS packageBuiltAt
         FROM hospitals h
         WHERE h.is_active = 1 AND h.id = #{id} LIMIT 1
     </select>

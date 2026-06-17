@@ -1,11 +1,24 @@
 package com.ut.emrPacs.service.serviceImpl;
 
+import com.ut.emrPacs.authentication.principal.CurrentUserPrincipal;
+import com.ut.emrPacs.mapper.auth.OAuth2ClientMapper;
+import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
+import com.ut.emrPacs.model.base.BaseResult;
+import com.ut.emrPacs.model.base.MessageService;
+import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomRoutingConfigResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalModalityServerRouteResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.DicomServerConfigBuildResponse;
 import com.ut.emrPacs.model.dto.request.pacs.dicom.HospitalDicomServerRequestUpdate;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
+import com.ut.emrPacs.model.users.User;
+import com.ut.emrPacs.service.service.ActivityLogService;
+import com.ut.emrPacs.service.service.UserService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.LinkedHashMap;
@@ -16,6 +29,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class DicomServerServiceImplDicomServerConfigTest {
 
@@ -157,6 +176,68 @@ class DicomServerServiceImplDicomServerConfigTest {
 
         assertEquals("http://192.168.8.12:8044", publicUiBaseUrl);
         assertEquals("http://192.168.8.12:8044/dicom-web", dicomwebBaseUrl);
+    }
+
+    @Test
+    void buildRoutingDicomServerConfigShouldLockHospitalIdentityAfterPackageGeneration() throws Exception {
+        DicomServerServiceImpl service = new DicomServerServiceImpl();
+        DicomServerMapper dicomServerMapper = mock(DicomServerMapper.class);
+        OAuth2ClientMapper oauth2ClientMapper = mock(OAuth2ClientMapper.class);
+        UserService userService = mock(UserService.class);
+        PasswordEncoder passwordEncoder = mock(PasswordEncoder.class);
+        ReflectionTestUtils.setField(service, "dicomServerMapper", dicomServerMapper);
+        ReflectionTestUtils.setField(service, "oauth2ClientMapper", oauth2ClientMapper);
+        ReflectionTestUtils.setField(service, "messageService", new MessageService());
+        ReflectionTestUtils.setField(service, "userService", userService);
+        ReflectionTestUtils.setField(service, "activityLogService", mock(ActivityLogService.class));
+        ReflectionTestUtils.setField(service, "passwordEncoder", passwordEncoder);
+        ReflectionTestUtils.setField(service, "apiAuthUrl", "http://localhost:8080/pacsApi");
+
+        User user = new User();
+        user.setId(7L);
+        when(userService.getUserAuth()).thenReturn(user);
+        when(passwordEncoder.encode(anyString())).thenReturn("encoded-secret");
+
+        HospitalDicomRoutingConfigResponse routeConfig = new HospitalDicomRoutingConfigResponse();
+        routeConfig.setId(10L);
+        routeConfig.setPublicKey("route-public-key");
+        routeConfig.setHospitalId(1L);
+        routeConfig.setHospitalPublicKey("hospital-public-key");
+        routeConfig.setHospitalName("KSFH Hospital");
+
+        HospitalModalityServerRouteResponse route = secureRoute();
+        route.setRoutingConfigId(10L);
+        route.setDicomServerId(33L);
+        route.setDicomServerPublicKey("server-public-key");
+        route.setDicomServerName("UDAYA_DICOM_SERVER KSFH");
+        route.setUsername("ksfh_archive");
+        route.setPassword("secret-123");
+        route.setPort(8042);
+        route.setDicomPort(4242);
+        route.setDicomServerUiBaseUrl("http://localhost:8042");
+        route.setDicomwebPath("/dicom-web");
+        route.setHttpServerEnabled(true);
+        route.setRemoteAccessAllowed(true);
+        route.setAuthenticationEnabled(true);
+        route.setAuthorizationEnabled(true);
+
+        when(dicomServerMapper.getRoutingConfigById(10L, 1L)).thenReturn(routeConfig);
+        when(dicomServerMapper.listRoutesByRoutingConfigIds(eq(List.of(10L)), eq(1L), isNull())).thenReturn(List.of(route));
+        when(oauth2ClientMapper.upsertDicomServerCallbackClient(eq(33L), anyString(), anyString(), anyString())).thenReturn(1);
+        when(dicomServerMapper.updateDicomServerPacsResultApiKeyHash(eq(33L), eq(1L), anyString(), eq(7L))).thenReturn(1);
+        when(dicomServerMapper.markRoutingConfigPackageBuilt(10L, 1L, 7L)).thenReturn(1);
+
+        TestingAuthenticationToken authentication = new TestingAuthenticationToken("admin", "n/a");
+        authentication.setDetails(new CurrentUserPrincipal(7L, "admin", 1L, "H001", "pacs-web", "jti", 1L));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            ResponseMessage<BaseResult> response = service.buildRoutingDicomServerConfig(10L, mock(HttpServletRequest.class));
+
+            assertTrue(response.isSuccess());
+            verify(dicomServerMapper).markRoutingConfigPackageBuilt(10L, 1L, 7L);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
     }
 
     private static HospitalModalityServerRouteResponse secureRoute() {

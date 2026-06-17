@@ -186,6 +186,10 @@ public final class ApiConstants {
 
     public static final class DicomUpload {
         public static final String BASE_PATH = "/dicom-uploads";
+        public static final String CHUNK_INIT_PATH = "/chunk/init";
+        public static final String CHUNK_UPLOAD_PATH = "/chunk/{uploadId}";
+        public static final String CHUNK_COMPLETE_PATH = "/chunk/{uploadId}/complete";
+        public static final String CHUNK_ABORT_PATH = "/chunk/{uploadId}/abort";
 
         private DicomUpload() {
         }
