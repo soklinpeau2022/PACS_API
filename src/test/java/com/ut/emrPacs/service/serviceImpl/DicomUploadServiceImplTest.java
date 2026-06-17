@@ -2,6 +2,7 @@ package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.authentication.principal.CurrentUserPrincipal;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
+import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import com.ut.emrPacs.mapper.hospital.HospitalMapper;
 import com.ut.emrPacs.mapper.modality.ModalityMapper;
 import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
@@ -35,9 +36,12 @@ import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.io.ByteArrayOutputStream;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -75,6 +79,8 @@ class DicomUploadServiceImplTest {
     private ActivityLogService activityLogService;
     @Mock
     private RealtimeNotificationService realtimeNotificationService;
+    @Mock
+    private SecurityIncidentReporter securityIncidentReporter;
 
     private DicomUploadServiceImpl service;
 
@@ -91,6 +97,7 @@ class DicomUploadServiceImplTest {
         ReflectionTestUtils.setField(service, "messageService", new MessageService());
         ReflectionTestUtils.setField(service, "activityLogService", activityLogService);
         ReflectionTestUtils.setField(service, "realtimeNotificationService", realtimeNotificationService);
+        ReflectionTestUtils.setField(service, "securityIncidentReporter", securityIncidentReporter);
         ReflectionTestUtils.setField(service, "maxDicomUploadRequestBytes", 4L * 1024L * 1024L * 1024L);
         ReflectionTestUtils.setField(service, "maxZipEntryBytes", 4L * 1024L * 1024L * 1024L);
         ReflectionTestUtils.setField(service, "dicomUploadTempDir", System.getProperty("java.io.tmpdir"));
@@ -179,6 +186,70 @@ class DicomUploadServiceImplTest {
         verifyNoInteractions(worklistMapper);
     }
 
+    @Test
+    void oversizedUploadReportsSecurityIncidentBeforeProcessing() throws Exception {
+        ReflectionTestUtils.setField(service, "maxDicomUploadRequestBytes", 2L);
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        MockHttpServletRequest request = new MockHttpServletRequest();
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(new DicomUploadRequest(), List.of(
+                new MockMultipartFile("files", "big.dcm", "application/dicom", new byte[] {1, 2, 3, 4})
+        ), null, request);
+
+        assertFalse(response.getHeader().getResult());
+        verify(securityIncidentReporter).reportBlockedRequest(
+                request,
+                "dicom_upload_policy",
+                "request_too_large",
+                "4/2"
+        );
+    }
+
+    @Test
+    void unsafeZipEntryNameReportsSecurityIncident() throws Exception {
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockMultipartFile zip = new MockMultipartFile(
+                "zipFile",
+                "attack.zip",
+                "application/zip",
+                zipBytes("../evil.dcm", new byte[] {1, 2, 3, 4})
+        );
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(new DicomUploadRequest(), null, zip, request);
+
+        assertFalse(response.getHeader().getResult());
+        verify(securityIncidentReporter).reportBlockedRequest(
+                request,
+                "dicom_upload_zip",
+                "unsafe_entry_name",
+                "../evil.dcm"
+        );
+    }
+
+    @Test
+    void oversizedZipEntryReportsSecurityIncident() throws Exception {
+        ReflectionTestUtils.setField(service, "maxZipEntryBytes", 2L);
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockMultipartFile zip = new MockMultipartFile(
+                "zipFile",
+                "large-entry.zip",
+                "application/zip",
+                zipBytes("entry.dcm", new byte[] {1, 2, 3, 4})
+        );
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(new DicomUploadRequest(), null, zip, request);
+
+        assertFalse(response.getHeader().getResult());
+        verify(securityIncidentReporter).reportBlockedRequest(
+                request,
+                "dicom_upload_zip",
+                "entry_too_large",
+                "entry.dcm 4/2"
+        );
+    }
+
     private static HospitalDicomServerResponse server() {
         HospitalDicomServerResponse server = new HospitalDicomServerResponse();
         server.setId(5L);
@@ -264,5 +335,16 @@ class DicomUploadServiceImplTest {
         response.setInstitutionName("TSNH HOSPITAL");
         response.setStatus("IMAGE_RECEIVED");
         return response;
+    }
+
+    private static byte[] zipBytes(String entryName, byte[] content) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(output)) {
+            ZipEntry entry = new ZipEntry(entryName);
+            zip.putNextEntry(entry);
+            zip.write(content);
+            zip.closeEntry();
+        }
+        return output.toByteArray();
     }
 }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ut.emrPacs.helper.security.SecurityAuditLogger;
+import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import com.ut.emrPacs.helper.security.UnicodeGuard;
 import com.ut.emrPacs.helper.http.RequestClientInfoHelper;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
@@ -16,7 +17,9 @@ import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -49,7 +52,17 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
     @Value("${cors.allowedOrigins:}")
     private String allowedOriginsCsv;
 
+    private final SecurityIncidentReporter securityIncidentReporter;
     private volatile Set<String> trustedOrigins;
+
+    public SecurityThreatDetectionFilter() {
+        this(null);
+    }
+
+    @Autowired
+    public SecurityThreatDetectionFilter(@Lazy SecurityIncidentReporter securityIncidentReporter) {
+        this.securityIncidentReporter = securityIncidentReporter;
+    }
 
     private static final Set<String> DICOM_SERVER_URL_FIELDS = Set.of(
             "ipAddress",
@@ -158,12 +171,14 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
         String hostHeader = request.getHeader("Host");
         if (hostHeader != null && (hostHeader.contains("\r") || hostHeader.contains("\n") || hostHeader.contains("%0d") || hostHeader.contains("%0a"))) {
             SecurityAuditLogger.logBlocked(LOGGER, request, "host_header_injection", "crlf_in_host", null);
+            reportBlocked(request, "host_header_injection", "crlf_in_host", "Host header contains CR/LF");
             denyRequest(response, HttpServletResponse.SC_BAD_REQUEST, "BAD_REQUEST", GENERIC_ERROR_MESSAGE);
             return;
         }
 
         if (shouldEnforceSameOrigin(request) && !isSameOrigin(request)) {
             SecurityAuditLogger.logBlocked(LOGGER, request, "csrf_same_origin", "origin_mismatch", null);
+            reportBlocked(request, "csrf_same_origin", "origin_mismatch", request.getHeader("Origin"));
             denyRequest(response, HttpServletResponse.SC_FORBIDDEN, "FORBIDDEN", FORBIDDEN_MESSAGE);
             return;
         }
@@ -183,6 +198,7 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
         long contentLength = request.getContentLengthLong();
         if (contentLength > maxBodyBytes) {
             SecurityAuditLogger.logBlocked(LOGGER, request, "payload_too_large", "content_length", Long.toString(contentLength));
+            reportBlocked(request, "payload_too_large", "content_length", contentLength + "/" + maxBodyBytes);
             denyRequest(response, HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE, "PAYLOAD_TOO_LARGE", PAYLOAD_TOO_LARGE_MESSAGE);
             return;
         }
@@ -190,6 +206,7 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
         CachedBodyHttpServletRequest wrapped = new CachedBodyHttpServletRequest(request, maxBodyBytes);
         if (wrapped.isBodyTooLarge()) {
             SecurityAuditLogger.logBlocked(LOGGER, request, "payload_too_large", "stream_limit", null);
+            reportBlocked(request, "payload_too_large", "stream_limit", Integer.toString(maxBodyBytes));
             denyRequest(response, HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE, "PAYLOAD_TOO_LARGE", PAYLOAD_TOO_LARGE_MESSAGE);
             return;
         }
@@ -351,8 +368,15 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
         String ip = RequestClientInfoHelper.resolveClientIp(request);
         LOGGER.warn("Blocked request: threat={} area={} path={} ip={}", match.patternName(), match.area(), request.getRequestURI(), ip);
         SecurityAuditLogger.logBlocked(LOGGER, request, "threat_detected", match.patternName(), match.area());
+        reportBlocked(request, "threat_detected", match.patternName(), match.area());
 
         denyRequest(response, HttpServletResponse.SC_BAD_REQUEST, "BAD_REQUEST", GENERIC_ERROR_MESSAGE);
+    }
+
+    private void reportBlocked(HttpServletRequest request, String event, String reason, String detail) {
+        if (securityIncidentReporter != null) {
+            securityIncidentReporter.reportBlockedRequest(request, event, reason, detail);
+        }
     }
 
     private void denyRequest(HttpServletResponse response, int status, String code, String message) throws IOException {

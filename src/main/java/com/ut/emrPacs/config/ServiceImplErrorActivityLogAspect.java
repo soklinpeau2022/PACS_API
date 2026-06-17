@@ -35,12 +35,16 @@ public class ServiceImplErrorActivityLogAspect {
             Object result = joinPoint.proceed();
             if (result instanceof ResponseMessage<?> response && !response.isSuccess()) {
                 LocalTime endDuration = LocalTime.now();
-                safeInsertActivityLog(joinPoint, null, "Error", startDuration, endDuration);
+                if (!ErrorReportingAttributes.isErrorActivityLogged(resolveHttpRequest())) {
+                    safeInsertActivityLog(joinPoint, null, "Error", startDuration, endDuration);
+                }
             }
             return result;
         } catch (Throwable error) {
             LocalTime endDuration = LocalTime.now();
-            safeInsertActivityLog(joinPoint, error, "Exception", startDuration, endDuration);
+            if (!ErrorReportingAttributes.isErrorActivityLogged(resolveHttpRequest())) {
+                safeInsertActivityLog(joinPoint, error, "Exception", startDuration, endDuration);
+            }
             throw error;
         }
     }

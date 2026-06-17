@@ -1,5 +1,6 @@
 package com.ut.emrPacs.authentication.filter;
 
+import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,10 +19,12 @@ class SecurityThreatDetectionFilterTest {
 
     private SecurityThreatDetectionFilter filter;
     private FilterChain filterChain;
+    private SecurityIncidentReporter securityIncidentReporter;
 
     @BeforeEach
     void setUp() {
-        filter = new SecurityThreatDetectionFilter();
+        securityIncidentReporter = Mockito.mock(SecurityIncidentReporter.class);
+        filter = new SecurityThreatDetectionFilter(securityIncidentReporter);
         filterChain = Mockito.mock(FilterChain.class);
     }
 
@@ -35,6 +38,7 @@ class SecurityThreatDetectionFilterTest {
 
         assertEquals(400, response.getStatus());
         verify(filterChain, never()).doFilter(request, response);
+        verify(securityIncidentReporter).reportBlockedRequest(request, "threat_detected", "sql-boolean-num", "query");
     }
 
     @Test
@@ -87,6 +91,7 @@ class SecurityThreatDetectionFilterTest {
 
         assertEquals(200, response.getStatus());
         verify(filterChain).doFilter(Mockito.any(), Mockito.eq(response));
+        verify(securityIncidentReporter, never()).reportBlockedRequest(Mockito.any(), Mockito.anyString(), Mockito.anyString(), Mockito.any());
     }
 
     @Test

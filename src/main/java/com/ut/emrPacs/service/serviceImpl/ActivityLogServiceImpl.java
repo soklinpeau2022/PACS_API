@@ -2,17 +2,15 @@ package com.ut.emrPacs.service.serviceImpl;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
 
 import com.ut.emrPacs.authentication.session.UserAuthSession;
-import com.ut.emrPacs.helper.TelegramHelper;
 import com.ut.emrPacs.config.ApiConstants;
+import com.ut.emrPacs.config.ErrorReportingAttributes;
+import com.ut.emrPacs.helper.SystemErrorAlertService;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
-import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,26 +40,20 @@ public class ActivityLogServiceImpl implements ActivityLogService {
     private static final String ERROR_SHORT_SQL_CONSTRAINT = "SQL Constraint Violation";
     private static final String ERROR_SHORT_NUMBER_FORMAT = "Invalid Number Format";
     private static final String ERROR_SHORT_MYBATIS = "MyBatis SelectOne Multiple Found";
+    private static final int MAX_SECURITY_BUG_LENGTH = 500;
 
     @Autowired
     private ActivityLogMapper activityLogMapper;
 
     @Autowired
-    private Environment environment;
-
-
-    @Autowired
     private MessageService messageService;
 
     @Autowired
-    private TelegramHelper telegramUtils;
+    private SystemErrorAlertService systemErrorAlertService;
 
     @Autowired
     @Lazy
     private ActivityLogService activityLogService;
-
-    @Value("${telegram.chat.id}")
-    private String telegramChatId;
 
     /** {@inheritDoc} */
     @Override
@@ -126,6 +118,9 @@ public class ActivityLogServiceImpl implements ActivityLogService {
                     } else if (bugLower.contains("mybatissystemexception")) {
                         shortBug = ERROR_SHORT_MYBATIS;
                         cleanDescription = "Expected Single Result";
+                    } else if (bugLower.contains("security_event")) {
+                        shortBug = bug.length() > MAX_SECURITY_BUG_LENGTH ? bug.substring(0, MAX_SECURITY_BUG_LENGTH) + "..." : bug;
+                        cleanDescription = description != null ? description : "Security Threat Blocked";
                     } else {
                         shortBug = bug.length() > 80 ? bug.substring(0, 80) + "..." : bug;
                         cleanDescription = "Unexpected Error";
@@ -154,8 +149,20 @@ public class ActivityLogServiceImpl implements ActivityLogService {
             activityLogMapper.createActivityLog(activityLog);
 
             if (status == 2) {
+                ErrorReportingAttributes.markErrorActivityLogged(httpServletRequest);
                 try {
-                    sendTelegramAlert(activityLog, username, safeEndpoint, moduleId, cleanDescription, line, shortBug, durationSeconds, hostname);
+                    systemErrorAlertService.sendActivityErrorAlert(
+                            activityLog,
+                            username,
+                            safeEndpoint,
+                            moduleId,
+                            cleanDescription,
+                            line,
+                            shortBug,
+                            durationSeconds,
+                            hostname,
+                            httpServletRequest
+                    );
                 } catch (Exception telegramEx) {
                     // Telegram failures must not roll back the already-committed audit row.
                     LOGGER.warn("Telegram alert sending failed for endpoint {}: {}", safeEndpoint, telegramEx.getMessage());
@@ -164,6 +171,21 @@ public class ActivityLogServiceImpl implements ActivityLogService {
         } catch (Exception ex) {
             // Never break business endpoints because audit logging failed.
             LOGGER.warn("Activity log insert failed for endpoint {}: {}", endpoint, ex.getMessage());
+            if (status == 2) {
+                systemErrorAlertService.sendAuditFailureAlert(
+                        endpoint,
+                        line,
+                        bug,
+                        moduleName,
+                        moduleId,
+                        act,
+                        description,
+                        startDuration,
+                        endDuration,
+                        httpServletRequest,
+                        ex
+                );
+            }
         }
     }
 
@@ -180,49 +202,6 @@ public class ActivityLogServiceImpl implements ActivityLogService {
         if (userAgent.contains("Safari") && !userAgent.contains("Chrome")) return "Safari";
         if (userAgent.contains("Edge")) return "Edge";
         return "Unknown Browser";
-    }
-
-    private void sendTelegramAlert(ActivityLog activityLog, String username, String endpoint, String moduleId,
-                                   String description, Long line, String bug, long durationSeconds, String hostname) {
-        LocalDateTime now = LocalDateTime.now();
-        String cleanDescription = description != null ? description : "Error";
-        String fullBug = bug != null ? bug : ERROR_SHORT_UNKNOWN;
-        long safeDuration = durationSeconds;
-        long safeLine = line != null ? line : -1L;
-
-        String message = String.format("""
-                    <b>🚨 EMR API System Alert</b>
-                    ━━━━━━━━━━━━━━━━━━━━
-                    <b>Activity ID:</b> %s
-                    <b>Server:</b> <u>%s</u>
-                    <b>Swagger URL:</b> <a href="%s">%s</a>
-                    <b>DateTime:</b> %s
-                    <b>Hostname:</b> %s
-                    <b>Endpoint:</b> <code>%s</code>
-                    <b>Username:</b> %s
-                    <b>Duration:</b> %d seconds
-                    <b>Line Code:</b> %d
-                    <b>Module:</b> %s
-                    <b>Description:</b> %s
-                    <b>Bug Message:</b> <i>%s</i>
-                    ━━━━━━━━━━━━━━━━━━━━
-                    """,
-                activityLog.getId() != null ? activityLog.getId() : "-",
-                environment.getProperty("server.from"),
-                environment.getProperty("api.authUrl"),
-                environment.getProperty("api.authUrl"),
-                now,
-                hostname,
-                endpoint,
-                username,
-                safeDuration,
-                safeLine,
-                moduleId,
-                cleanDescription,
-                fullBug
-        );
-
-        telegramUtils.sendTextMessage(message, telegramChatId);
     }
 
     /** {@inheritDoc} */
@@ -274,4 +253,3 @@ public class ActivityLogServiceImpl implements ActivityLogService {
         }
     }
 }
-

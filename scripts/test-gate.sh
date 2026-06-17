@@ -96,7 +96,7 @@ send_telegram_alert() {
     --data-urlencode "text=${msg}" >/dev/null || true
 }
 
-TESTS="EndpointPentestSmokeTest,SecurityThreatDetectionFilterTest,SecurityRateLimitFilterTest,GlobalRequestSizeLimitFilterTest,AuthServiceRefreshTokenTest,UserMapperXmlHardeningTest,RefreshTokenCryptoServiceTest,EndpointContractCoverageTest,ApiConstantsCoverageTest,ModulePermissionFilterTest,ActiveHospitalFilterTest,RevokedTokenFilterTest,RequestPayloadGuardTest,SqlSanitizerHelperTest"
+TESTS="EndpointPentestSmokeTest,SecurityThreatDetectionFilterTest,SecurityRateLimitFilterTest,GlobalRequestSizeLimitFilterTest,DicomUploadServiceImplTest,AuthServiceRefreshTokenTest,UserMapperXmlHardeningTest,RefreshTokenCryptoServiceTest,EndpointContractCoverageTest,ApiConstantsCoverageTest,MigrationSafetyPolicyTest,GlobalExceptionHandlerTest,SystemErrorAlertServiceTest,SecurityIncidentReporterTest,MyBatisSqlInjectionGuardInterceptorTest,ModulePermissionFilterTest,ActiveHospitalFilterTest,RevokedTokenFilterTest,RequestPayloadGuardTest,SqlSanitizerHelperTest"
 
 echo "Running endpoint/security gate tests..."
 if ./mvnw -q "-Dtest=${TESTS}" test; then

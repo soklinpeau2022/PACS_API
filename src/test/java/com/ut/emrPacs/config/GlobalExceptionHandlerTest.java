@@ -2,22 +2,42 @@ package com.ut.emrPacs.config;
 
 import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.ResponseMessage;
+import com.ut.emrPacs.service.service.ActivityLogService;
+import jakarta.servlet.http.HttpServletRequest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import java.time.LocalTime;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.same;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 class GlobalExceptionHandlerTest {
 
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
+
+    @AfterEach
+    void resetRequestContext() {
+        RequestContextHolder.resetRequestAttributes();
+    }
 
     @Test
     void shouldReturnNotFoundForNoResourceFoundException() {
@@ -61,5 +81,55 @@ class GlobalExceptionHandlerTest {
         assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, response.getStatusCode());
         assertNotNull(response.getBody());
         assertEquals(413, response.getBody().getHeader().getStatusCode());
+    }
+
+    @Test
+    void shouldRecordUnexpectedServerErrorsToActivityLog() throws Exception {
+        ActivityLogService activityLogService = mock(ActivityLogService.class);
+        GlobalExceptionHandler handlerWithAudit = new GlobalExceptionHandler(activityLogService);
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/pacsApi/worklist/worklist-list");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        ResponseEntity<ResponseMessage<BaseResult>> response = handlerWithAudit.handleUnexpected(new RuntimeException("boom"));
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
+        verify(activityLogService).insert(
+                eq("/pacsApi/worklist/worklist-list"),
+                any(Long.class),
+                contains("boom"),
+                eq("Global Exception"),
+                eq("Global Exception (Unhandled)"),
+                eq("UNHANDLED_EXCEPTION"),
+                eq(2),
+                eq("Unhandled Exception"),
+                any(LocalTime.class),
+                any(LocalTime.class),
+                same(request)
+        );
+    }
+
+    @Test
+    void shouldNotRecordGlobalErrorTwiceWhenServiceAlreadyLoggedIt() throws Exception {
+        ActivityLogService activityLogService = mock(ActivityLogService.class);
+        GlobalExceptionHandler handlerWithAudit = new GlobalExceptionHandler(activityLogService);
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/pacsApi/patient/patient-list");
+        ErrorReportingAttributes.markErrorActivityLogged(request);
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        handlerWithAudit.handleUnexpected(new RuntimeException("boom"));
+
+        verify(activityLogService, never()).insert(
+                any(String.class),
+                any(Long.class),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                eq(2),
+                any(String.class),
+                any(LocalTime.class),
+                any(LocalTime.class),
+                any(HttpServletRequest.class)
+        );
     }
 }

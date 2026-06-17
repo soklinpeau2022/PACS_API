@@ -256,6 +256,14 @@ function Invoke-Compose {
     }
 }
 
+function Invoke-EndpointGate {
+    Write-Host "Running API endpoint/security unit gate..."
+    & powershell -ExecutionPolicy Bypass -File ".\scripts\test-gate.ps1" -Target $Target -Tag "latest" -Context "stack-build"
+    if ($LASTEXITCODE -ne 0) {
+        throw "API endpoint/security unit gate failed. Build blocked."
+    }
+}
+
 function Show-LocalDockerPsSnapshot {
     if ($Target -ne "local" -or $Action -notin @("up", "deploy")) { return }
     if ($env:UDAYA_PACS_DOCKER_PS_LOGGED -eq "1") { return }
@@ -743,6 +751,7 @@ switch ($Action) {
             Invoke-HospitalImageFolderNormalization
 
             if ($Build -and -not $NoBuild) {
+                Invoke-EndpointGate
                 Invoke-Compose -ComposeArgs @("build")
             }
 

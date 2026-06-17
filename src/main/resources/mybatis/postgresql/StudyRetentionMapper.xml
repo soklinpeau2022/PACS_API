@@ -41,6 +41,9 @@
 
     <sql id="POLICY_LIST_WHERE">
         WHERE p.is_active = 1
+          <if test="filter != null and filter.publicKey != null and filter.publicKey != ''">
+              AND p.public_id::text = #{filter.publicKey}
+          </if>
           <if test="hospitalId != null and hospitalId > 0">
               AND (p.hospital_id = #{hospitalId} OR p.hospital_id IS NULL)
           </if>
@@ -59,6 +62,7 @@
                   OR COALESCE(ds.name, '') ILIKE '%' || #{filter.searchText} || '%'
                   OR COALESCE(m.abbr, '') ILIKE '%' || #{filter.searchText} || '%'
                   OR COALESCE(m.name, '') ILIKE '%' || #{filter.searchText} || '%'
+                  OR p.public_id::text ILIKE '%' || #{filter.searchText} || '%'
                   OR COALESCE(p.notes, '') ILIKE '%' || #{filter.searchText} || '%'
               )
           </if>

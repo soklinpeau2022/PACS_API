@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -21,6 +22,7 @@ import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class DicomServerClientServiceImplWorklistCrudTest {
@@ -93,6 +95,23 @@ class DicomServerClientServiceImplWorklistCrudTest {
                 "dicom_server",
                 "dicom_server",
                 "wl-3"
+        );
+
+        server.verify();
+    }
+
+    @Test
+    void deleteStudyByIdShouldTreatNotFoundAsAlreadyDeleted() {
+        server.expect(once(), requestTo("http://localhost:8042/studies/study-missing"))
+                .andExpect(method(HttpMethod.DELETE))
+                .andExpect(header(HttpHeaders.AUTHORIZATION, basicAuth("dicom_server", "dicom_server")))
+                .andRespond(withStatus(HttpStatus.NOT_FOUND));
+
+        dicomServerClientService.deleteStudyById(
+                "http://localhost:8042",
+                "dicom_server",
+                "dicom_server",
+                "study-missing"
         );
 
         server.verify();

@@ -444,6 +444,11 @@ compose() {
   docker compose --env-file "$ENV_FILE" --profile "$TARGET" -f docker-compose.yml "$@"
 }
 
+endpoint_gate() {
+  echo "Running API endpoint/security unit gate..."
+  bash scripts/test-gate.sh --target "$TARGET" --tag latest --context stack-build
+}
+
 log_local_docker_ps_snapshot() {
   if [[ "$TARGET" != "local" || ( "$ACTION" != "up" && "$ACTION" != "deploy" ) ]]; then
     return 0
@@ -868,6 +873,7 @@ case "$ACTION" in
     normalize_hospital_image_folders
     tmp_name="${service_name}_tmp"
     if [[ "$BUILD" == "true" && "$NO_BUILD" == "false" ]]; then
+      endpoint_gate
       compose build
     fi
     database_container_preflight

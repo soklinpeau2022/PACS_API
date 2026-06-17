@@ -1,6 +1,7 @@
 package com.ut.emrPacs.authentication.filter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import com.ut.emrPacs.helper.security.SecurityAuditLogger;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import jakarta.servlet.FilterChain;
@@ -9,7 +10,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -26,6 +29,7 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
     private final long viewerStateMaxRequestBytes;
     private final long dicomUploadMaxRequestBytes;
     private final String dicomUploadPath;
+    private final SecurityIncidentReporter securityIncidentReporter;
 
     public GlobalRequestSizeLimitFilter(
             @Value("${app.security.max-request-bytes:12582912}") long maxRequestBytes,
@@ -33,10 +37,22 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
             @Value("${app.security.dicom-upload.max-transport-request-bytes:4362076160}") long dicomUploadMaxRequestBytes,
             @Value("${app.security.dicom-upload.path:/dicom-uploads}") String dicomUploadPath
     ) {
+        this(maxRequestBytes, viewerStateMaxRequestBytes, dicomUploadMaxRequestBytes, dicomUploadPath, null);
+    }
+
+    @Autowired
+    public GlobalRequestSizeLimitFilter(
+            @Value("${app.security.max-request-bytes:12582912}") long maxRequestBytes,
+            @Value("${app.security.viewer-state.max-request-bytes:12582912}") long viewerStateMaxRequestBytes,
+            @Value("${app.security.dicom-upload.max-transport-request-bytes:4362076160}") long dicomUploadMaxRequestBytes,
+            @Value("${app.security.dicom-upload.path:/dicom-uploads}") String dicomUploadPath,
+            @Lazy SecurityIncidentReporter securityIncidentReporter
+    ) {
         this.maxRequestBytes = maxRequestBytes;
         this.viewerStateMaxRequestBytes = viewerStateMaxRequestBytes;
         this.dicomUploadMaxRequestBytes = dicomUploadMaxRequestBytes;
         this.dicomUploadPath = normalizePath(dicomUploadPath);
+        this.securityIncidentReporter = securityIncidentReporter;
     }
 
     @Override
@@ -52,6 +68,7 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
                     "content_length",
                     length + "/" + maxBytes
             );
+            reportBlocked(request, "payload_too_large", "content_length", length + "/" + maxBytes);
             response.setStatus(HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             String json = OBJECT_MAPPER.writeValueAsString(
@@ -61,6 +78,12 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
             return;
         }
         filterChain.doFilter(request, response);
+    }
+
+    private void reportBlocked(HttpServletRequest request, String event, String reason, String detail) {
+        if (securityIncidentReporter != null) {
+            securityIncidentReporter.reportBlockedRequest(request, event, reason, detail);
+        }
     }
 
     private long resolveMaxRequestBytes(HttpServletRequest request) {

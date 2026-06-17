@@ -9,6 +9,7 @@ import com.ut.emrPacs.helper.FunctionCodeGenerate;
 import com.ut.emrPacs.helper.FunctionHelper;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver.Entity;
+import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import com.ut.emrPacs.mapper.hospital.HospitalMapper;
 import com.ut.emrPacs.mapper.modality.ModalityMapper;
 import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
@@ -102,6 +103,8 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private PlatformTransactionManager transactionManager;
     @Autowired(required = false)
     private RealtimeNotificationService realtimeNotificationService;
+    @Autowired(required = false)
+    private SecurityIncidentReporter securityIncidentReporter;
 
     @Value("${spring.servlet.multipart.location:${HOSPITAL_IMAGE_ROOT_PATH:/var/ut-image}/tmp/dicom-upload}")
     private String multipartLocation;
@@ -151,6 +154,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                     : safeFiles.stream().mapToLong(MultipartFile::getSize).sum();
             long maxRequestBytes = configuredMaxUploadBytes();
             if (requestBytes > maxRequestBytes) {
+                reportSecurityIncident(httpServletRequest, "dicom_upload_policy", "request_too_large", requestBytes + "/" + maxRequestBytes);
                 return ResponseMessageUtils.makeResponse(false, messageService.message("DICOM upload can be up to " + formatBytes(maxRequestBytes) + " per request.", false));
             }
 
@@ -168,7 +172,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             );
 
             if (hasZip) {
-                uploadZip(zipFile, context);
+                uploadZip(zipFile, context, httpServletRequest);
             } else {
                 for (MultipartFile file : safeFiles) {
                     uploadMultipartFile(file, context);
@@ -243,28 +247,35 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         }
     }
 
-    private void uploadZip(MultipartFile zipFile, UploadContext context) throws IOException {
+    private void uploadZip(MultipartFile zipFile, UploadContext context, HttpServletRequest httpServletRequest) throws IOException {
         int entries = 0;
         long maxEntryBytes = configuredMaxZipEntryBytes();
         try (ZipInputStream zipInputStream = new ZipInputStream(zipFile.getInputStream())) {
             ZipEntry entry;
             while ((entry = zipInputStream.getNextEntry()) != null) {
+                String entryName = entry.getName();
                 Path tempEntryPath = null;
                 try {
                     if (entry.isDirectory()) {
                         continue;
                     }
+                    if (isUnsafeZipEntryName(entryName)) {
+                        reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "unsafe_entry_name", entryName);
+                        throw new DicomUploadSecurityException("ZIP entry name is unsafe.");
+                    }
                     entries++;
                     if (entries > MAX_ZIP_ENTRIES) {
-                        throw new IllegalArgumentException("ZIP contains too many files.");
+                        reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "too_many_entries", entries + "/" + MAX_ZIP_ENTRIES);
+                        throw new DicomUploadSecurityException("ZIP contains too many files.");
                     }
-                    tempEntryPath = writeBoundedZipEntryToTempFile(zipInputStream, maxEntryBytes);
+                    tempEntryPath = writeBoundedZipEntryToTempFile(zipInputStream, maxEntryBytes, httpServletRequest, entryName);
                     long entryBytes = Files.size(tempEntryPath);
                     if (entryBytes == 0) {
                         continue;
                     }
                     if (entryBytes > maxEntryBytes) {
-                        throw new IllegalArgumentException("ZIP entry is too large.");
+                        reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "entry_too_large", entryName + " " + entryBytes + "/" + maxEntryBytes);
+                        throw new DicomUploadSecurityException("ZIP entry is too large.");
                     }
                     DicomServerInstanceUploadResponse uploaded = dicomServerClientService.uploadInstance(
                             context.dicomServer.getBaseUrl(),
@@ -276,8 +287,11 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                     processUploadedInstanceInTransaction(uploaded, context);
                     context.response.setAcceptedFiles(context.response.getAcceptedFiles() + 1);
                 } catch (Exception entryError) {
+                    if (entryError instanceof DicomUploadSecurityException) {
+                        throw (DicomUploadSecurityException) entryError;
+                    }
                     context.response.setFailedFiles(context.response.getFailedFiles() + 1);
-                    addUploadError(context.response, entry.getName(), entryError);
+                    addUploadError(context.response, entryName, entryError);
                 } finally {
                     deleteTempFile(tempEntryPath);
                     zipInputStream.closeEntry();
@@ -286,7 +300,12 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         }
     }
 
-    private Path writeBoundedZipEntryToTempFile(ZipInputStream zipInputStream, long maxEntryBytes) throws IOException {
+    private Path writeBoundedZipEntryToTempFile(
+            ZipInputStream zipInputStream,
+            long maxEntryBytes,
+            HttpServletRequest httpServletRequest,
+            String entryName
+    ) throws IOException {
         Path tempDirectory = resolveDicomUploadTempDirectory();
         Path tempFile = Files.createTempFile(tempDirectory, "dicom-zip-entry-", ".dcm");
         byte[] buffer = new byte[ZIP_READ_BUFFER_BYTES];
@@ -296,7 +315,8 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             while ((read = zipInputStream.read(buffer)) != -1) {
                 total += read;
                 if (total > maxEntryBytes) {
-                    throw new IllegalArgumentException("ZIP entry is too large.");
+                    reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "entry_too_large", entryName + " " + total + "/" + maxEntryBytes);
+                    throw new DicomUploadSecurityException("ZIP entry is too large.");
                 }
                 outputStream.write(buffer, 0, read);
             }
@@ -305,6 +325,29 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             throw error;
         }
         return tempFile;
+    }
+
+    private void reportSecurityIncident(HttpServletRequest request, String event, String reason, String detail) {
+        if (securityIncidentReporter != null) {
+            securityIncidentReporter.reportBlockedRequest(request, event, reason, detail);
+        }
+    }
+
+    private static boolean isUnsafeZipEntryName(String entryName) {
+        String normalized = trimToNull(entryName);
+        if (normalized == null || normalized.indexOf('\0') >= 0) {
+            return true;
+        }
+        normalized = normalized.replace('\\', '/');
+        if (normalized.startsWith("/") || normalized.matches("(?i)^[a-z]:/.*")) {
+            return true;
+        }
+        for (String part : normalized.split("/")) {
+            if ("..".equals(part)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Path resolveDicomUploadTempDirectory() throws IOException {
@@ -809,6 +852,12 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     }
 
     private record DicomPatientName(String firstName, String lastName) {
+    }
+
+    private static final class DicomUploadSecurityException extends IOException {
+        private DicomUploadSecurityException(String message) {
+            super(message);
+        }
     }
 
 }

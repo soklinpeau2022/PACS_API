@@ -9,6 +9,8 @@ import lombok.EqualsAndHashCode;
 @EqualsAndHashCode(callSuper = true)
 @Data
 public class StudyRetentionPolicyFilter extends Filter {
+    private String publicKey;
+
     @JsonIgnore
     @Schema(hidden = true)
     private Long dicomServerId;
@@ -24,6 +26,10 @@ public class StudyRetentionPolicyFilter extends Filter {
     private String modalityKey;
 
     private Boolean enabled;
+
+    public void setPublicKey(String publicKey) {
+        this.publicKey = trimToNull(publicKey);
+    }
 
     public void setDicomServerKey(String dicomServerKey) {
         this.dicomServerKey = trimToNull(dicomServerKey);

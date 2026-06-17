@@ -930,7 +930,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 return ResponseMessageUtils.makeResponse(true, messageService.message(notFoundMessage, true));
             }
 
-            if (!isCallbackAllowedForWorklist(callbackDicomServerId, Worklist)) {
+            if (!isCallbackAllowedForWorklist(callbackDicomServerId, callbackServer, Worklist)) {
                 String message = "Callback DICOM server does not match this Worklist route.";
                 insertDicomServerCallbackLog(request, false, message, null, receivedAtIso);
                 LocalTime endDuration = LocalTime.now();
@@ -3656,7 +3656,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         }
     }
 
-    private boolean isCallbackAllowedForWorklist(Long callbackDicomServerId, WorklistDetailRow Worklist) {
+    private boolean isCallbackAllowedForWorklist(Long callbackDicomServerId, HospitalDicomServerResponse callbackServer, WorklistDetailRow Worklist) {
         if (callbackDicomServerId == null || callbackDicomServerId <= 0L) {
             // Legacy machine clients remain controlled by ModulePermissionFilter allowlist.
             return true;
@@ -3666,7 +3666,10 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         }
         Long routedDicomServerId = Worklist.getDicomServerId();
         if (routedDicomServerId != null && routedDicomServerId > 0L) {
-            return callbackDicomServerId.equals(routedDicomServerId);
+            if (callbackDicomServerId.equals(routedDicomServerId)) {
+                return true;
+            }
+            return isSameDicomServerEndpoint(callbackServer, findDicomServerById(routedDicomServerId, Worklist.getHospitalId()));
         }
         List<HospitalModalityServerRouteResponse> routes =
                 dicomServerMapper.listActiveRoutesByHospitalAndModality(Worklist.getHospitalId(), Worklist.getModalityId());
@@ -3674,7 +3677,45 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             return false;
         }
         return routes.stream()
-                .anyMatch(route -> route != null && callbackDicomServerId.equals(route.getDicomServerId()));
+                .anyMatch(route -> route != null
+                        && (callbackDicomServerId.equals(route.getDicomServerId())
+                        || isSameDicomServerEndpoint(callbackServer, findDicomServerById(route.getDicomServerId(), Worklist.getHospitalId()))));
+    }
+
+    private HospitalDicomServerResponse findDicomServerById(Long dicomServerId, Long hospitalId) {
+        if (dicomServerId == null || dicomServerId <= 0L) {
+            return null;
+        }
+        try {
+            List<HospitalDicomServerResponse> rows = dicomServerMapper.getDicomServerById(dicomServerId, hospitalId);
+            return rows == null || rows.isEmpty() ? null : rows.get(0);
+        } catch (Exception error) {
+            LOGGER.warn("Unable to resolve DICOM server {} for callback route check: {}", dicomServerId, error.getMessage());
+            return null;
+        }
+    }
+
+    private boolean isSameDicomServerEndpoint(HospitalDicomServerResponse callbackServer, HospitalDicomServerResponse routeServer) {
+        String callbackBaseUrl = normalizeDicomServerEndpoint(callbackServer);
+        String routeBaseUrl = normalizeDicomServerEndpoint(routeServer);
+        return hasText(callbackBaseUrl) && callbackBaseUrl.equalsIgnoreCase(routeBaseUrl);
+    }
+
+    private String normalizeDicomServerEndpoint(HospitalDicomServerResponse server) {
+        if (server == null) {
+            return null;
+        }
+        try {
+            return normalizePublicBaseUrl(resolveDicomServerBaseUrl(server));
+        } catch (Exception ignored) {
+            String protocol = Boolean.TRUE.equals(server.getSslEnabled()) ? "https" : "http";
+            String host = firstNonBlank(server.getIpAddress(), "");
+            Integer port = server.getPort();
+            if (!hasText(host) || port == null || port <= 0) {
+                return null;
+            }
+            return normalizePublicBaseUrl(protocol + "://" + host.replaceFirst("^https?://", "") + ":" + port);
+        }
     }
 
     private void insertDicomServerCallbackLog(

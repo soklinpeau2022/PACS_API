@@ -479,6 +479,42 @@ class WorklistServiceImplReceivedStudyTest {
     }
 
     @Test
+    void receivedStudyShouldAcceptCallbackClientAliasWhenDicomEndpointMatchesRoute() throws Exception {
+        WorklistServiceImpl WorklistService = buildService();
+        authenticateMachineClient(9L);
+
+        WorklistReceivedStudyRequest request = callbackRequest("DX-ALIAS-0001", "1.2.826.alias", "alias-study");
+        WorklistDetailRow Worklist = callbackWorklist(29L, WorklistStatus.IN_PROGRESS);
+        Worklist.setAccessionNumber("DX-ALIAS-0001");
+        when(WorklistMapper.findWorklistByAccessionNumber("DX-ALIAS-0001")).thenReturn(Worklist);
+        when(dicomServerMapper.getDicomServerById(9L, null)).thenReturn(List.of(dicomServer(9L)));
+        when(dicomServerMapper.getDicomServerById(4L, 1L)).thenReturn(List.of(dicomServer(4L)));
+        when(dicomServerMapper.findActiveDicomServerByWorklist(1L, 29L)).thenReturn(dicomServer(4L));
+        when(studyMapper.upsertFromWorklist(
+                eq(1L), eq(35L), eq("1.2.826.alias"), eq("DX-ALIAS-0001"), eq(4L), eq("DX"),
+                any(), eq("Callback test"), any(), eq(4L), any(), eq("alias-study"), eq("callback-patient"),
+                eq("callback-series"), eq(2), anyString()
+        )).thenReturn(605L);
+        when(WorklistMapper.updateWorklistReceivedFromCallbackById(
+                eq(1L), eq(29L), eq(605L), eq(WorklistStatus.IN_PROGRESS.code()), eq(null), anyString()
+        )).thenReturn(1);
+        WorklistDetailRow refreshed = callbackWorklist(29L, WorklistStatus.IN_PROGRESS);
+        refreshed.setStudyInstanceUid("1.2.826.alias");
+        when(WorklistMapper.findWorklistById(1L, 29L)).thenReturn(refreshed);
+
+        ResponseMessage<BaseResult> response = WorklistService.receivedStudy(request, new MockHttpServletRequest());
+
+        assertTrue(response.isSuccess());
+        verify(WorklistMapper).updateWorklistReceivedFromCallbackById(
+                eq(1L), eq(29L), eq(605L), eq(WorklistStatus.IN_PROGRESS.code()), eq(null), anyString()
+        );
+        verify(dicomServerCallbackLogMapper).insertCallbackLog(
+                anyString(), eq("DX-ALIAS-0001"), eq("alias-study"), eq("callback-patient"),
+                eq("[\"callback-series\"]"), anyString(), eq(true), eq(null), any(), anyString()
+        );
+    }
+
+    @Test
     void receivedStudyShouldMoveWaitingWorklistToInProgressAndInsertHistory() throws Exception {
         WorklistServiceImpl WorklistService = buildService();
         authenticateMachineClient(4L);

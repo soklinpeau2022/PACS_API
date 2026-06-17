@@ -3,8 +3,11 @@ package com.ut.emrPacs.config;
 import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
+import com.ut.emrPacs.service.service.ActivityLogService;
 import jakarta.validation.ConstraintViolationException;
 import org.apache.ibatis.exceptions.PersistenceException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -20,6 +23,8 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
@@ -27,11 +32,16 @@ import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import jakarta.servlet.http.HttpServletRequest;
+import java.time.LocalTime;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+    private static final int LOG_STATUS_ERROR = 2;
 
     private static final String MESSAGE_BAD_REQUEST = "Invalid request parameters.";
     private static final String MESSAGE_MALFORMED_JSON = "Malformed JSON request.";
@@ -42,6 +52,17 @@ public class GlobalExceptionHandler {
     private static final String MESSAGE_NOT_FOUND = "Not Found.";
     private static final String MESSAGE_CONFLICT = "Request could not be processed.";
     private static final String MESSAGE_INTERNAL_ERROR = "An unexpected error occurred. Please try again.";
+
+    private final ActivityLogService activityLogService;
+
+    public GlobalExceptionHandler() {
+        this(null);
+    }
+
+    @Autowired
+    public GlobalExceptionHandler(@Lazy ActivityLogService activityLogService) {
+        this.activityLogService = activityLogService;
+    }
 
     @ExceptionHandler({IllegalArgumentException.class, MethodArgumentTypeMismatchException.class, MissingServletRequestParameterException.class})
     public ResponseEntity<ResponseMessage<BaseResult>> handleBadRequest(Exception exception) {
@@ -120,6 +141,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({DataIntegrityViolationException.class, PersistenceException.class})
     public ResponseEntity<ResponseMessage<BaseResult>> handleDataErrors(Exception exception) {
         LOGGER.error("Data access error", exception);
+        recordUnhandledError(exception, "Global Exception", "Global Exception (Data Access)", "DATA_ACCESS_ERROR", "Data Access Error");
         return buildError(HttpStatus.CONFLICT, "CONFLICT", MESSAGE_CONFLICT);
     }
 
@@ -134,7 +156,59 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ResponseMessage<BaseResult>> handleUnexpected(Exception exception) {
         LOGGER.error("Unhandled exception", exception);
+        recordUnhandledError(exception, "Global Exception", "Global Exception (Unhandled)", "UNHANDLED_EXCEPTION", "Unhandled Exception");
         return buildError(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", MESSAGE_INTERNAL_ERROR);
+    }
+
+    private void recordUnhandledError(Exception exception, String moduleName, String moduleId, String action, String description) {
+        if (activityLogService == null) {
+            return;
+        }
+        HttpServletRequest request = resolveHttpRequest();
+        if (ErrorReportingAttributes.isErrorActivityLogged(request)) {
+            return;
+        }
+
+        LocalTime now = LocalTime.now();
+        try {
+            activityLogService.insert(
+                    resolveEndpoint(request),
+                    resolveErrorLine(exception),
+                    exception.toString(),
+                    moduleName,
+                    moduleId,
+                    action,
+                    LOG_STATUS_ERROR,
+                    description,
+                    now,
+                    now,
+                    request
+            );
+        } catch (Exception auditError) {
+            LOGGER.warn("Global exception audit insert failed: {}", auditError.getMessage());
+        }
+    }
+
+    private static String resolveEndpoint(HttpServletRequest request) {
+        if (request != null && request.getRequestURI() != null && !request.getRequestURI().isBlank()) {
+            return request.getRequestURI();
+        }
+        return "/internal/global-exception";
+    }
+
+    private static Long resolveErrorLine(Throwable error) {
+        if (error == null || error.getStackTrace() == null || error.getStackTrace().length == 0) {
+            return null;
+        }
+        return (long) error.getStackTrace()[0].getLineNumber();
+    }
+
+    private static HttpServletRequest resolveHttpRequest() {
+        RequestAttributes attributes = RequestContextHolder.getRequestAttributes();
+        if (attributes instanceof ServletRequestAttributes servletRequestAttributes) {
+            return servletRequestAttributes.getRequest();
+        }
+        return null;
     }
 
     private static ResponseEntity<ResponseMessage<BaseResult>> buildError(HttpStatus status, String code, String message) {

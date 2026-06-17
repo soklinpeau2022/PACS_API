@@ -22,7 +22,8 @@ class EndpointLiveSmokeTest {
 
     private static final String BASE_URL_PROPERTY = "live.api.base-url";
     private static final Set<String> EXPECTED_EMPTY_RESOURCE_404S = Set.of(
-            "POST /pacs-result/pacs-result-image-content"
+            "POST /pacs-result/pacs-result-image-content",
+            "POST /pacs-result-api/pacs-result-image-content"
     );
 
     @Test

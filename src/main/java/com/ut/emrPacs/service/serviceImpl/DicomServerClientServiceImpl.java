@@ -229,12 +229,16 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
             throw new IllegalArgumentException("DICOM server study ID is required.");
         }
         String url = normalizeDicomServerBaseUrl(baseUrl) + "/studies/" + normalizedStudyId;
-        restTemplate.exchange(
-                url,
-                HttpMethod.DELETE,
-                new HttpEntity<>(buildHeaders(username, password)),
-                Void.class
-        );
+        try {
+            restTemplate.exchange(
+                    url,
+                    HttpMethod.DELETE,
+                    new HttpEntity<>(buildHeaders(username, password)),
+                    Void.class
+            );
+        } catch (HttpClientErrorException.NotFound notFound) {
+            // DELETE is idempotent for retention cleanup: a missing archive study is already gone.
+        }
     }
 
     @Override

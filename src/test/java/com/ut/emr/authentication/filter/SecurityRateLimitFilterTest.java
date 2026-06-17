@@ -1,5 +1,6 @@
 package com.ut.emrPacs.authentication.filter;
 
+import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -14,10 +15,12 @@ import static org.mockito.Mockito.verify;
 class SecurityRateLimitFilterTest {
 
     private SecurityRateLimitFilter filter;
+    private SecurityIncidentReporter securityIncidentReporter;
 
     @BeforeEach
     void setUp() {
-        filter = new SecurityRateLimitFilter();
+        securityIncidentReporter = Mockito.mock(SecurityIncidentReporter.class);
+        filter = new SecurityRateLimitFilter(securityIncidentReporter);
         ReflectionTestUtils.setField(filter, "enabled", true);
         ReflectionTestUtils.setField(filter, "authWindowSeconds", 60);
         ReflectionTestUtils.setField(filter, "authMaxRequests", 2);
@@ -59,6 +62,7 @@ class SecurityRateLimitFilterTest {
         assertEquals(200, res1.getStatus());
         assertEquals(200, res2.getStatus());
         assertEquals(429, res3.getStatus());
+        verify(securityIncidentReporter).reportBlockedRequest(req3, "rate_limit", "auth", "/auth/auth-refresh");
     }
 
     @Test

@@ -22,12 +22,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ut.emrPacs.config.ApiConstants;
 import com.ut.emrPacs.helper.http.RequestClientInfoHelper;
 import com.ut.emrPacs.helper.security.SecurityAuditLogger;
+import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 
 @Component
 @NullMarked
@@ -64,6 +67,16 @@ public class SecurityRateLimitFilter extends OncePerRequestFilter {
 
     // Initialised in @PostConstruct once @Value fields are injected.
     private Cache<String, SlidingWindowCounter> counters;
+    private final SecurityIncidentReporter securityIncidentReporter;
+
+    public SecurityRateLimitFilter() {
+        this(null);
+    }
+
+    @Autowired
+    public SecurityRateLimitFilter(@Lazy SecurityIncidentReporter securityIncidentReporter) {
+        this.securityIncidentReporter = securityIncidentReporter;
+    }
 
     @PostConstruct
     void initCache() {
@@ -109,6 +122,7 @@ public class SecurityRateLimitFilter extends OncePerRequestFilter {
         if (!counter.tryAcquire(limitRule.windowSeconds, limitRule.maxRequests)) {
             LOGGER.warn("Rate limit exceeded: bucket={}, ip={}, path={}", limitRule.bucket, clientIp, normalizedPath);
             SecurityAuditLogger.logBlocked(LOGGER, request, "rate_limit", limitRule.bucket, normalizedPath);
+            reportBlocked(request, "rate_limit", limitRule.bucket, normalizedPath);
             response.setStatus(429);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             String json = OBJECT_MAPPER.writeValueAsString(
@@ -119,6 +133,12 @@ public class SecurityRateLimitFilter extends OncePerRequestFilter {
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    private void reportBlocked(HttpServletRequest request, String event, String reason, String detail) {
+        if (securityIncidentReporter != null) {
+            securityIncidentReporter.reportBlockedRequest(request, event, reason, detail);
+        }
     }
 
     private Cache<String, SlidingWindowCounter> getCounters() {

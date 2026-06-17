@@ -1,5 +1,6 @@
 package com.ut.emrPacs.authentication.filter;
 
+import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,10 +19,18 @@ class GlobalRequestSizeLimitFilterTest {
     private static final long DICOM_UPLOAD_LIMIT_BYTES = (4L * 1024L * 1024L * 1024L) + (64L * 1024L * 1024L);
 
     private GlobalRequestSizeLimitFilter filter;
+    private SecurityIncidentReporter securityIncidentReporter;
 
     @BeforeEach
     void setUp() {
-        filter = new GlobalRequestSizeLimitFilter(GLOBAL_LIMIT_BYTES, VIEWER_STATE_LIMIT_BYTES, DICOM_UPLOAD_LIMIT_BYTES, "/dicom-uploads");
+        securityIncidentReporter = Mockito.mock(SecurityIncidentReporter.class);
+        filter = new GlobalRequestSizeLimitFilter(
+                GLOBAL_LIMIT_BYTES,
+                VIEWER_STATE_LIMIT_BYTES,
+                DICOM_UPLOAD_LIMIT_BYTES,
+                "/dicom-uploads",
+                securityIncidentReporter
+        );
     }
 
     @Test
@@ -36,6 +45,12 @@ class GlobalRequestSizeLimitFilterTest {
 
         assertEquals(413, response.getStatus());
         verify(chain, never()).doFilter(request, response);
+        verify(securityIncidentReporter).reportBlockedRequest(
+                request,
+                "payload_too_large",
+                "content_length",
+                (13L * 1024L * 1024L) + "/" + GLOBAL_LIMIT_BYTES
+        );
     }
 
     @Test
@@ -81,7 +96,7 @@ class GlobalRequestSizeLimitFilterTest {
 
     @Test
     void shouldBlockDicomUploadWhenContentLengthExceedsDicomUploadLimit() throws Exception {
-        filter = new GlobalRequestSizeLimitFilter(GLOBAL_LIMIT_BYTES, VIEWER_STATE_LIMIT_BYTES, 16, "/dicom-uploads");
+        filter = new GlobalRequestSizeLimitFilter(GLOBAL_LIMIT_BYTES, VIEWER_STATE_LIMIT_BYTES, 16, "/dicom-uploads", securityIncidentReporter);
         FilterChain chain = Mockito.mock(FilterChain.class);
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/pacsApi/dicom-uploads");
         request.setContextPath("/pacsApi");

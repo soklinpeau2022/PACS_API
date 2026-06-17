@@ -9,8 +9,10 @@ import com.ut.emrPacs.model.base.MessageService;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.dto.request.pacs.studyRetention.StudyRetentionAutoDeleteRequest;
 import com.ut.emrPacs.model.dto.request.pacs.studyRetention.StudyRetentionBulkDeleteRequest;
+import com.ut.emrPacs.model.dto.request.pacs.studyRetention.StudyRetentionPolicySaveRequest;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
 import com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionBulkDeleteResponse;
+import com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionPolicyResponse;
 import com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionReviewResponse;
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.DicomServerClientService;
@@ -38,6 +40,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -87,11 +90,84 @@ class StudyRetentionServiceImplTest {
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         lenient().when(dicomServerMapper.getDicomServerById(anyLong(), anyLong())).thenReturn(List.of(server()));
         lenient().when(studyRetentionMapper.hardDeleteStudyData(anyLong(), anyLong())).thenReturn(1);
+        lenient().when(publicEntityKeyResolver.resolve(any(PublicEntityKeyResolver.Entity.class), nullable(String.class), nullable(Long.class)))
+                .thenAnswer(invocation -> invocation.getArgument(2));
     }
 
     @AfterEach
     void tearDown() {
         SecurityContextHolder.clearContext();
+    }
+
+    @Test
+    void findPolicyUsesCurrentHospitalScopeForAdminUsers() throws Exception {
+        setAuthenticatedUser(2L, 10L, "ROLE_ADMIN");
+        StudyRetentionPolicyResponse policy = policy(55L, "policy-55", 10L);
+
+        when(studyRetentionMapper.findPolicyById(55L, 10L)).thenReturn(policy);
+
+        ResponseMessage<BaseResult> response = service.findPolicy(55L, new MockHttpServletRequest());
+
+        assertTrue(response.getHeader().getResult());
+        assertNotNull(response.getBody());
+        assertEquals(policy, response.getBody().getData().get(0));
+        verify(studyRetentionMapper).findPolicyById(55L, 10L);
+    }
+
+    @Test
+    void savePolicyUpdateUsesPublicKeyAndCurrentHospitalScope() throws Exception {
+        setAuthenticatedUser(2L, 10L, "ROLE_ADMIN");
+        StudyRetentionPolicySaveRequest request = new StudyRetentionPolicySaveRequest();
+        request.setPublicKey("policy-55");
+        request.setRetentionValue(2);
+        request.setRetentionUnit("years");
+        request.setNotifyBeforeDays(14);
+        request.setRequireApproval(true);
+        request.setEnabled(true);
+        request.setAutoDelete(false);
+        request.setNotes("Updated retention");
+
+        StudyRetentionPolicyResponse existing = policy(55L, "policy-55", 10L);
+        StudyRetentionPolicyResponse saved = policy(55L, "policy-55", 10L);
+        saved.setRetentionValue(2);
+        saved.setRetentionUnit("YEAR");
+        saved.setRetentionDays(730);
+        saved.setNotes("Updated retention");
+
+        when(publicEntityKeyResolver.resolve(PublicEntityKeyResolver.Entity.STUDY_RETENTION_POLICY, "policy-55", null)).thenReturn(55L);
+        when(studyRetentionMapper.countDuplicatePolicyScope(eq(10L), nullable(Long.class), nullable(Long.class), eq(55L))).thenReturn(0L);
+        when(studyRetentionMapper.findPolicyById(55L, 10L)).thenReturn(existing);
+        when(studyRetentionMapper.findPolicyById(55L, null)).thenReturn(saved);
+
+        ResponseMessage<BaseResult> response = service.savePolicy(request, new MockHttpServletRequest());
+
+        assertTrue(response.getHeader().getResult(), () -> String.valueOf(response.getHeader().getErrorText()));
+        assertEquals(55L, request.getId());
+        assertEquals(10L, request.getHospitalId());
+        assertEquals("YEAR", request.getRetentionUnit());
+        assertEquals(730, request.getRetentionDays());
+        verify(studyRetentionMapper).updatePolicy(request, 2L);
+        verify(studyRetentionMapper, never()).insertPolicy(any(), anyLong());
+    }
+
+    @Test
+    void savePolicyUpdateRejectsPolicyOutsideCurrentHospital() throws Exception {
+        setAuthenticatedUser(2L, 10L, "ROLE_ADMIN");
+        StudyRetentionPolicySaveRequest request = new StudyRetentionPolicySaveRequest();
+        request.setPublicKey("policy-other");
+        request.setRetentionValue(1);
+        request.setRetentionUnit("YEAR");
+        request.setNotifyBeforeDays(14);
+
+        when(publicEntityKeyResolver.resolve(PublicEntityKeyResolver.Entity.STUDY_RETENTION_POLICY, "policy-other", null)).thenReturn(77L);
+        lenient().when(studyRetentionMapper.countDuplicatePolicyScope(eq(10L), nullable(Long.class), nullable(Long.class), eq(77L))).thenReturn(0L);
+        when(studyRetentionMapper.findPolicyById(77L, 10L)).thenReturn(null);
+
+        ResponseMessage<BaseResult> response = service.savePolicy(request, new MockHttpServletRequest());
+
+        assertEquals(false, response.getHeader().getResult());
+        verify(studyRetentionMapper, never()).updatePolicy(any(), anyLong());
+        verify(studyRetentionMapper, never()).insertPolicy(any(), anyLong());
     }
 
     @Test
@@ -199,6 +275,35 @@ class StudyRetentionServiceImplTest {
         assertNotNull(response.getBody().getData());
         assertEquals(1, response.getBody().getData().size());
         return (StudyRetentionBulkDeleteResponse) response.getBody().getData().get(0);
+    }
+
+    private static StudyRetentionPolicyResponse policy(Long id, String publicKey, Long hospitalId) {
+        StudyRetentionPolicyResponse response = new StudyRetentionPolicyResponse();
+        response.setId(id);
+        response.setPublicKey(publicKey);
+        response.setHospitalId(hospitalId);
+        response.setHospitalName("KSFH Hospital");
+        response.setRetentionValue(1);
+        response.setRetentionUnit("YEAR");
+        response.setRetentionDays(365);
+        response.setNotifyBeforeDays(14);
+        response.setRequireApproval(true);
+        response.setEnabled(true);
+        response.setAutoDelete(false);
+        return response;
+    }
+
+    private static void setAuthenticatedUser(Long userId, Long hospitalId, String... authorities) {
+        List<SimpleGrantedAuthority> grantedAuthorities = List.of(authorities).stream()
+                .map(SimpleGrantedAuthority::new)
+                .toList();
+        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                "user-" + userId,
+                "n/a",
+                grantedAuthorities
+        );
+        authentication.setDetails(new CurrentUserPrincipal(userId, "user-" + userId, hospitalId, "HSP", "pacs-web", "jti", 1L));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
     }
 
     private static StudyRetentionReviewResponse candidate(String publicKey, String status, Long studyId) {

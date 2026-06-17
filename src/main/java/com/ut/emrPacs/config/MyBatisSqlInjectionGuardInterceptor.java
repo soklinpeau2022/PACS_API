@@ -1,5 +1,6 @@
 package com.ut.emrPacs.config;
 
+import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import org.apache.ibatis.executor.Executor;
 import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.mapping.MappedStatement;
@@ -12,6 +13,8 @@ import org.apache.ibatis.session.ResultHandler;
 import org.apache.ibatis.session.RowBounds;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.core.io.support.ResourcePatternResolver;
@@ -62,9 +65,16 @@ public class MyBatisSqlInjectionGuardInterceptor implements Interceptor {
     private static final Map<String, DynamicKeyRule> DYNAMIC_KEY_RULES = buildDynamicKeyRules();
 
     private final Set<String> dynamicKeys;
+    private final SecurityIncidentReporter securityIncidentReporter;
 
     public MyBatisSqlInjectionGuardInterceptor() {
+        this(null);
+    }
+
+    @Autowired
+    public MyBatisSqlInjectionGuardInterceptor(@Lazy SecurityIncidentReporter securityIncidentReporter) {
         this.dynamicKeys = loadDynamicKeys();
+        this.securityIncidentReporter = securityIncidentReporter;
     }
 
     @Override
@@ -76,7 +86,12 @@ public class MyBatisSqlInjectionGuardInterceptor implements Interceptor {
         if (args.length > 1) {
             Object parameterObject = args[1];
             IdentityHashMap<Object, Boolean> visited = new IdentityHashMap<>();
-            validateDynamicValues(parameterObject, statementId, visited);
+            try {
+                validateDynamicValues(parameterObject, statementId, visited);
+            } catch (IllegalArgumentException ex) {
+                reportBlockedSql(statementId, ex.getMessage());
+                throw ex;
+            }
         }
         return invocation.proceed();
     }
@@ -333,6 +348,17 @@ public class MyBatisSqlInjectionGuardInterceptor implements Interceptor {
 
     private static IllegalArgumentException reject(String statementId, String key) {
         return new IllegalArgumentException("Rejected unsafe dynamic SQL parameter for " + statementId + " (" + key + ")");
+    }
+
+    private void reportBlockedSql(String statementId, String detail) {
+        if (securityIncidentReporter != null) {
+            securityIncidentReporter.reportBlockedRequest(
+                    null,
+                    "sql_injection_guard",
+                    "unsafe_dynamic_sql",
+                    (statementId == null || statementId.isBlank() ? "unknown" : statementId) + " " + detail
+            );
+        }
     }
 
     private enum DynamicKeyRule {

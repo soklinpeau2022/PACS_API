@@ -49,7 +49,7 @@ public class TelegramHelper {
         }
         try {
             String url = "https://api.telegram.org/bot{token}/sendMessage";
-            log.debug("Sending Telegram message to chat {}: {}", chatId, message);
+            log.debug("Sending Telegram message to configured chat.");
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
@@ -66,7 +66,7 @@ public class TelegramHelper {
     }
 
     private ResponseEntity<String> sendWithHtml(String url, HttpHeaders headers, String chatId, String message) {
-        String safeHtml = escapeHtml(message != null ? message : "");
+        String safeHtml = message != null ? message : "";
         try {
             MultiValueMap<String, String> htmlForm = new LinkedMultiValueMap<>();
             htmlForm.add("chat_id", chatId);
@@ -79,20 +79,20 @@ public class TelegramHelper {
             log.warn("Telegram HTML send failed. Retrying as plain text. Error: {}", htmlError.toString());
             MultiValueMap<String, String> plainForm = new LinkedMultiValueMap<>();
             plainForm.add("chat_id", chatId);
-            plainForm.add("text", message != null ? message : "");
+            plainForm.add("text", stripHtml(message != null ? message : ""));
             HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(plainForm, headers);
             return restTemplate.postForEntity(url, requestEntity, String.class, apiToken);
         }
     }
 
-    private String escapeHtml(String value) {
+    private String stripHtml(String value) {
         if (value == null || value.isEmpty()) {
             return "";
         }
         return value
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;");
+                .replaceAll("(?is)<br\\s*/?>", "\n")
+                .replaceAll("(?is)</p\\s*>", "\n")
+                .replaceAll("(?is)<[^>]+>", "");
     }
 
 }
