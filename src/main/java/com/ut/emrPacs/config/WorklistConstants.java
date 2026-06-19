@@ -42,7 +42,12 @@ public final class WorklistConstants {
     public static final String MSG_DICOM_SERVER_UNAUTHORIZED = "DicomServer unauthorized (401).";
     public static final String MSG_DICOM_SERVER_UNREACHABLE = "DicomServer is unreachable.";
     public static final String MSG_IMAGING_STARTED_CANNOT_CANCEL = "This Worklist cannot be cancelled because imaging has already started or images have already been received.";
-    public static final String MSG_CANCEL_SAFETY_UNVERIFIABLE = "Unable to verify that imaging has not started. The Worklist was not cancelled.";
+    public static final String MSG_IMAGING_STARTED_CANNOT_CHANGE = "This Worklist is locked because imaging has already started or images have already been received. No changes were made.";
+    public static final String MSG_REMOTE_WORKLIST_MISSING_OR_IN_USE = "This Worklist is no longer available on the DICOM server. The imaging machine may already be using it. No changes were made. Please wait for image sync or contact radiology.";
+    public static final String MSG_REMOTE_WORKLIST_MISMATCH = "The DICOM server Worklist no longer matches this patient accession. No changes were made. Please contact PACS support.";
+    public static final String MSG_WORKLIST_SAFETY_UNVERIFIABLE = "PACS safety could not be verified, so no changes were made. Please try again or contact PACS support.";
+    // Backward compatibility alias for older cancellation-only references.
+    public static final String MSG_CANCEL_SAFETY_UNVERIFIABLE = MSG_WORKLIST_SAFETY_UNVERIFIABLE;
     public static final String MSG_UNABLE_TO_UPDATE_STATUS = "Unable to update Worklist status.";
     public static final String MSG_VIEWER_DICOMWEB_PATH_REQUIRED = "Viewer DICOMweb path is required.";
 }

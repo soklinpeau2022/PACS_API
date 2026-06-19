@@ -47,7 +47,7 @@ public class WorklistRestController {
     }
 
     @PutMapping("/{worklistId}")
-    @Operation(summary = "Update Worklist", description = "Module -> Worklist. Endpoint -> PUT /worklists/{worklistId}. WAITING updates EMR fields. IN_PROGRESS mirrors the update to the DicomServer worklist.")
+    @Operation(summary = "Update Worklist", description = "Module -> Worklist. Endpoint -> PUT /worklists/{worklistId}. WAITING updates EMR fields. IN_PROGRESS updates require the exact DicomServer worklist to still exist and no study/image evidence to be present.")
     public ResponseMessage<BaseResult> updateWorklist(
             @PathVariable("worklistId") String worklistId,
             @Valid @RequestBody WorklistDicomWorklistUpdateRequest request,
@@ -57,7 +57,7 @@ public class WorklistRestController {
     }
 
     @DeleteMapping("/{worklistId}")
-    @Operation(summary = "Delete DicomServer Worklist", description = "Module -> Worklist. Endpoint -> DELETE /worklists/{worklistId}. Deletes the DicomServer worklist and marks the EMR Worklist cancelled only when no matching study or image exists.")
+    @Operation(summary = "Delete DicomServer Worklist", description = "Module -> Worklist. Endpoint -> DELETE /worklists/{worklistId}. Deletes the DicomServer worklist and marks the EMR Worklist cancelled only when the exact remote worklist still exists and no matching study or image exists.")
     public ResponseMessage<BaseResult> deleteWorklist(
             @PathVariable("worklistId") String worklistId,
             HttpServletRequest httpServletRequest
@@ -66,7 +66,7 @@ public class WorklistRestController {
     }
 
     @PostMapping("/{worklistId}/cancel")
-    @Operation(summary = "Cancel Worklist", description = "Module -> Worklist. Endpoint -> POST /worklists/{worklistId}/cancel. WAITING cancels locally. Sent Worklists are removed from DicomServer only when no matching study or image exists.")
+    @Operation(summary = "Cancel Worklist", description = "Module -> Worklist. Endpoint -> POST /worklists/{worklistId}/cancel. WAITING cancels locally. Sent Worklists are removed from DicomServer only when the exact remote worklist still exists and no matching study or image exists.")
     public ResponseMessage<BaseResult> cancelWorklist(
             @PathVariable("worklistId") String worklistId,
             @RequestBody(required = false) WorklistRestActionRequest request,
