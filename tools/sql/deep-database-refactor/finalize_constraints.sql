@@ -1,0 +1,55 @@
+\set ON_ERROR_STOP on
+\pset pager off
+
+-- Run only after validate_pre_refactor.sql is clean and the compatibility
+-- backfill reports zero remaining rows. VALIDATE CONSTRAINT uses a weaker lock
+-- than rebuilding the FK and does not block normal reads/writes for its scan.
+
+ALTER TABLE pacs_results VALIDATE CONSTRAINT chk_pacs_results_reference;
+ALTER TABLE pacs_result_images VALIDATE CONSTRAINT chk_pacs_result_images_file_size;
+ALTER TABLE pacs_result_images VALIDATE CONSTRAINT chk_pacs_result_images_sort_order;
+ALTER TABLE pacs_result_images VALIDATE CONSTRAINT chk_pacs_result_images_sha256;
+ALTER TABLE dicom_server_callback_log VALIDATE CONSTRAINT chk_callback_log_attempt_count;
+ALTER TABLE dicom_server_callback_log VALIDATE CONSTRAINT chk_callback_log_payload_sha256;
+ALTER TABLE pacs_result_versions VALIDATE CONSTRAINT chk_pacs_result_versions_active;
+ALTER TABLE pacs_result_versions VALIDATE CONSTRAINT chk_pacs_result_versions_version;
+ALTER TABLE pacs_daily_stats VALIDATE CONSTRAINT chk_pacs_daily_stats_nonnegative;
+
+ALTER TABLE pacs_worklists VALIDATE CONSTRAINT fk_worklists_study_hospital;
+ALTER TABLE pacs_worklist_study_links VALIDATE CONSTRAINT fk_worklist_study_links_worklist_hospital;
+ALTER TABLE pacs_worklist_study_links VALIDATE CONSTRAINT fk_worklist_study_links_study_hospital;
+ALTER TABLE pacs_results VALIDATE CONSTRAINT fk_results_study_hospital;
+ALTER TABLE pacs_results VALIDATE CONSTRAINT fk_results_worklist_hospital;
+ALTER TABLE pacs_results VALIDATE CONSTRAINT fk_results_patient_hospital;
+ALTER TABLE pacs_result_images VALIDATE CONSTRAINT fk_result_images_result_hospital;
+ALTER TABLE pacs_result_images VALIDATE CONSTRAINT fk_result_images_result_restrict;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT fk_viewer_states_study_hospital;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT fk_viewer_states_worklist_hospital;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT fk_viewer_states_patient_hospital;
+ALTER TABLE pacs_realtime_notification_events VALIDATE CONSTRAINT fk_realtime_events_hospital_restrict;
+ALTER TABLE pacs_realtime_notification_events VALIDATE CONSTRAINT fk_realtime_events_worklist_hospital;
+ALTER TABLE pacs_realtime_notification_events VALIDATE CONSTRAINT fk_realtime_events_study_hospital;
+ALTER TABLE study_retention_delete_requests VALIDATE CONSTRAINT fk_retention_requests_study_hospital;
+ALTER TABLE study_retention_delete_requests VALIDATE CONSTRAINT fk_retention_requests_server_hospital;
+ALTER TABLE dicom_server_callback_log VALIDATE CONSTRAINT fk_callback_log_hospital;
+ALTER TABLE dicom_server_callback_log VALIDATE CONSTRAINT fk_callback_log_server_hospital;
+ALTER TABLE pacs_result_versions VALIDATE CONSTRAINT fk_result_versions_result_hospital;
+ALTER TABLE pacs_daily_stats VALIDATE CONSTRAINT fk_pacs_daily_stats_hospital;
+
+-- Viewer-state constraints from V170/V171 are safe to validate after their
+-- existing payload validation query is empty.
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT ck_pacs_viewer_states_active_status;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT ck_pacs_viewer_states_payload_sha256;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT ck_pacs_viewer_states_payload_size;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT ck_pacs_viewer_states_schema_version;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT ck_pacs_viewer_states_state_type;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT ck_pacs_viewer_states_version;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT fk_pacs_viewer_states_created_by;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT fk_pacs_viewer_states_deleted_by;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT fk_pacs_viewer_states_hospital;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT fk_pacs_viewer_states_modality;
+ALTER TABLE pacs_viewer_states VALIDATE CONSTRAINT fk_pacs_viewer_states_modified_by;
+
+ALTER TABLE pacs_studies VALIDATE CONSTRAINT fk_pacs_studies_dicom_server_hospital;
+ALTER TABLE pacs_worklists VALIDATE CONSTRAINT fk_pacs_worklists_route_hospital_modality;
+ALTER TABLE hospital_modality_server_routes VALIDATE CONSTRAINT fk_hmsr_routing_config_hospital;

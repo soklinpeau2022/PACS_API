@@ -96,6 +96,9 @@ public interface PacsResultService {
     ResponseMessage<BaseResult> findViewerState(PacsViewerStateRequest request,
                                                 HttpServletRequest httpServletRequest) throws UnknownHostException;
 
+    ResponseMessage<BaseResult> findViewerStateMeta(PacsViewerStateRequest request,
+                                                    HttpServletRequest httpServletRequest) throws UnknownHostException;
+
     ResponseMessage<BaseResult> saveViewerState(PacsViewerStateRequest request,
                                                 HttpServletRequest httpServletRequest) throws UnknownHostException;
 

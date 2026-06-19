@@ -33,14 +33,9 @@ public class ResponseBodySanitizerAdvice implements ResponseBodyAdvice<Object> {
             return body;
         }
 
-        Object decodedOpenApiBody = tryDecodeOpenApiBody(body);
-        if (decodedOpenApiBody != body) {
-            return decodedOpenApiBody;
-        }
-
         String path = request.getURI().getPath();
         if (isDocsPath(path)) {
-            return normalizeApiDocsBody(body);
+            return body;
         }
 
         if (shouldSkipBody(body)) {
@@ -77,29 +72,6 @@ public class ResponseBodySanitizerAdvice implements ResponseBodyAdvice<Object> {
         String normalized = path.toLowerCase(Locale.ROOT);
         return normalized.contains("/api-docs")
                 || normalized.contains("/v3/api-docs");
-    }
-
-    private Object normalizeApiDocsBody(Object body) {
-        try {
-            if (body instanceof byte[] bytes) {
-                return DOCS_MAPPER.readTree(bytes);
-            }
-            if (body instanceof String raw) {
-                String trimmed = raw.trim();
-                if (trimmed.startsWith("{")) {
-                    return DOCS_MAPPER.readTree(trimmed);
-                }
-                if (trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length() > 1) {
-                    trimmed = trimmed.substring(1, trimmed.length() - 1);
-                }
-                byte[] decoded = Base64.getUrlDecoder().decode(trimmed);
-                String decodedJson = new String(decoded, StandardCharsets.UTF_8);
-                return DOCS_MAPPER.readTree(decodedJson);
-            }
-        } catch (Exception ignored) {
-            // If decoding/parsing fails, keep original body to avoid altering normal behavior.
-        }
-        return body;
     }
 
     private Object tryDecodeOpenApiBody(Object body) {

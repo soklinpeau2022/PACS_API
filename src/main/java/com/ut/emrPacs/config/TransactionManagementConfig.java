@@ -64,7 +64,12 @@ public class TransactionManagementConfig {
                 // It must NOT be wrapped in an outer write transaction, which would hold a DB
                 // connection for the entire multi-minute upload -> HikariCP connection leak.
                 " && !within(com.ut.emrPacs.service.serviceImpl.DicomUploadServiceImpl)" +
-                " && !within(com.ut.emrPacs.service.serviceImpl.DicomChunkUploadServiceImpl)"
+                " && !within(com.ut.emrPacs.service.serviceImpl.DicomChunkUploadServiceImpl)" +
+                // The stable-study callback verifies the study through the DICOM server REST API.
+                // Orthanc waits for this callback to return, so an outer DB transaction around the
+                // network round-trip can deadlock the callback and exhaust the connection pool.
+                // WorklistServiceImpl opens its own short transaction only for the persistence block.
+                " && !execution(* com.ut.emrPacs.service.serviceImpl.WorklistServiceImpl.receivedStudy(..))"
         );
 
         return new DefaultPointcutAdvisor(pointcut, txInterceptor);

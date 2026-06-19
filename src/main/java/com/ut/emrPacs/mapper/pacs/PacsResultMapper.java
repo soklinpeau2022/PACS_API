@@ -74,6 +74,9 @@ public interface PacsResultMapper {
 
     PacsViewerStateResponse findViewerState(@Param("request") PacsViewerStateRequest request);
 
+    /** Metadata-only variant: identity/scope/payload-size without the heavy JSONB payload. */
+    PacsViewerStateResponse findViewerStateMeta(@Param("request") PacsViewerStateRequest request);
+
     Integer lockViewerStateScope(@Param("request") PacsViewerStateRequest request);
 
     Long insertViewerState(@Param("request") PacsViewerStateRequest request,

@@ -58,10 +58,7 @@ public class PatientServiceImpl implements PatientService {
             PatientListFilter safeFilter = filter != null ? filter : new PatientListFilter();
             Long requestedHospitalId = publicEntityKeyResolver.resolve(Entity.HOSPITAL, safeFilter.getHospitalKey(), null);
             Long hospitalId = resolveOptionalHospitalId(requestedHospitalId);
-            boolean cursorMode = safeFilter.getLastPatientId() != null && safeFilter.getLastPatientId() > 0L;
-            Pagination pagination = cursorMode
-                    ? PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter)
-                    : PaginationHelper.buildAndApplyOffset(safeFilter, patientMapper.count(hospitalId, safeFilter));
+            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
             LocalTime endDuration = LocalTime.now();
             activityLogService.insert("/patient/patient-list", null, null, "Patient", "Patient (List)", "View", 1, "Success", startDuration, endDuration, httpServletRequest);
             return ResponseMessageUtils.makeResponse(true, messageService.message(

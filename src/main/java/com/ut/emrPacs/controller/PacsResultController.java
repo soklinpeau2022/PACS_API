@@ -146,6 +146,15 @@ public class PacsResultController {
         return pacsResultService.findViewerState(request, httpServletRequest);
     }
 
+    @PostMapping(ApiConstants.PacsResult.VIEWER_STATE_META_PATH)
+    @Operation(summary = "Find saved viewer state metadata", description = "Module -> PACS Result. Endpoint -> POST /pacs-result/pacs-result-viewer-state-meta. Returns scope and payload size of a saved PACS-OHIF Viewer state WITHOUT the heavy JSONB payload (existence/size/freshness check).")
+    public ResponseMessage<BaseResult> findViewerStateMeta(
+            @Valid @RequestBody PacsViewerStateRequest request,
+            HttpServletRequest httpServletRequest
+    ) throws UnknownHostException {
+        return pacsResultService.findViewerStateMeta(request, httpServletRequest);
+    }
+
     @PostMapping(ApiConstants.PacsResult.VIEWER_STATE_SAVE_PATH)
     @Operation(summary = "Save viewer state", description = "Module -> PACS Result. Endpoint -> POST /pacs-result/pacs-result-viewer-state-save. Stores the latest PACS-OHIF Viewer state for a scoped study/worklist.")
     public ResponseMessage<BaseResult> saveViewerState(

@@ -21,7 +21,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: bash scripts/stack.sh <local|qa|prod> <up|down|restart|deploy|logs|ps|health> [--build|--no-build]"
+      echo "Usage: bash scripts/stack.sh <local|qa|prod> <up|down|restart|deploy|logs|ps|health|db-backup|db-migrate|db-validate|db-refresh-cache|db-partition-maintenance> [--build|--no-build]"
       exit 1
       ;;
   esac
@@ -747,6 +747,8 @@ start_api_container() {
     "REDIS_PASSWORD=$(target_env_value REDIS_PASSWORD REDIS_PASSWORD)"
     "REDIS_DATABASE=$(env_value_or_default REDIS_DATABASE 0)"
     "REDIS_TIMEOUT=$(env_value_or_default REDIS_TIMEOUT 2s)"
+    "PACS_CACHE_SCHEDULER_ENABLED=$(env_value_or_default PACS_CACHE_SCHEDULER_ENABLED true)"
+    "PACS_PARTITION_SCHEDULER_ENABLED=$(env_value_or_default PACS_PARTITION_SCHEDULER_ENABLED true)"
     "SPRING_DATASOURCE_URL=$(target_env_value SPRING_DATASOURCE_URL SPRING_DATASOURCE_URL)"
     "SPRING_DATASOURCE_USERNAME=$(target_env_value SPRING_DATASOURCE_USERNAME SPRING_DATASOURCE_USERNAME)"
     "SPRING_DATASOURCE_PASSWORD=$(target_env_value SPRING_DATASOURCE_PASSWORD SPRING_DATASOURCE_PASSWORD)"
@@ -846,6 +848,24 @@ EOF
 log_local_docker_ps_snapshot
 
 case "$ACTION" in
+  db-backup)
+    bash "$SCRIPT_DIR/db-admin.sh" backup "$TARGET"
+    ;;
+  db-migrate)
+    db_args=(migrate "$TARGET")
+    [[ "$BUILD" == "true" ]] && db_args+=(--build)
+    [[ "$NO_BUILD" == "true" ]] && db_args+=(--no-build)
+    bash "$SCRIPT_DIR/db-admin.sh" "${db_args[@]}"
+    ;;
+  db-validate)
+    bash "$SCRIPT_DIR/db-admin.sh" validate "$TARGET"
+    ;;
+  db-refresh-cache)
+    bash "$SCRIPT_DIR/db-admin.sh" refresh-cache "$TARGET"
+    ;;
+  db-partition-maintenance)
+    bash "$SCRIPT_DIR/db-admin.sh" partition-maintenance "$TARGET"
+    ;;
   up)
     args=()
     [[ "$BUILD" == "true" ]] && args+=(--build)
@@ -937,7 +957,7 @@ case "$ACTION" in
     ;;
   *)
     echo "Unknown action: $ACTION"
-    echo "Usage: bash scripts/stack.sh <local|qa|prod> <up|down|restart|deploy|logs|ps|health> [--build|--no-build]"
+    echo "Usage: bash scripts/stack.sh <local|qa|prod> <up|down|restart|deploy|logs|ps|health|db-backup|db-migrate|db-validate|db-refresh-cache|db-partition-maintenance> [--build|--no-build]"
     exit 1
     ;;
 esac

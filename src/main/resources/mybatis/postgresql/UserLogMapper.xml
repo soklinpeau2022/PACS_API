@@ -48,6 +48,10 @@
 
     <sql id="BASE_WHERE">
         WHERE 1 = 1
+        <if test="lastUserLogId != null and lastUserLogId > 0
+                and (orderBy == null or orderBy == '')">
+            AND user_logs.id &lt; #{lastUserLogId}
+        </if>
         <if test="dateFrom != null and dateFrom != '' and dateFrom != '0000-00-00'">
             AND user_logs.created >= TO_DATE(#{dateFrom}, 'YYYY-MM-DD')
         </if>
@@ -85,7 +89,9 @@
                 user_logs.id DESC
             </otherwise>
         </choose>
-        <if test="page != null and rowsPerPage != null">LIMIT #{rowsPerPage} OFFSET #{page}</if>
+        <if test="rowsPerPage != null">
+            LIMIT #{rowsPerPage}
+        </if>
     </select>
 
     <select id="countList" parameterType="com.ut.emrPacs.model.base.filter.UserLogFilter" resultType="java.lang.Long">

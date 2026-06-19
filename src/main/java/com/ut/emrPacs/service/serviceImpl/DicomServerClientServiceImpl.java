@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -26,6 +27,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -53,6 +55,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     // few times with a short backoff so a single hiccup does not surface to the viewer as a 502.
     private static final int DICOMWEB_PROXY_MAX_ATTEMPTS = 3;
     private static final long DICOMWEB_PROXY_RETRY_BACKOFF_MS = 200L;
+    private static final int UPLOAD_ERROR_BODY_MAX_CHARS = 400;
 
     DicomServerClientServiceImpl(RestTemplate restTemplate) {
         this(restTemplate, new ObjectMapper(), 10000, 7200000);
@@ -130,7 +133,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         }
 
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IllegalStateException("DICOM server upload failed with HTTP " + response.statusCode() + ".");
+            throw new IllegalStateException("DICOM server upload failed with HTTP " + response.statusCode() + uploadErrorBodySuffix(response.body()) + ".");
         }
         try {
             return objectMapper.readValue(response.body(), DicomServerInstanceUploadResponse.class);
@@ -277,7 +280,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     }
 
     @Override
-    public ResponseEntity<StreamingResponseBody> proxyDicomWeb(
+    public ResponseEntity<byte[]> proxyDicomWeb(
             String dicomwebBaseUrl,
             String username,
             String password,
@@ -308,8 +311,41 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         byte[] body = upstream.getBody();
         byte[] responseBody = body == null ? new byte[0] : body;
         responseHeaders.setContentLength(responseBody.length);
-        StreamingResponseBody stream = outputStream -> outputStream.write(responseBody);
-        return new ResponseEntity<>(stream, responseHeaders, upstream.getStatusCode());
+        return new ResponseEntity<>(responseBody, responseHeaders, upstream.getStatusCode());
+    }
+
+    @Override
+    public ResponseEntity<StreamingResponseBody> proxyDicomWebStream(
+            String dicomwebBaseUrl,
+            String username,
+            String password,
+            String pathAndQuery,
+            String acceptHeader,
+            String rangeHeader,
+            String requestMethod
+    ) {
+        String url = normalizeDicomServerBaseUrl(dicomwebBaseUrl) + normalizePathAndQuery(pathAndQuery);
+        String resolvedMethod = normalizeDicomWebProxyMethod(requestMethod);
+        HttpRequest request = buildDicomWebStreamRequest(
+                url,
+                username,
+                password,
+                acceptHeader,
+                rangeHeader,
+                resolvedMethod
+        );
+        HttpResponse<InputStream> upstream = exchangeDicomWebStreamWithRetry(request);
+        HttpHeaders responseHeaders = buildDicomWebStreamResponseHeaders(upstream);
+
+        StreamingResponseBody body = outputStream -> {
+            try (InputStream inputStream = upstream.body()) {
+                if (!HttpMethod.HEAD.matches(resolvedMethod)) {
+                    inputStream.transferTo(outputStream);
+                    outputStream.flush();
+                }
+            }
+        };
+        return new ResponseEntity<>(body, responseHeaders, HttpStatusCode.valueOf(upstream.statusCode()));
     }
 
     private ResponseEntity<byte[]> exchangeDicomWebWithRetry(String url, HttpEntity<?> entity) {
@@ -330,6 +366,107 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         throw lastError;
     }
 
+    private HttpRequest buildDicomWebStreamRequest(
+            String url,
+            String username,
+            String password,
+            String acceptHeader,
+            String rangeHeader,
+            String requestMethod
+    ) {
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(URI.create(url))
+                .timeout(uploadTimeout);
+        applyBasicAuth(requestBuilder, username, password);
+        if (acceptHeader != null && !acceptHeader.isBlank()) {
+            requestBuilder.header(HttpHeaders.ACCEPT, acceptHeader.trim());
+        }
+        if (rangeHeader != null && !rangeHeader.isBlank()) {
+            requestBuilder.header(HttpHeaders.RANGE, rangeHeader.trim());
+        }
+        if (HttpMethod.HEAD.matches(requestMethod)) {
+            requestBuilder.method(HttpMethod.HEAD.name(), HttpRequest.BodyPublishers.noBody());
+        } else {
+            requestBuilder.GET();
+        }
+        return requestBuilder.build();
+    }
+
+    private HttpResponse<InputStream> exchangeDicomWebStreamWithRetry(HttpRequest request) {
+        RuntimeException lastError = null;
+        for (int attempt = 1; attempt <= DICOMWEB_PROXY_MAX_ATTEMPTS; attempt++) {
+            try {
+                HttpResponse<InputStream> response = uploadHttpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+                int status = response.statusCode();
+                if (status >= 200 && status < 400) {
+                    return response;
+                }
+                RuntimeException statusError = dicomWebStatusException(response);
+                closeQuietly(response.body());
+                if (status >= 400 && status < 500) {
+                    throw statusError;
+                }
+                lastError = statusError;
+                if (attempt < DICOMWEB_PROXY_MAX_ATTEMPTS) {
+                    sleepQuietly(DICOMWEB_PROXY_RETRY_BACKOFF_MS * attempt);
+                }
+            } catch (IOException error) {
+                lastError = new ResourceAccessException("DICOM server is unreachable.", error);
+                if (attempt < DICOMWEB_PROXY_MAX_ATTEMPTS) {
+                    sleepQuietly(DICOMWEB_PROXY_RETRY_BACKOFF_MS * attempt);
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while proxying DICOMweb request", error);
+            }
+        }
+        throw lastError;
+    }
+
+    private static RuntimeException dicomWebStatusException(HttpResponse<?> response) {
+        HttpStatusCode statusCode = HttpStatusCode.valueOf(response.statusCode());
+        if (statusCode.is4xxClientError()) {
+            return HttpClientErrorException.create(statusCode, "", new HttpHeaders(), new byte[0], StandardCharsets.UTF_8);
+        }
+        return HttpServerErrorException.create(statusCode, "", new HttpHeaders(), new byte[0], StandardCharsets.UTF_8);
+    }
+
+    private static HttpHeaders buildDicomWebStreamResponseHeaders(HttpResponse<?> upstream) {
+        HttpHeaders responseHeaders = new HttpHeaders();
+        upstream.headers().firstValue(HttpHeaders.CONTENT_TYPE).ifPresent(contentType -> {
+            if (!isSafeProxyHeaderValue(contentType)) {
+                return;
+            }
+            try {
+                responseHeaders.setContentType(MediaType.parseMediaType(contentType));
+            } catch (IllegalArgumentException ignored) {
+                responseHeaders.add(HttpHeaders.CONTENT_TYPE, contentType);
+            }
+        });
+        copyHeader(upstream, responseHeaders, HttpHeaders.CONTENT_LENGTH);
+        copyHeader(upstream, responseHeaders, HttpHeaders.CONTENT_RANGE);
+        copyHeader(upstream, responseHeaders, HttpHeaders.ACCEPT_RANGES);
+        copyHeader(upstream, responseHeaders, HttpHeaders.ETAG);
+        copyHeader(upstream, responseHeaders, HttpHeaders.LAST_MODIFIED);
+        responseHeaders.setCacheControl("no-store");
+        responseHeaders.add("X-Content-Type-Options", "nosniff");
+        responseHeaders.add("X-Accel-Buffering", "no");
+        return responseHeaders;
+    }
+
+    private static String normalizeDicomWebProxyMethod(String requestMethod) {
+        return HttpMethod.HEAD.matches(requestMethod) ? HttpMethod.HEAD.name() : HttpMethod.GET.name();
+    }
+
+    private static void closeQuietly(InputStream inputStream) {
+        if (inputStream == null) {
+            return;
+        }
+        try {
+            inputStream.close();
+        } catch (IOException ignored) {
+        }
+    }
+
     private static void sleepQuietly(long millis) {
         try {
             Thread.sleep(millis);
@@ -341,6 +478,17 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
 
     private static void copyHeader(ResponseEntity<?> source, HttpHeaders target, String headerName) {
         List<String> values = source.getHeaders().get(headerName);
+        if (values != null && !values.isEmpty()) {
+            for (String value : values) {
+                if (isSafeProxyHeaderValue(value)) {
+                    target.add(headerName, value);
+                }
+            }
+        }
+    }
+
+    private static void copyHeader(HttpResponse<?> source, HttpHeaders target, String headerName) {
+        List<String> values = source.headers().allValues(headerName);
         if (values != null && !values.isEmpty()) {
             for (String value : values) {
                 if (isSafeProxyHeaderValue(value)) {
@@ -433,6 +581,17 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
 
     private String buildFindUrl(String baseUrl) {
         return normalizeDicomServerBaseUrl(baseUrl) + "/tools/find";
+    }
+
+    private static String uploadErrorBodySuffix(String body) {
+        String normalized = body == null ? "" : body.replaceAll("\\s+", " ").trim();
+        if (normalized.isEmpty()) {
+            return "";
+        }
+        if (normalized.length() > UPLOAD_ERROR_BODY_MAX_CHARS) {
+            normalized = normalized.substring(0, UPLOAD_ERROR_BODY_MAX_CHARS) + "...";
+        }
+        return ": " + normalized;
     }
 
     private record KnownLengthBodyPublisher(HttpRequest.BodyPublisher delegate, long contentLength)

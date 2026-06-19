@@ -41,6 +41,7 @@ import com.ut.emrPacs.model.base.Pagination;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import com.ut.emrPacs.model.base.filter.WorklistFilter;
+import com.ut.emrPacs.model.dto.persistence.pacs.DicomServerCallbackLogEntry;
 import com.ut.emrPacs.model.dto.request.pacs.dicomServer.DicomServerFindRequest;
 import com.ut.emrPacs.model.dto.request.pacs.dicomServer.DicomServerWorklistCreateRequest;
 import com.ut.emrPacs.model.dto.response.pacs.dicomServer.DicomServerSeriesResponse;
@@ -88,6 +89,7 @@ import com.ut.emrPacs.service.service.WorklistService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.Resource;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.core.Authentication;
 import static com.ut.emrPacs.authentication.util.AuthorityUtils.isAdminUser;
@@ -133,6 +135,8 @@ import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 @Service
@@ -156,7 +160,8 @@ public class WorklistServiceImpl implements WorklistService {
     private static final String VIEWER_DICOMWEB_SCOPE = "pacs.viewer.dicomweb";
     private static final String VIEWER_DICOMWEB_CLIENT_ID = "pacs-viewer-dicomweb";
     private static final String DEFAULT_VIEWER_STATE_TYPE = "OHIF_VIEWER_STATE";
-    private static final String RESULT_STATUS_COMPLETED = "COMPLETED";
+    private static final String RESULT_STATUS_FINAL = "FINAL";
+    private static final String LEGACY_RESULT_STATUS_COMPLETED = "COMPLETED";
 
     @Autowired
     private WorklistMapper WorklistMapper;
@@ -210,16 +215,10 @@ public class WorklistServiceImpl implements WorklistService {
             safeFilter.applyOperationalWorklistDefaultStatuses();
             Long requestedHospitalId = publicEntityKeyResolver.resolve(Entity.HOSPITAL, safeFilter.getHospitalKey(), null);
             Long hospitalId = resolveOptionalHospitalId(requestedHospitalId);
-            boolean cursorMode = safeFilter.getLastWorklistId() != null && safeFilter.getLastWorklistId() > 0L;
-
-            Pagination pagination;
-            if (cursorMode) {
-                // For deep pagination on very large tables, skip COUNT(*) and rely on cursor windowing.
-                pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
-            } else {
-                pagination = PaginationHelper.buildAndApplyOffset(safeFilter, WorklistMapper.countList(hospitalId, safeFilter));
-            }
-            List<WorklistListResponse> WorklistList = WorklistMapper.list(hospitalId, safeFilter);
+            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
+            List<WorklistListResponse> WorklistList = shouldUseWeekCache(safeFilter)
+                    ? WorklistMapper.listWeekCache(hospitalId, safeFilter)
+                    : WorklistMapper.list(hospitalId, safeFilter);
 
             if (WorklistList != null && !WorklistList.isEmpty()) {
                 for (WorklistListResponse Worklist : WorklistList) {
@@ -292,7 +291,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             Boolean inserted = false;
             for (int attempt = 0; attempt < 10; attempt++) {
                 visitCode = generateVisitCode(hospitalId, request.getModalityId());
-                if (WorklistMapper.findWorklistByVisitCodeAnyHospital(visitCode) != null) {
+                if (WorklistMapper.findWorklistByVisitCode(hospitalId, visitCode) != null) {
                     continue;
                 }
                 try {
@@ -993,36 +992,46 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 successMessage = "Callback received.";
             }
 
-            int updated = WorklistMapper.updateWorklistReceivedFromCallbackById(
-                    Worklist.getHospitalId(),
-                    Worklist.getId(),
-                    linkedStudy.studyId(),
-                    targetStatus.code(),
-                    null,
-                    receivedAtIso
-            );
-            if (updated <= 0) {
+            WorklistStatus persistedTargetStatus = targetStatus;
+            boolean shouldInsertHistory = insertHistory;
+            String persistedWarningMessage = warningMessage;
+            CallbackPersistenceResult persistenceResult = callInRequiresNewTransaction(() -> {
+                int updated = WorklistMapper.updateWorklistReceivedFromCallbackById(
+                        Worklist.getHospitalId(),
+                        Worklist.getId(),
+                        linkedStudy.studyId(),
+                        persistedTargetStatus.code(),
+                        null,
+                        receivedAtIso
+                );
+                if (updated <= 0) {
+                    return new CallbackPersistenceResult(false, null);
+                }
+
+                persistWorklistStudyLink(Worklist, linkedStudy, null);
+                if (shouldInsertHistory && persistedTargetStatus != currentStatus) {
+                    WorklistMapper.insertHistory(
+                            Worklist.getHospitalId(),
+                            Worklist.getId(),
+                            Worklist.getPatientId(),
+                            currentStatus.code(),
+                            persistedTargetStatus.code(),
+                            WorklistConstants.ACTION_RECEIVED_STUDY,
+                            firstNonBlank(persistedWarningMessage, "DicomServer callback accessionNumber=" + firstNonBlank(accessionNumber, Worklist.getAccessionNumber())),
+                            null
+                    );
+                }
+
+                WorklistDetailRow refreshed = WorklistMapper.findWorklistById(Worklist.getHospitalId(), Worklist.getId());
+                return new CallbackPersistenceResult(true, refreshed == null ? Worklist : refreshed);
+            });
+            if (!persistenceResult.updated()) {
                 insertDicomServerCallbackLog(request, false, WorklistConstants.MSG_UNABLE_TO_UPDATE_STATUS, warningMessage, receivedAtIso);
                 return ResponseMessageUtils.makeResponse(false, messageService.message(WorklistConstants.MSG_UNABLE_TO_UPDATE_STATUS, false));
             }
 
-            persistWorklistStudyLink(Worklist, linkedStudy, null);
-            if (insertHistory && targetStatus != currentStatus) {
-                WorklistMapper.insertHistory(
-                        Worklist.getHospitalId(),
-                        Worklist.getId(),
-                        Worklist.getPatientId(),
-                        currentStatus.code(),
-                        targetStatus.code(),
-                        WorklistConstants.ACTION_RECEIVED_STUDY,
-                        firstNonBlank(warningMessage, "DicomServer callback accessionNumber=" + firstNonBlank(accessionNumber, Worklist.getAccessionNumber())),
-                        null
-                );
-            }
-
             responseStatus = targetStatus;
-            WorklistDetailRow refreshedWorklist = WorklistMapper.findWorklistById(Worklist.getHospitalId(), Worklist.getId());
-            WorklistDetailRow responseWorklist = refreshedWorklist == null ? Worklist : refreshedWorklist;
+            WorklistDetailRow responseWorklist = persistenceResult.worklist();
             WorklistActionResponse response = buildWorklistActionResponse(
                     responseWorklist,
                     firstNonBlank(responseWorklist.getStudyInstanceUid(), responseWorklist.getStudyUuid(), resolvedStudyUuid),
@@ -1542,12 +1551,14 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 return ResponseEntity.status(502).build();
             }
 
-            return dicomServerClientService.proxyDicomWeb(
+            return dicomServerClientService.proxyDicomWebStream(
                     dicomwebBaseUrl,
                     targetServer.getUsername(),
                     targetServer.getPassword(),
                     pathAndQuery,
-                    httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.ACCEPT)
+                    httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.ACCEPT),
+                    httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.RANGE),
+                    httpServletRequest == null ? null : httpServletRequest.getMethod()
             );
         } catch (JwtException error) {
             LOGGER.warn("Viewer DICOMweb token rejected for worklistId={}: {}", worklistId, error.getMessage());
@@ -1596,12 +1607,14 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 return ResponseEntity.status(502).build();
             }
 
-            return dicomServerClientService.proxyDicomWeb(
+            return dicomServerClientService.proxyDicomWebStream(
                     dicomwebBaseUrl,
                     targetServer.getUsername(),
                     targetServer.getPassword(),
                     pathAndQuery,
-                    httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.ACCEPT)
+                    httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.ACCEPT),
+                    httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.RANGE),
+                    httpServletRequest == null ? null : httpServletRequest.getMethod()
             );
         } catch (JwtException error) {
             LOGGER.warn("Viewer DICOMweb token rejected for studyId={}: {}", studyId, error.getMessage());
@@ -3600,23 +3613,34 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             String dicomServerStudyId,
             HospitalDicomServerResponse callbackServer
     ) {
+        Long callbackHospitalId = callbackServer == null ? null : callbackServer.getHospitalId();
         if (hasText(accessionNumber)) {
-            WorklistDetailRow Worklist = WorklistMapper.findWorklistByAccessionNumber(accessionNumber.trim());
+            WorklistDetailRow Worklist = callbackHospitalId == null
+                    ? WorklistMapper.findWorklistByAccessionNumber(accessionNumber.trim())
+                    : WorklistMapper.findWorklistByAccessionNumberAndHospital(callbackHospitalId, accessionNumber.trim());
             if (Worklist != null) {
                 return Worklist;
             }
         }
         if (hasText(visitCode)) {
-            WorklistDetailRow Worklist = WorklistMapper.findWorklistByVisitCodeAnyHospital(visitCode.trim());
+            WorklistDetailRow Worklist = callbackHospitalId == null
+                    ? WorklistMapper.findWorklistByVisitCodeAnyHospital(visitCode.trim())
+                    : WorklistMapper.findWorklistByVisitCode(callbackHospitalId, visitCode.trim());
             if (Worklist != null) {
                 return Worklist;
             }
         }
         if (hasText(studyInstanceUid) || hasText(dicomServerStudyId)) {
-            WorklistDetailRow Worklist = WorklistMapper.findWorklistByStudyIdentifiers(
-                    normalizedOrEmpty(studyInstanceUid),
-                    normalizedOrEmpty(dicomServerStudyId)
-            );
+            WorklistDetailRow Worklist = callbackHospitalId == null
+                    ? WorklistMapper.findWorklistByStudyIdentifiers(
+                            normalizedOrEmpty(studyInstanceUid),
+                            normalizedOrEmpty(dicomServerStudyId)
+                    )
+                    : WorklistMapper.findWorklistByStudyIdentifiersAndHospital(
+                            callbackHospitalId,
+                            normalizedOrEmpty(studyInstanceUid),
+                            normalizedOrEmpty(dicomServerStudyId)
+                    );
             if (Worklist != null) {
                 return Worklist;
             }
@@ -3627,7 +3651,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         DicomServerStudyResponse callbackStudy = resolveCallbackStudyFromDicomServer(studyInstanceUid, dicomServerStudyId, callbackServer);
         String resolvedAccession = readDicomTag(callbackStudy, DicomTagConstants.ACCESSION_NUMBER);
         if (hasText(resolvedAccession)) {
-            return WorklistMapper.findWorklistByAccessionNumber(resolvedAccession.trim());
+            return WorklistMapper.findWorklistByAccessionNumberAndHospital(callbackHospitalId, resolvedAccession.trim());
         }
         return null;
     }
@@ -3745,7 +3769,18 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                             ? List.of()
                             : request.getDicomServerSeriesIds()
             );
-            dicomServerCallbackLogMapper.insertCallbackLog(
+            Long dicomServerId = resolveCallbackDicomServerId();
+            HospitalDicomServerResponse callbackServer = resolveCallbackDicomServer(dicomServerId);
+            Long hospitalId = callbackServer == null ? null : callbackServer.getHospitalId();
+            String payloadSha256 = sha256Hex(payloadJson);
+            String dedupeKey = hospitalId == null
+                    ? sha256Hex("unmatched|" + String.valueOf(dicomServerId) + "|" + payloadSha256)
+                    : sha256Hex(hospitalId + "|" + String.valueOf(dicomServerId) + "|" + payloadSha256);
+            DicomServerCallbackLogEntry entry = new DicomServerCallbackLogEntry(
+                    hospitalId,
+                    dicomServerId,
+                    dedupeKey,
+                    payloadSha256,
                     normalizedOrEmpty(request == null ? null : request.getEvent()),
                     normalizedOrEmpty(request == null ? null : request.getAccessionNumber()),
                     normalizedOrEmpty(request == null ? null : request.getDicomServerStudyId()),
@@ -3757,8 +3792,23 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                     warningMessage,
                     receivedAtIso
             );
+            if (hospitalId == null) {
+                dicomServerCallbackLogMapper.insertUnmatchedCallbackLog(entry);
+            } else {
+                dicomServerCallbackLogMapper.insertCallbackLog(entry);
+            }
         } catch (Exception error) {
             LOGGER.warn("Failed to persist DicomServer callback log: {}", error.getMessage());
+        }
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(String.valueOf(value).getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (Exception error) {
+            throw new IllegalStateException("Unable to calculate callback payload hash.", error);
         }
     }
 
@@ -4308,7 +4358,8 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
     private static boolean isCompletedResult(PacsResultResponse result) {
         return result != null
                 && (Boolean.TRUE.equals(result.getCompleted())
-                || RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
+                || RESULT_STATUS_FINAL.equalsIgnoreCase(String.valueOf(result.getStatus()))
+                || LEGACY_RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
     }
 
     private static Long positiveUserId(Long userId) {
@@ -4737,6 +4788,18 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         transactionTemplate.executeWithoutResult(status -> action.run());
     }
 
+    private <T> T callInRequiresNewTransaction(Supplier<T> action) {
+        if (action == null) {
+            return null;
+        }
+        if (transactionManager == null) {
+            return action.get();
+        }
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+        transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        return transactionTemplate.execute(status -> action.get());
+    }
+
     private ResponseMessage<BaseResult> WorklistDicomServerClientError(
             LocalTime startDuration,
             HttpServletRequest httpServletRequest,
@@ -4851,6 +4914,21 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         return null;
     }
 
+    private static boolean shouldUseWeekCache(WorklistFilter filter) {
+        if (filter == null) {
+            return true;
+        }
+        return !hasText(filter.getSearchText())
+                && !hasText(filter.getPatientCode())
+                && !hasText(filter.getPatientName())
+                && !hasText(filter.getPhoneNumber())
+                && !hasText(filter.getWorklistNumber())
+                && !hasText(filter.getVisitCode())
+                && !hasText(filter.getAccessionNumber())
+                && filter.getDateFrom() == null
+                && filter.getDateTo() == null;
+    }
+
     private static Long currentHospitalId() {
         var principal = UserAuthSession.getCurrentUser();
         if (principal != null && principal.hospitalId() != null) {
@@ -4950,6 +5028,9 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             String dicomServerSeriesId,
             String viewerUrl
     ) {
+    }
+
+    private record CallbackPersistenceResult(boolean updated, WorklistDetailRow worklist) {
     }
 
     private static String toWorklistEndpoint(WorklistStatus status) {

@@ -90,7 +90,8 @@ public class PacsResultServiceImpl implements PacsResultService {
     private static final Logger LOGGER = LoggerFactory.getLogger(PacsResultServiceImpl.class);
     private static final Set<String> ALLOWED_IMAGE_EXTENSIONS = Set.of("jpg", "jpeg", "png", "webp");
     private static final String RESULT_STATUS_IMAGE_RECEIVED = "IMAGE_RECEIVED";
-    private static final String RESULT_STATUS_COMPLETED = "COMPLETED";
+    private static final String RESULT_STATUS_FINAL = "FINAL";
+    private static final String LEGACY_RESULT_STATUS_COMPLETED = "COMPLETED";
     private static final String DEFAULT_VIEWER_STATE_TYPE = "OHIF_VIEWER_STATE";
     private static final int DEFAULT_VIEWER_STATE_SCHEMA_VERSION = 2;
     private static final int MAX_VIEWER_STATE_SCHEMA_VERSION = 1000;
@@ -713,6 +714,34 @@ public class PacsResultServiceImpl implements PacsResultService {
     @Override
     public ResponseMessage<BaseResult> findBrowserViewerState(PacsViewerStateRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
         return findViewerStateInternal(request, httpServletRequest, false);
+    }
+
+    @Override
+    public ResponseMessage<BaseResult> findViewerStateMeta(PacsViewerStateRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        try {
+            PacsViewerStateRequest safeRequest =
+                    prepareViewerStateRequest(request, httpServletRequest, false, true);
+            // Metadata-only fetch: no heavy JSONB payload is read, so there is
+            // nothing to hydrate. Useful for existence / size / freshness checks
+            // before downloading a multi-megabyte viewer state.
+            PacsViewerStateResponse response = pacsResultMapper.findViewerStateMeta(safeRequest);
+            if (response == null) {
+                return ResponseMessageUtils.makeResponse(true, messageService.message("No viewer state found.", List.of(), true));
+            }
+            ViewerAccessClaims claims = decodeViewerAccess(httpServletRequest);
+            if (!viewerStateMatchesAccess(response, claims)) {
+                return resultAccessDenied(ResultAccessException.forbidden("Viewer access is not allowed for this saved viewer state."));
+            }
+            response.setCanEdit(canEditViewerState(response, findResultForViewerState(safeRequest), claims));
+            return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(response), true));
+        } catch (IllegalArgumentException validation) {
+            return ResponseMessageUtils.makeResponse(false, messageService.message(validation.getMessage(), false));
+        } catch (ResultAccessException accessError) {
+            return resultAccessDenied(accessError);
+        } catch (Exception error) {
+            LOGGER.error("Unable to find PACS viewer state metadata: {}", error.toString(), error);
+            return ResponseMessageUtils.makeResponse(false, messageService.message("Unable to find viewer state.", false));
+        }
     }
 
     private ResponseMessage<BaseResult> findViewerStateInternal(
@@ -1560,7 +1589,8 @@ public class PacsResultServiceImpl implements PacsResultService {
     private static boolean isCompletedResult(PacsResultResponse result) {
         return result != null
                 && (Boolean.TRUE.equals(result.getCompleted())
-                || RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
+                || RESULT_STATUS_FINAL.equalsIgnoreCase(String.valueOf(result.getStatus()))
+                || LEGACY_RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
     }
 
     private static Long viewerOwnerId(PacsResultResponse result, PacsViewerStateResponse state) {
@@ -2683,7 +2713,7 @@ public class PacsResultServiceImpl implements PacsResultService {
     }
 
     private static String resultStatus(Boolean completed) {
-        return Boolean.TRUE.equals(completed) ? RESULT_STATUS_COMPLETED : RESULT_STATUS_IMAGE_RECEIVED;
+        return Boolean.TRUE.equals(completed) ? RESULT_STATUS_FINAL : RESULT_STATUS_IMAGE_RECEIVED;
     }
 
     private static void trimFields(PacsResultSaveRequest request) {

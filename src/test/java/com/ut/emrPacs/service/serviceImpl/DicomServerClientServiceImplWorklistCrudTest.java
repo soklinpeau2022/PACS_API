@@ -1,23 +1,28 @@
 package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.model.dto.request.pacs.dicomServer.DicomServerWorklistCreateRequest;
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
-import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
@@ -135,10 +140,7 @@ class DicomServerClientServiceImplWorklistCrudTest {
         );
 
         assertEquals(dicomJsonType, response.getHeaders().getContentType());
-        assertTrue(response.getBody() instanceof StreamingResponseBody);
-        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-        ((StreamingResponseBody) response.getBody()).writeTo(outputStream);
-        assertEquals(dicomJson, outputStream.toString(StandardCharsets.UTF_8));
+        assertEquals(dicomJson, new String(response.getBody(), StandardCharsets.UTF_8));
         server.verify();
     }
 
@@ -161,10 +163,99 @@ class DicomServerClientServiceImplWorklistCrudTest {
 
         assertEquals(frameType, response.getHeaders().getContentType());
         assertEquals(frame.length, response.getHeaders().getContentLength());
-        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-        ((StreamingResponseBody) response.getBody()).writeTo(outputStream);
-        assertArrayEquals(frame, outputStream.toByteArray());
+        assertArrayEquals(frame, response.getBody());
         server.verify();
+    }
+
+    @Test
+    void proxyDicomWebShouldRetryTransientBadGatewayAndReturnFrame() throws Exception {
+        byte[] frame = "recovered-frame".getBytes(StandardCharsets.UTF_8);
+        MediaType frameType = MediaType.parseMediaType("multipart/related; type=\"application/octet-stream\"; boundary=abc");
+        String url = "http://localhost:8042/dicom-web/studies/1/series/2/instances/3/frames/1";
+
+        server.expect(once(), requestTo(url))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.BAD_GATEWAY));
+        server.expect(once(), requestTo(url))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(frame, frameType));
+
+        var response = dicomServerClientService.proxyDicomWeb(
+                "http://localhost:8042/dicom-web",
+                null,
+                null,
+                "/studies/1/series/2/instances/3/frames/1",
+                "multipart/related; type=\"application/octet-stream\""
+        );
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(frame.length, response.getHeaders().getContentLength());
+        assertArrayEquals(frame, response.getBody());
+        server.verify();
+    }
+
+    @Test
+    void proxyDicomWebShouldNotRetryDeterministicNotFound() {
+        String url = "http://localhost:8042/dicom-web/studies/1/series/2/instances/missing/frames/1";
+        server.expect(once(), requestTo(url))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.NOT_FOUND));
+
+        assertThrows(
+                HttpClientErrorException.NotFound.class,
+                () -> dicomServerClientService.proxyDicomWeb(
+                        "http://localhost:8042/dicom-web",
+                        null,
+                        null,
+                        "/studies/1/series/2/instances/missing/frames/1",
+                        "multipart/related; type=\"application/octet-stream\""
+                )
+        );
+        server.verify();
+    }
+
+    @Test
+    void proxyDicomWebStreamShouldStreamPayloadAndForwardRange() throws Exception {
+        byte[] frame = "streamed-frame".getBytes(StandardCharsets.UTF_8);
+        AtomicReference<String> rangeHeader = new AtomicReference<>();
+        AtomicReference<String> authHeader = new AtomicReference<>();
+        HttpServer streamServer = HttpServer.create(new InetSocketAddress(0), 0);
+        streamServer.createContext("/dicom-web/studies/1/series/2/instances/3/frames/1", exchange -> {
+            rangeHeader.set(exchange.getRequestHeaders().getFirst(HttpHeaders.RANGE));
+            authHeader.set(exchange.getRequestHeaders().getFirst(HttpHeaders.AUTHORIZATION));
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "multipart/related; type=\"application/octet-stream\"; boundary=abc");
+            exchange.getResponseHeaders().add(HttpHeaders.ACCEPT_RANGES, "bytes");
+            exchange.sendResponseHeaders(206, frame.length);
+            try (var responseBody = exchange.getResponseBody()) {
+                responseBody.write(frame);
+            }
+        });
+        streamServer.start();
+
+        try {
+            int port = streamServer.getAddress().getPort();
+            var response = dicomServerClientService.proxyDicomWebStream(
+                    "http://localhost:" + port + "/dicom-web",
+                    "dicom_server",
+                    "dicom_server",
+                    "/studies/1/series/2/instances/3/frames/1",
+                    "multipart/related; type=\"application/octet-stream\"",
+                    "bytes=0-10",
+                    "GET"
+            );
+
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            assertNotNull(response.getBody());
+            response.getBody().writeTo(outputStream);
+
+            assertEquals(HttpStatus.PARTIAL_CONTENT, response.getStatusCode());
+            assertEquals("bytes=0-10", rangeHeader.get());
+            assertEquals(basicAuth("dicom_server", "dicom_server"), authHeader.get());
+            assertEquals("bytes", response.getHeaders().getFirst(HttpHeaders.ACCEPT_RANGES));
+            assertArrayEquals(frame, outputStream.toByteArray());
+        } finally {
+            streamServer.stop(0);
+        }
     }
 
     private static String basicAuth(String username, String password) {

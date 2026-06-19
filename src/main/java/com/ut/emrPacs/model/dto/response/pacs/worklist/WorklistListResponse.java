@@ -65,7 +65,6 @@ public class WorklistListResponse {
     private String imageReceivedAt;
     private String institutionName;
     private String cancelledAt;
-    private String errorMessage;
 
     @JsonIgnore
     public Long getModalityId() {

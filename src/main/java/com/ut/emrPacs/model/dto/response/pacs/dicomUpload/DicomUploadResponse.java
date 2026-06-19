@@ -13,6 +13,8 @@ public class DicomUploadResponse {
     private String dicomServerName;
     private Integer acceptedFiles = 0;
     private Integer failedFiles = 0;
+    private Integer skippedFiles = 0;
+    private Integer metadataSyncFailures = 0;
     private Integer studyCount = 0;
     private String status = "IMAGE_RECEIVED";
     private Boolean viewerAvailable = false;

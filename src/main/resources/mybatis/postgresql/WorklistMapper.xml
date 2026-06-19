@@ -52,7 +52,6 @@
             s.dicom_server_series_id AS dicomServerSeriesId,
             NULL::TEXT AS viewerUrl,
             s.institution_name AS institutionName,
-            q.error_message AS errorMessage,
             TO_CHAR(q.sent_at, 'YYYY-MM-DD HH24:MI:SS') AS sentAt,
             TO_CHAR(q.received_at, 'YYYY-MM-DD HH24:MI:SS') AS receivedAt,
             TO_CHAR(q.started_at, 'YYYY-MM-DD HH24:MI:SS') AS startedAt,
@@ -105,12 +104,23 @@
           <if test="hospitalId != null and hospitalId > 0">
               AND q.hospital_id = #{hospitalId}
           </if>
-          <if test="filter != null and filter.lastWorklistId != null and filter.lastWorklistId > 0">
-              AND q.id &lt; #{filter.lastWorklistId}
-          </if>
+          <choose>
+              <when test="filter != null
+                      and filter.lastCreatedAt != null and filter.lastCreatedAt != ''
+                      and filter.lastWorklistId != null and filter.lastWorklistId > 0">
+                  AND (q.created_at, q.id) &lt; (CAST(#{filter.lastCreatedAt} AS TIMESTAMPTZ), #{filter.lastWorklistId})
+              </when>
+              <when test="filter != null and filter.lastWorklistId != null and filter.lastWorklistId > 0">
+                  AND q.id &lt; #{filter.lastWorklistId}
+              </when>
+          </choose>
           <if test="filter != null and filter.searchText != null and filter.searchText != ''">
               AND (
-                  LOWER(q.visit_code) = LOWER(#{filter.searchText})
+                  (
+                      q.visit_code IS NOT NULL
+                      AND BTRIM(q.visit_code) &lt;&gt; ''
+                      AND LOWER(q.visit_code) = LOWER(#{filter.searchText})
+                  )
                   OR LOWER(p.patient_uid) = LOWER(#{filter.searchText})
                   OR LOWER(COALESCE(p.patient_hn, '')) = LOWER(#{filter.searchText})
                   OR
@@ -136,12 +146,18 @@
               AND LOWER(COALESCE(p.phone_number, '')) = LOWER(#{filter.phoneNumber})
           </if>
           <if test="filter != null and filter.visitCode != null and filter.visitCode != ''">
+              AND q.visit_code IS NOT NULL
+              AND BTRIM(q.visit_code) &lt;&gt; ''
               AND LOWER(q.visit_code) = LOWER(#{filter.visitCode})
           </if>
           <if test="filter != null and filter.worklistNumber != null and filter.worklistNumber != ''">
+              AND q.visit_code IS NOT NULL
+              AND BTRIM(q.visit_code) &lt;&gt; ''
               AND LOWER(q.visit_code) = LOWER(#{filter.worklistNumber})
           </if>
           <if test="filter != null and filter.accessionNumber != null and filter.accessionNumber != ''">
+              AND q.visit_code IS NOT NULL
+              AND BTRIM(q.visit_code) &lt;&gt; ''
               AND LOWER(q.visit_code) = LOWER(#{filter.accessionNumber})
           </if>
           <if test="filter != null and filter.modalityId != null">
@@ -180,6 +196,20 @@
         <include refid="Worklist_FILTER_WHERE"/>
     </select>
 
+    <select id="countWeekCache" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_worklists_week_cache q
+        <if test="filter != null and (
+            (filter.searchText != null and filter.searchText != '')
+            or (filter.patientCode != null and filter.patientCode != '')
+            or (filter.patientName != null and filter.patientName != '')
+            or (filter.phoneNumber != null and filter.phoneNumber != '')
+        )">
+            INNER JOIN patients p ON p.id = q.patient_id
+        </if>
+        <include refid="Worklist_FILTER_WHERE"/>
+    </select>
+
     <select id="list" resultMap="WorklistListResponse">
         SELECT
             <include refid="Worklist_SELECT_COLUMNS"/>
@@ -189,16 +219,25 @@
         LEFT JOIN modalities m ON m.id = q.modality_id
         <include refid="Worklist_STUDY_JOINS"/>
         <include refid="Worklist_FILTER_WHERE"/>
-        ORDER BY q.id DESC
-        <choose>
-            <when test="filter != null and filter.lastWorklistId != null and filter.lastWorklistId > 0 and filter.rowsPerPage != null">
-                LIMIT #{filter.rowsPerPage}
-            </when>
-            <when test="filter != null and filter.page != null and filter.rowsPerPage != null">
-                LIMIT #{filter.rowsPerPage}
-                OFFSET #{filter.page}
-            </when>
-        </choose>
+        ORDER BY q.created_at DESC, q.id DESC
+        <if test="filter != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage}
+        </if>
+    </select>
+
+    <select id="listWeekCache" resultMap="WorklistListResponse">
+        SELECT
+            <include refid="Worklist_SELECT_COLUMNS"/>
+        FROM pacs_worklists_week_cache q
+        INNER JOIN hospitals h ON h.id = q.hospital_id
+        INNER JOIN patients p ON p.id = q.patient_id
+        LEFT JOIN modalities m ON m.id = q.modality_id
+        <include refid="Worklist_STUDY_JOINS"/>
+        <include refid="Worklist_FILTER_WHERE"/>
+        ORDER BY q.created_at DESC, q.id DESC
+        <if test="filter != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage}
+        </if>
     </select>
 
     <select id="nextVisitSequence" resultType="java.lang.Long">
@@ -276,6 +315,7 @@
 
     <select id="findWorklistById" resultMap="WorklistDetailRow">
         SELECT
+            q.error_message AS errorMessage,
             <include refid="Worklist_SELECT_COLUMNS"/>
         FROM pacs_worklists q
         INNER JOIN hospitals h ON h.id = q.hospital_id
@@ -289,6 +329,7 @@
 
     <select id="findWorklistByIdAnyHospital" resultMap="WorklistDetailRow">
         SELECT
+            q.error_message AS errorMessage,
             <include refid="Worklist_SELECT_COLUMNS"/>
         FROM pacs_worklists q
         INNER JOIN hospitals h ON h.id = q.hospital_id
@@ -301,6 +342,7 @@
 
     <select id="findWorklistByVisitCode" resultMap="WorklistDetailRow">
         SELECT
+            q.error_message AS errorMessage,
             <include refid="Worklist_SELECT_COLUMNS"/>
         FROM pacs_worklists q
         INNER JOIN hospitals h ON h.id = q.hospital_id
@@ -308,19 +350,24 @@
         LEFT JOIN modalities m ON m.id = q.modality_id
         <include refid="Worklist_STUDY_JOINS"/>
         WHERE q.hospital_id = #{hospitalId}
+          AND q.visit_code IS NOT NULL
+          AND BTRIM(q.visit_code) &lt;&gt; ''
           AND LOWER(q.visit_code) = LOWER(#{visitCode})
         LIMIT 1
     </select>
 
     <select id="findWorklistByVisitCodeAnyHospital" resultMap="WorklistDetailRow">
         SELECT
+            q.error_message AS errorMessage,
             <include refid="Worklist_SELECT_COLUMNS"/>
         FROM pacs_worklists q
         INNER JOIN hospitals h ON h.id = q.hospital_id
         INNER JOIN patients p ON p.id = q.patient_id
         LEFT JOIN modalities m ON m.id = q.modality_id
         <include refid="Worklist_STUDY_JOINS"/>
-        WHERE LOWER(q.visit_code) = LOWER(#{visitCode})
+        WHERE q.visit_code IS NOT NULL
+          AND BTRIM(q.visit_code) &lt;&gt; ''
+          AND LOWER(q.visit_code) = LOWER(#{visitCode})
         LIMIT 1
     </select>
 
@@ -439,6 +486,8 @@
             modified_at = NOW(),
             modified = NOW()
         WHERE hospital_id = #{hospitalId}
+          AND visit_code IS NOT NULL
+          AND BTRIM(visit_code) &lt;&gt; ''
           AND LOWER(visit_code) = LOWER(#{visitCode})
     </update>
 
@@ -535,13 +584,18 @@
 
     <select id="findWorklistByAccessionNumber" resultMap="WorklistDetailRow">
         SELECT
+            q.error_message AS errorMessage,
             <include refid="Worklist_SELECT_COLUMNS"/>
         FROM pacs_worklists q
         INNER JOIN hospitals h ON h.id = q.hospital_id
         INNER JOIN patients p ON p.id = q.patient_id
         LEFT JOIN modalities m ON m.id = q.modality_id
         <include refid="Worklist_STUDY_JOINS"/>
-        WHERE LOWER(q.visit_code) = LOWER(#{accessionNumber})
+        WHERE (
+               q.visit_code IS NOT NULL
+               AND BTRIM(q.visit_code) &lt;&gt; ''
+               AND LOWER(q.visit_code) = LOWER(#{accessionNumber})
+           )
            OR LOWER(s.accession_number) = LOWER(#{accessionNumber})
            OR LOWER(s.reference_visit_code) = LOWER(#{accessionNumber})
         ORDER BY q.id DESC
@@ -550,6 +604,7 @@
 
     <select id="findWorklistByAccessionNumberAndHospital" resultMap="WorklistDetailRow">
         SELECT
+            q.error_message AS errorMessage,
             <include refid="Worklist_SELECT_COLUMNS"/>
         FROM pacs_worklists q
         INNER JOIN hospitals h ON h.id = q.hospital_id
@@ -558,7 +613,11 @@
         <include refid="Worklist_STUDY_JOINS"/>
         WHERE q.hospital_id = #{hospitalId}
           AND (
-              LOWER(q.visit_code) = LOWER(#{accessionNumber})
+              (
+                  q.visit_code IS NOT NULL
+                  AND BTRIM(q.visit_code) &lt;&gt; ''
+                  AND LOWER(q.visit_code) = LOWER(#{accessionNumber})
+              )
               OR LOWER(s.accession_number) = LOWER(#{accessionNumber})
               OR LOWER(s.reference_visit_code) = LOWER(#{accessionNumber})
           )
@@ -568,6 +627,7 @@
 
     <select id="findWorklistByStudyIdentifiers" resultMap="WorklistDetailRow">
         SELECT
+            q.error_message AS errorMessage,
             <include refid="Worklist_SELECT_COLUMNS"/>
         FROM pacs_worklists q
         INNER JOIN hospitals h ON h.id = q.hospital_id
@@ -599,6 +659,7 @@
 
     <select id="findWorklistByStudyIdentifiersAndHospital" resultMap="WorklistDetailRow">
         SELECT
+            q.error_message AS errorMessage,
             <include refid="Worklist_SELECT_COLUMNS"/>
         FROM pacs_worklists q
         INNER JOIN hospitals h ON h.id = q.hospital_id
@@ -630,6 +691,7 @@
 
     <select id="listWaitingWorklistForAutoSend" resultMap="WorklistDetailRow">
         SELECT
+            q.error_message AS errorMessage,
             <include refid="Worklist_SELECT_COLUMNS"/>
         FROM pacs_worklists q
         INNER JOIN hospitals h ON h.id = q.hospital_id
@@ -645,6 +707,7 @@
 
     <select id="listPendingPacsSyncWorklist" resultMap="WorklistDetailRow">
         SELECT
+            q.error_message AS errorMessage,
             <include refid="Worklist_SELECT_COLUMNS"/>
         FROM pacs_worklists q
         INNER JOIN hospitals h ON h.id = q.hospital_id

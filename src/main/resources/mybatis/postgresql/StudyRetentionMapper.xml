@@ -371,38 +371,113 @@
         </choose>
     </sql>
 
-    <select id="countReview" resultType="java.lang.Long">
-        WITH retention_rows AS (
-            <include refid="RETENTION_CANDIDATE_ROWS"/>
-        )
-        SELECT COUNT(1)
-        FROM retention_rows
-        WHERE status != 'DELETED'
-        <include refid="RETENTION_REVIEW_FILTERS"/>
-    </select>
+    <sql id="RETENTION_REVIEW_COLUMNS">
+        studyId,
+        studyPublicKey,
+        hospitalId,
+        hospitalPublicKey,
+        hospitalName,
+        policyId,
+        policyPublicKey,
+        dicomServerId,
+        dicomServerPublicKey,
+        dicomServerName,
+        modalityId,
+        modalityPublicKey,
+        modalityCode,
+        modalityName,
+        patientName,
+        patientMrn,
+        accessionNumber,
+        referenceVisitCode,
+        studyInstanceUid,
+        dicomServerStudyId,
+        studyDate,
+        imageReceivedAt,
+        retentionDays,
+        retentionValue,
+        retentionUnit,
+        notifyBeforeDays,
+        requireApproval,
+        autoDelete,
+        retentionBaseAt,
+        nearExpiryAt,
+        expiresAt,
+        daysUntilExpiry,
+        status,
+        latestDecisionStatus,
+        decisionNote,
+        errorMessage,
+        requestedAt,
+        approvedAt,
+        rejectedAt,
+        deletedAt
+    </sql>
+
+    <sql id="RETENTION_REVIEW_SORT_RANK">
+        CASE status
+            WHEN 'DELETE_FAILED' THEN 0
+            WHEN 'EXPIRED_WAITING_APPROVAL' THEN 1
+            WHEN 'PENDING_APPROVAL' THEN 2
+            WHEN 'NEAR_EXPIRY' THEN 3
+            WHEN 'REJECTED' THEN 4
+            WHEN 'KEEP_PERMANENT' THEN 5
+            ELSE 6
+        END
+    </sql>
+
+    <sql id="RETENTION_REVIEW_CURSOR">
+        <if test="filter != null and filter.lastStatus != null and filter.lastStatus != '' and filter.lastExpiresAt != null and filter.lastExpiresAt != '' and filter.lastStudyId != null and filter.lastStudyId > 0">
+            AND (
+                <include refid="RETENTION_REVIEW_SORT_RANK"/> &gt;
+                CASE #{filter.lastStatus}
+                    WHEN 'DELETE_FAILED' THEN 0
+                    WHEN 'EXPIRED_WAITING_APPROVAL' THEN 1
+                    WHEN 'PENDING_APPROVAL' THEN 2
+                    WHEN 'NEAR_EXPIRY' THEN 3
+                    WHEN 'REJECTED' THEN 4
+                    WHEN 'KEEP_PERMANENT' THEN 5
+                    ELSE 6
+                END
+                OR (
+                    <include refid="RETENTION_REVIEW_SORT_RANK"/> =
+                    CASE #{filter.lastStatus}
+                        WHEN 'DELETE_FAILED' THEN 0
+                        WHEN 'EXPIRED_WAITING_APPROVAL' THEN 1
+                        WHEN 'PENDING_APPROVAL' THEN 2
+                        WHEN 'NEAR_EXPIRY' THEN 3
+                        WHEN 'REJECTED' THEN 4
+                        WHEN 'KEEP_PERMANENT' THEN 5
+                        ELSE 6
+                    END
+                    AND (
+                        DATE_TRUNC('second', expires_at_value::timestamp) &gt; DATE_TRUNC('second', CAST(#{filter.lastExpiresAt} AS TIMESTAMP))
+                        OR (
+                            DATE_TRUNC('second', expires_at_value::timestamp) = DATE_TRUNC('second', CAST(#{filter.lastExpiresAt} AS TIMESTAMP))
+                            AND studyId &lt; #{filter.lastStudyId}
+                        )
+                    )
+                )
+            )
+        </if>
+    </sql>
 
     <select id="listReview" resultType="com.ut.emrPacs.model.dto.response.pacs.studyRetention.StudyRetentionReviewResponse">
         WITH retention_rows AS (
             <include refid="RETENTION_CANDIDATE_ROWS"/>
         )
-        SELECT *
+        SELECT
+            <include refid="RETENTION_REVIEW_COLUMNS"/>
         FROM retention_rows
         WHERE status != 'DELETED'
         <include refid="RETENTION_REVIEW_FILTERS"/>
+        <include refid="RETENTION_REVIEW_CURSOR"/>
         ORDER BY
-            CASE status
-                WHEN 'DELETE_FAILED' THEN 0
-                WHEN 'EXPIRED_WAITING_APPROVAL' THEN 1
-                WHEN 'PENDING_APPROVAL' THEN 2
-                WHEN 'NEAR_EXPIRY' THEN 3
-                WHEN 'REJECTED' THEN 4
-                WHEN 'KEEP_PERMANENT' THEN 5
-                ELSE 6
-            END,
-            expires_at_value ASC,
+            <include refid="RETENTION_REVIEW_SORT_RANK"/>,
+            DATE_TRUNC('second', expires_at_value::timestamp) ASC,
             studyId DESC
-        <if test="filter != null and filter.page != null and filter.rowsPerPage != null">
-            LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+        <if test="filter != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage}
         </if>
     </select>
 
@@ -410,7 +485,8 @@
         WITH retention_rows AS (
             <include refid="RETENTION_CANDIDATE_ROWS"/>
         )
-        SELECT *
+        SELECT
+            <include refid="RETENTION_REVIEW_COLUMNS"/>
         FROM retention_rows
         WHERE studyId = #{studyId}
           AND status != 'DELETED'
@@ -421,15 +497,21 @@
         WITH retention_rows AS (
             <include refid="RETENTION_CANDIDATE_ROWS"/>
         )
-        SELECT *
+        SELECT
+            <include refid="RETENTION_REVIEW_COLUMNS"/>
         FROM retention_rows
         WHERE status != 'DELETED'
-          <if test="studyPublicKeys != null and studyPublicKeys.size() > 0">
-              AND studyPublicKey IN
-              <foreach collection="studyPublicKeys" item="studyPublicKey" open="(" separator="," close=")">
-                  #{studyPublicKey}
-              </foreach>
-          </if>
+          <choose>
+              <when test="studyPublicKeys != null and studyPublicKeys.size() > 0">
+                  AND studyPublicKey IN
+                  <foreach collection="studyPublicKeys" item="studyPublicKey" open="(" separator="," close=")">
+                      #{studyPublicKey}
+                  </foreach>
+              </when>
+              <otherwise>
+                  AND 1 = 0
+              </otherwise>
+          </choose>
         ORDER BY expires_at_value ASC, studyId DESC
     </select>
 
@@ -437,7 +519,8 @@
         WITH retention_rows AS (
             <include refid="RETENTION_CANDIDATE_ROWS"/>
         )
-        SELECT *
+        SELECT
+            <include refid="RETENTION_REVIEW_COLUMNS"/>
         FROM retention_rows
         WHERE status = 'AUTO_DELETE_READY'
         ORDER BY expires_at_value ASC, studyId ASC
@@ -448,7 +531,8 @@
         WITH retention_rows AS (
             <include refid="RETENTION_CANDIDATE_ROWS"/>
         )
-        SELECT *
+        SELECT
+            <include refid="RETENTION_REVIEW_COLUMNS"/>
         FROM retention_rows
         WHERE status != 'DELETED'
           AND status IN ('DELETE_FAILED', 'EXPIRED_WAITING_APPROVAL', 'AUTO_DELETE_READY', 'PENDING_APPROVAL', 'NEAR_EXPIRY')

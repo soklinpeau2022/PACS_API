@@ -35,6 +35,7 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.client.ResourceAccessException;
 
 import java.io.ByteArrayOutputStream;
 import java.time.LocalDate;
@@ -52,6 +53,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -100,6 +102,9 @@ class DicomUploadServiceImplTest {
         ReflectionTestUtils.setField(service, "securityIncidentReporter", securityIncidentReporter);
         ReflectionTestUtils.setField(service, "maxDicomUploadRequestBytes", 4L * 1024L * 1024L * 1024L);
         ReflectionTestUtils.setField(service, "maxZipEntryBytes", 4L * 1024L * 1024L * 1024L);
+        ReflectionTestUtils.setField(service, "maxZipEntries", 20000);
+        ReflectionTestUtils.setField(service, "instanceUploadMaxAttempts", 3);
+        ReflectionTestUtils.setField(service, "instanceUploadRetryBackoffMs", 0L);
         ReflectionTestUtils.setField(service, "dicomUploadTempDir", System.getProperty("java.io.tmpdir"));
 
         lenient().when(publicEntityKeyResolver.resolve(any(PublicEntityKeyResolver.Entity.class), any(), any()))
@@ -157,7 +162,7 @@ class DicomUploadServiceImplTest {
     }
 
     @Test
-    void acceptedDicomFileFailsWhenStudyCannotBeSavedWithoutTouchingWorklist() throws Exception {
+    void acceptedDicomFileReportsMetadataSyncFailureWithoutMislabelingInstanceAsFailed() throws Exception {
         HospitalDicomServerResponse server = server();
         when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server));
         when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
@@ -177,11 +182,13 @@ class DicomUploadServiceImplTest {
                 new MockMultipartFile("files", "one.dcm", "application/dicom", new byte[] {1, 2, 3, 4})
         ), null, new MockHttpServletRequest());
 
-        assertFalse(response.getHeader().getResult());
+        assertTrue(response.getHeader().getResult());
         DicomUploadResponse body = (DicomUploadResponse) response.getBody().getData().get(0);
-        assertEquals(0, body.getAcceptedFiles());
-        assertEquals(1, body.getFailedFiles());
+        assertEquals(1, body.getAcceptedFiles());
+        assertEquals(0, body.getFailedFiles());
+        assertEquals(1, body.getMetadataSyncFailures());
         assertNotNull(body.getErrors());
+        assertTrue(body.getErrors().get(0).contains("instance accepted"));
         assertTrue(body.getErrors().get(0).contains("study was not saved"));
         verifyNoInteractions(worklistMapper);
     }
@@ -270,7 +277,85 @@ class DicomUploadServiceImplTest {
         assertEquals(1, body.getFailedFiles());
         assertTrue(body.getErrors().get(0).contains("entry.dcm"));
         assertTrue(body.getErrors().get(0).contains("HTTP 400"));
+        verify(dicomServerClientService, times(1))
+                .uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L));
         verifyNoInteractions(worklistMapper);
+    }
+
+    @Test
+    void transientDicomServerFailureRetriesSameInstanceUntilAccepted() throws Exception {
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
+                .thenThrow(new ResourceAccessException("connection reset"))
+                .thenReturn(uploadResponse());
+        stubSuccessfulStudyPersistence();
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(new DicomUploadRequest(), List.of(
+                new MockMultipartFile("files", "retry.dcm", "application/dicom", new byte[] {1, 2, 3, 4})
+        ), null, new MockHttpServletRequest());
+
+        assertTrue(response.getHeader().getResult());
+        DicomUploadResponse body = (DicomUploadResponse) response.getBody().getData().get(0);
+        assertEquals(1, body.getAcceptedFiles());
+        assertEquals(0, body.getFailedFiles());
+        verify(dicomServerClientService, times(2))
+                .uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L));
+    }
+
+    @Test
+    void dicomDirAndKnownPackageMetadataAreSkippedInsteadOfReportedAsFailedInstances() throws Exception {
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        MockMultipartFile zip = new MockMultipartFile(
+                "zipFile",
+                "media.zip",
+                "application/zip",
+                zipBytes("DICOMDIR", new byte[] {1, 2, 3, 4})
+        );
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(new DicomUploadRequest(), null, zip, new MockHttpServletRequest());
+
+        assertFalse(response.getHeader().getResult());
+        DicomUploadResponse body = (DicomUploadResponse) response.getBody().getData().get(0);
+        assertEquals(0, body.getAcceptedFiles());
+        assertEquals(0, body.getFailedFiles());
+        assertEquals(1, body.getSkippedFiles());
+        verifyNoInteractions(dicomServerClientService);
+    }
+
+    @Test
+    void badFormatZipEntryRejectedByDicomServerIsSkippedInsteadOfReportedAsFailedInstance() throws Exception {
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
+                .thenThrow(new IllegalStateException("DICOM server upload failed with HTTP 400: Bad file format: Cannot parse an invalid DICOM file."));
+        MockMultipartFile zip = new MockMultipartFile(
+                "zipFile",
+                "bad-sidecar.zip",
+                "application/zip",
+                zipBytes("sidecar-without-extension", new byte[] {1, 2, 3, 4})
+        );
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(new DicomUploadRequest(), null, zip, new MockHttpServletRequest());
+
+        assertFalse(response.getHeader().getResult());
+        DicomUploadResponse body = (DicomUploadResponse) response.getBody().getData().get(0);
+        assertEquals(0, body.getAcceptedFiles());
+        assertEquals(0, body.getFailedFiles());
+        assertEquals(1, body.getSkippedFiles());
+        assertTrue(body.getErrors().isEmpty());
+    }
+
+    private void stubSuccessfulStudyPersistence() {
+        when(dicomServerClientService.getStudyById(eq("http://dicom.local"), eq("u"), eq("p"), eq("orthanc-study-1")))
+                .thenReturn(studyResponse());
+        when(dicomServerClientService.getSeriesByStudyId(eq("http://dicom.local"), eq("u"), eq("p"), eq("orthanc-study-1")))
+                .thenReturn(List.of(seriesResponse()));
+        when(modalityMapper.findActiveHospitalModalityByDicomCode(11L, "CT")).thenReturn(modality());
+        when(patientMapper.findByDemographics(eq(11L), eq("HEL"), eq("SOK"), eq(LocalDate.of(1975, 1, 1)), eq("M")))
+                .thenReturn(patient());
+        when(studyMapper.upsertFromDicomUpload(eq(11L), eq(55L), eq("1.2.3.4"), eq("ACC-2023"), eq("ACC-2023"), eq(3L), eq("CT"),
+                eq(LocalDate.of(2023, 9, 26)), eq("CT CHEST"), eq("TSNH HOSPITAL"), eq(5L), eq(1), eq("orthanc-study-1"), eq("orthanc-patient-1"),
+                eq("series-1"), eq(3), eq(99L), any())).thenReturn(77L);
+        when(studyMapper.findById(11L, 77L)).thenReturn(savedStudy());
     }
 
     private static HospitalDicomServerResponse server() {

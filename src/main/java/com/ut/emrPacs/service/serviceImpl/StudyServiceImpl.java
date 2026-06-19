@@ -40,7 +40,8 @@ import java.util.Locale;
 @Service
 public class StudyServiceImpl implements StudyService {
     private static final String DEFAULT_VIEWER_STATE_TYPE = "OHIF_VIEWER_STATE";
-    private static final String RESULT_STATUS_COMPLETED = "COMPLETED";
+    private static final String RESULT_STATUS_FINAL = "FINAL";
+    private static final String LEGACY_RESULT_STATUS_COMPLETED = "COMPLETED";
 
     @Autowired
     private StudyMapper studyMapper;
@@ -72,9 +73,11 @@ public class StudyServiceImpl implements StudyService {
             Long modalityId = publicEntityKeyResolver.resolve(Entity.MODALITY, safeFilter.getModalityKey(), null);
             safeFilter.setHospitalId(hospitalId);
             safeFilter.setModalityId(modalityId);
-            Pagination pagination = PaginationHelper.buildAndApplyOffset(safeFilter, studyMapper.count(hospitalId, safeFilter));
+            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
 
-            List<StudyResponse> studies = studyMapper.list(hospitalId, safeFilter);
+            List<StudyResponse> studies = shouldUseWeekCache(safeFilter)
+                    ? studyMapper.listWeekCache(hospitalId, safeFilter)
+                    : studyMapper.list(hospitalId, safeFilter);
 
             LocalTime endDuration = LocalTime.now();
             activityLogService.insert(ApiConstants.Study.BASE_PATH + ApiConstants.Study.LIST_PATH, null, null, "Study", "Study (List)", "View", 1, "Success", startDuration, endDuration, httpServletRequest);
@@ -213,6 +216,19 @@ public class StudyServiceImpl implements StudyService {
         return currentHospitalId();
     }
 
+    private static boolean shouldUseWeekCache(StudyListFilter filter) {
+        if (filter == null) {
+            return true;
+        }
+        return !hasText(filter.getSearchText())
+                && !hasText(filter.getPatientName())
+                && !hasText(filter.getMrn())
+                && !hasText(filter.getAccessionNumber())
+                && !hasText(filter.getAccessionNumberExact())
+                && !hasText(filter.getStartDate())
+                && !hasText(filter.getEndDate());
+    }
+
     private HospitalDicomServerResponse resolveStudyDicomServer(StudyResponse study, Long hospitalId) {
         if (study != null && study.getDicomServerId() != null && study.getDicomServerId() > 0L) {
             List<HospitalDicomServerResponse> servers = dicomServerMapper.getDicomServerById(study.getDicomServerId(), hospitalId);
@@ -321,7 +337,8 @@ public class StudyServiceImpl implements StudyService {
     private static boolean isCompletedResult(PacsResultResponse result) {
         return result != null
                 && (Boolean.TRUE.equals(result.getCompleted())
-                || RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
+                || RESULT_STATUS_FINAL.equalsIgnoreCase(String.valueOf(result.getStatus()))
+                || LEGACY_RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
     }
 
     private static Long viewerOwnerId(PacsResultResponse result, PacsViewerStateResponse state) {

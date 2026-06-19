@@ -49,14 +49,13 @@ public class NotificationServiceImpl implements NotificationService {
                     || FunctionHelper.hasText(safeFilter.getSource());
             List<String> sources = normalizeSources(safeFilter);
             if (explicitSourceSelection && sources.isEmpty()) {
-                Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter, 0L);
+                Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
                 return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(), pagination, true));
             }
             safeFilter.setSources(sources.isEmpty() ? null : sources);
             safeFilter.setSource(null);
 
-            Long total = notificationMapper.countNotifications(safeFilter);
-            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter, total);
+            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
             List<NotificationResponse> notifications = notificationMapper.listNotifications(safeFilter);
             return ResponseMessageUtils.makeResponse(true, messageService.message("Success", notifications, pagination, true));
         } catch (Exception error) {

@@ -1,4 +1,4 @@
-package com.ut.emrPacs.mapper;
+package com.ut.emr.mapper;
 
 import org.junit.jupiter.api.Test;
 
@@ -20,6 +20,14 @@ class MapperJoinStrategyTest {
         assertTrue(xml.contains("LEFT JOIN hospital_dicom_routing_configs selected_cfg"));
         assertTrue(xml.contains("LEFT JOIN hospital_dicom_machines selected_machine"));
         assertFalse(xml.contains(") route_info ON TRUE"));
+    }
+
+    @Test
+    void worklistVisitCodeLookupsShouldRemainEligibleForPartialIndexes() throws IOException {
+        String xml = readMapper("WorklistMapper.xml");
+
+        assertTrue(countOccurrences(xml, "BTRIM(q.visit_code) &lt;&gt; ''") >= 7);
+        assertTrue(xml.contains("BTRIM(visit_code) &lt;&gt; ''"));
     }
 
     @Test
@@ -45,5 +53,9 @@ class MapperJoinStrategyTest {
     private static String readMapper(String fileName) throws IOException {
         Path path = Path.of("src/main/resources/mybatis/postgresql", fileName);
         return Files.readString(path, StandardCharsets.UTF_8);
+    }
+
+    private static int countOccurrences(String value, String token) {
+        return (value.length() - value.replace(token, "").length()) / token.length();
     }
 }

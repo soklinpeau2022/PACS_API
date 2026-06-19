@@ -4,6 +4,10 @@
 
     <insert id="insertCallbackLog">
         INSERT INTO dicom_server_callback_log (
+            hospital_id,
+            dicom_server_id,
+            dedupe_key,
+            payload_sha256,
             event,
             accession_number,
             dicom_server_study_id,
@@ -14,19 +18,74 @@
             error_message,
             warning_message,
             received_at,
+            last_received_at,
+            attempt_count,
             created_at
         ) VALUES (
-            #{event},
-            #{accessionNumber},
-            #{dicomServerStudyId},
-            #{dicomServerPatientId},
-            CAST(COALESCE(#{dicomServerSeriesIdsJson}, '[]') AS JSONB),
-            CAST(COALESCE(#{payloadJson}, '{}') AS JSONB),
-            COALESCE(#{success}, false),
-            #{errorMessage},
-            #{warningMessage},
-            COALESCE(CAST(#{receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            #{entry.hospitalId},
+            #{entry.dicomServerId},
+            #{entry.dedupeKey},
+            #{entry.payloadSha256},
+            #{entry.event},
+            #{entry.accessionNumber},
+            #{entry.dicomServerStudyId},
+            #{entry.dicomServerPatientId},
+            CAST(COALESCE(#{entry.dicomServerSeriesIdsJson}, '[]') AS JSONB),
+            CAST(COALESCE(#{entry.payloadJson}, '{}') AS JSONB),
+            COALESCE(#{entry.success}, false),
+            #{entry.errorMessage},
+            #{entry.warningMessage},
+            COALESCE(CAST(#{entry.receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            COALESCE(CAST(#{entry.receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            1,
             NOW()
         )
+        ON CONFLICT DO NOTHING
+    </insert>
+
+    <insert id="insertUnmatchedCallbackLog">
+        INSERT INTO dicom_server_unmatched_callback_log (
+            dicom_server_id,
+            dedupe_key,
+            payload_sha256,
+            event,
+            accession_number,
+            dicom_server_study_id,
+            dicom_server_patient_id,
+            dicom_server_series_ids,
+            payload,
+            success,
+            error_message,
+            warning_message,
+            received_at,
+            last_received_at,
+            attempt_count,
+            created_at
+        ) VALUES (
+            #{entry.dicomServerId},
+            #{entry.dedupeKey},
+            #{entry.payloadSha256},
+            #{entry.event},
+            #{entry.accessionNumber},
+            #{entry.dicomServerStudyId},
+            #{entry.dicomServerPatientId},
+            CAST(COALESCE(#{entry.dicomServerSeriesIdsJson}, '[]') AS JSONB),
+            CAST(COALESCE(#{entry.payloadJson}, '{}') AS JSONB),
+            COALESCE(#{entry.success}, false),
+            #{entry.errorMessage},
+            #{entry.warningMessage},
+            COALESCE(CAST(#{entry.receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            COALESCE(CAST(#{entry.receivedAtIso} AS TIMESTAMPTZ), NOW()),
+            1,
+            NOW()
+        )
+        ON CONFLICT (dedupe_key)
+        WHERE dedupe_key IS NOT NULL
+        DO UPDATE SET
+            attempt_count = dicom_server_unmatched_callback_log.attempt_count + 1,
+            last_received_at = EXCLUDED.last_received_at,
+            success = dicom_server_unmatched_callback_log.success OR EXCLUDED.success,
+            error_message = EXCLUDED.error_message,
+            warning_message = EXCLUDED.warning_message
     </insert>
 </mapper>

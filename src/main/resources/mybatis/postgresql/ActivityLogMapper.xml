@@ -64,6 +64,11 @@
     <sql id="BASE_WHERE">
         WHERE 1 = 1
 
+        <if test="lastActivityId != null and lastActivityId > 0
+                and (orderBy == null or orderBy == '')">
+            AND system_activities.id &lt; #{lastActivityId}
+        </if>
+
         <if test="startDate != null and startDate != '' and startDate != '0000-00-00'
                 and endDate != null and endDate != '' and endDate != '0000-00-00'">
 
@@ -126,7 +131,9 @@
                 system_activities.id DESC
             </otherwise>
         </choose>
-        <if test="page != null and rowsPerPage != null">LIMIT #{rowsPerPage} OFFSET #{page}</if>
+        <if test="rowsPerPage != null">
+            LIMIT #{rowsPerPage}
+        </if>
     </select>
 
     <select id="countList" parameterType="com.ut.emrPacs.model.base.filter.ActivityFilter" resultType="java.lang.Long">

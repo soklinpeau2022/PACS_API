@@ -60,14 +60,9 @@
           AND p.gender = #{filter.gender}
         </if>
         ORDER BY p.id DESC
-        <choose>
-            <when test="filter != null and filter.lastPatientId != null and filter.lastPatientId > 0">
-                LIMIT #{filter.rowsPerPage}
-            </when>
-            <otherwise>
-                LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
-            </otherwise>
-        </choose>
+        <if test="filter != null and filter.rowsPerPage != null">
+            LIMIT #{filter.rowsPerPage}
+        </if>
     </select>
 
     <select id="count" resultType="java.lang.Long">

@@ -15,6 +15,13 @@ public interface DashboardMapper {
 
     Long countStudies(@Param("hospitalId") Long hospitalId);
 
+    /**
+     * Cumulative received-study count sourced from the pacs_daily_stats summary
+     * table. Used in place of the live COUNT(*) on pacs_studies at large scale
+     * (see dashboard.studies-count-source).
+     */
+    Long sumReceivedStudies(@Param("hospitalId") Long hospitalId);
+
     Long countTotalDicomServers(@Param("hospitalId") Long hospitalId);
 
     Long countActiveDicomServers(@Param("hospitalId") Long hospitalId);

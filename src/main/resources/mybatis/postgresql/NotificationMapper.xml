@@ -309,7 +309,7 @@
         <include refid="NOTIFICATION_SOURCE"/>
         <include refid="NOTIFICATION_WHERE"/>
         ORDER BY notifications.created_at_sort DESC, notifications.reference_id DESC
-        <if test="page != null and rowsPerPage != null">LIMIT #{rowsPerPage} OFFSET #{page}</if>
+        <if test="rowsPerPage != null">LIMIT #{rowsPerPage}</if>
     </select>
 
     <select id="countNotifications" parameterType="com.ut.emrPacs.model.base.filter.NotificationFilter" resultType="java.lang.Long">

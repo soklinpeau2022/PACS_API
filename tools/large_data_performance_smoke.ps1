@@ -81,32 +81,73 @@ SELECT id
 FROM pacs_studies
 WHERE accession_number LIKE 'PERF-$escapedBatch-ACC%';
 
-DELETE FROM pacs_result_images img
-USING pacs_results r, perf_worklists_to_delete w
-WHERE img.result_id = r.id
-  AND r.worklist_id = w.id;
+CREATE TEMP TABLE perf_results_to_delete AS
+SELECT r.id
+FROM pacs_results r
+JOIN perf_worklists_to_delete w ON w.id = r.worklist_id
+UNION
+SELECT r.id
+FROM pacs_results r
+JOIN perf_studies_to_delete s ON s.id = r.study_id;
 
-DELETE FROM pacs_result_images img
-USING pacs_results r, perf_studies_to_delete s
-WHERE img.result_id = r.id
-  AND r.study_id = s.id;
+DO `$`$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_roles
+        WHERE rolname = CURRENT_USER
+          AND rolsuper
+    ) THEN
+        RAISE EXCEPTION
+            'Large-data fast cleanup requires a disposable local superuser role.';
+    END IF;
+END
+`$`$;
 
-DELETE FROM pacs_results r
+-- Benchmark rows are fully identified above. Suppressing triggers avoids
+-- hundreds of thousands of redundant FK checks across inherited partitions;
+-- every dependent benchmark table and both caches are deleted explicitly.
+SET LOCAL session_replication_role = replica;
+
+DELETE FROM pacs_worklists_week_cache c
 USING perf_worklists_to_delete w
-WHERE r.worklist_id = w.id;
+WHERE c.id = w.id;
+
+DELETE FROM pacs_studies_week_cache c
+USING perf_studies_to_delete s
+WHERE c.id = s.id;
+
+DELETE FROM pacs_result_versions v
+USING perf_results_to_delete r
+WHERE v.result_id = r.id;
+
+DELETE FROM pacs_result_images img
+USING perf_results_to_delete r
+WHERE img.result_id = r.id;
 
 DELETE FROM pacs_results r
+USING perf_results_to_delete d
+WHERE r.id = d.id;
+
+DELETE FROM pacs_viewer_states v
+USING perf_studies_to_delete s
+WHERE v.study_id = s.id;
+
+DELETE FROM pacs_realtime_notification_events e
+USING perf_studies_to_delete s
+WHERE e.study_id = s.id;
+
+DELETE FROM study_retention_delete_requests r
 USING perf_studies_to_delete s
 WHERE r.study_id = s.id;
+
+DELETE FROM pacs_worklist_histories h
+USING perf_worklists_to_delete w
+WHERE h.worklist_id = w.id;
 
 DELETE FROM pacs_worklist_study_links l
 USING perf_worklists_to_delete w
 WHERE l.worklist_id = w.id;
-
-UPDATE pacs_worklists w
-SET study_id = NULL
-FROM perf_worklists_to_delete d
-WHERE w.id = d.id;
 
 DELETE FROM pacs_worklists w
 USING perf_worklists_to_delete d
@@ -123,6 +164,36 @@ WHERE p.id = d.id;
 DELETE FROM system_activities
 WHERE endpoint LIKE '/perf/$escapedBatch/%'
    OR description LIKE 'Performance batch $escapedBatch%';
+
+DO `$`$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pacs_worklists_week_cache c
+        JOIN perf_worklists_to_delete w ON w.id = c.id
+    ) OR EXISTS (
+        SELECT 1
+        FROM pacs_studies_week_cache c
+        JOIN perf_studies_to_delete s ON s.id = c.id
+    ) OR EXISTS (
+        SELECT 1
+        FROM pacs_worklists w
+        JOIN perf_worklists_to_delete d ON d.id = w.id
+    ) OR EXISTS (
+        SELECT 1
+        FROM pacs_studies s
+        JOIN perf_studies_to_delete d ON d.id = s.id
+    ) OR EXISTS (
+        SELECT 1
+        FROM patients p
+        JOIN perf_patients_to_delete d ON d.id = p.id
+    ) THEN
+        RAISE EXCEPTION 'Large-data cleanup left tagged source/cache rows behind.';
+    END IF;
+END
+`$`$;
+
+SET LOCAL session_replication_role = origin;
 
 COMMIT;
 
@@ -319,7 +390,8 @@ SELECT w.hospital_id,
 FROM pacs_worklists w
 JOIN patients p ON p.id = w.patient_id
 WHERE p.patient_uid LIKE 'PERF-$escapedBatch-P%'
-  AND w.study_id IS NOT NULL;
+  AND w.study_id IS NOT NULL
+ON CONFLICT DO NOTHING;
 
 INSERT INTO pacs_results (
     hospital_id,
@@ -341,7 +413,7 @@ SELECT w.hospital_id,
        w.study_id,
        w.patient_id,
        'Performance normalized result',
-       CASE WHEN rn.rn % 20 = 0 THEN 'COMPLETED' ELSE 'IMAGE_RECEIVED' END,
+       CASE WHEN rn.rn % 20 = 0 THEN 'FINAL' ELSE 'IMAGE_RECEIVED' END,
        (rn.rn % 20 = 0),
        1,
        1,
@@ -494,6 +566,7 @@ SELECT
     (SELECT public_id::text FROM patients WHERE patient_uid LIKE 'PERF-$escapedBatch-P%' ORDER BY id LIMIT 1) AS patient_key,
     (SELECT public_id::text FROM pacs_worklists WHERE visit_code LIKE 'PERF-$escapedBatch-Q%' ORDER BY id LIMIT 1) AS worklist_key,
     (SELECT public_id::text FROM pacs_studies WHERE accession_number LIKE 'PERF-$escapedBatch-ACC%' ORDER BY id LIMIT 1) AS study_key,
+    (SELECT hospital_id FROM pacs_worklists WHERE visit_code LIKE 'PERF-$escapedBatch-Q%' ORDER BY id LIMIT 1) AS hospital_id,
     (
         SELECT h.public_id::text
         FROM pacs_worklists w
@@ -504,7 +577,62 @@ SELECT
     ) AS hospital_key,
     (SELECT min(visit_code) FROM pacs_worklists WHERE visit_code LIKE 'PERF-$escapedBatch-Q%') AS visit_code,
     (SELECT min(accession_number) FROM pacs_studies WHERE accession_number LIKE 'PERF-$escapedBatch-ACC%') AS accession_number,
-    (SELECT min(patient_uid) FROM patients WHERE patient_uid LIKE 'PERF-$escapedBatch-P%') AS patient_uid;
+    (SELECT min(patient_uid) FROM patients WHERE patient_uid LIKE 'PERF-$escapedBatch-P%') AS patient_uid,
+    (
+        SELECT w.hospital_id
+        FROM pacs_worklists w
+        WHERE w.visit_code LIKE 'PERF-$escapedBatch-Q%'
+          AND w.dicom_route_id IS NOT NULL
+          AND w.status = 1
+        ORDER BY w.id DESC
+        LIMIT 1
+    ) AS explain_worklist_hospital_id,
+    (
+        SELECT w.dicom_route_id
+        FROM pacs_worklists w
+        WHERE w.visit_code LIKE 'PERF-$escapedBatch-Q%'
+          AND w.dicom_route_id IS NOT NULL
+          AND w.status = 1
+        ORDER BY w.id DESC
+        LIMIT 1
+    ) AS explain_dicom_route_id,
+    (
+        SELECT w.visit_code
+        FROM pacs_worklists w
+        WHERE w.visit_code LIKE 'PERF-$escapedBatch-Q%'
+          AND w.dicom_route_id IS NOT NULL
+          AND w.status = 1
+        ORDER BY w.id DESC
+        LIMIT 1
+    ) AS explain_visit_code,
+    (
+        SELECT p.hospital_id
+        FROM patients p
+        WHERE p.patient_uid LIKE 'PERF-$escapedBatch-P%'
+        ORDER BY p.id DESC
+        LIMIT 1
+    ) AS explain_patient_hospital_id,
+    (
+        SELECT p.patient_uid
+        FROM patients p
+        WHERE p.patient_uid LIKE 'PERF-$escapedBatch-P%'
+        ORDER BY p.id DESC
+        LIMIT 1
+    ) AS explain_patient_uid,
+    (
+        SELECT st.hospital_id
+        FROM pacs_studies st
+        WHERE st.accession_number LIKE 'PERF-$escapedBatch-ACC%'
+        ORDER BY st.id DESC
+        LIMIT 1
+    ) AS explain_study_hospital_id,
+    (
+        SELECT st.accession_number
+        FROM pacs_studies st
+        WHERE st.accession_number LIKE 'PERF-$escapedBatch-ACC%'
+        ORDER BY st.id DESC
+        LIMIT 1
+    ) AS explain_accession_number;
 "@
     return ($csv | ConvertFrom-Csv | Select-Object -First 1)
 }
@@ -602,34 +730,45 @@ function Measure-ExplainSet {
 
     Write-Step "Measuring database query plans"
     $ids = Get-SampleIds -TargetBatchId $TargetBatchId
-    $visitCode = ([string]$ids.visit_code).Replace("'", "''")
-    $patientUid = ([string]$ids.patient_uid).Replace("'", "''")
-    $accessionNumber = ([string]$ids.accession_number).Replace("'", "''")
+    $visitCode = ([string]$ids.explain_visit_code).Replace("'", "''")
+    $patientUid = ([string]$ids.explain_patient_uid).Replace("'", "''")
+    $accessionNumber = ([string]$ids.explain_accession_number).Replace("'", "''")
+    $worklistHospitalId = [long]$ids.explain_worklist_hospital_id
+    $patientHospitalId = [long]$ids.explain_patient_hospital_id
+    $studyHospitalId = [long]$ids.explain_study_hospital_id
+    $dicomRouteId = [long]$ids.explain_dicom_route_id
 
     return @(
         Measure-ExplainQuery -Name "worklist_route_status" -Sql @"
 SELECT w.id, w.visit_code, w.patient_id
 FROM pacs_worklists w
-WHERE w.dicom_route_id IS NOT NULL
+WHERE w.hospital_id = $worklistHospitalId
+  AND w.dicom_route_id = $dicomRouteId
+  AND w.status = 1
 ORDER BY w.id DESC
 LIMIT 50
 "@
         Measure-ExplainQuery -Name "worklist_visit_code" -Sql @"
 SELECT w.id
 FROM pacs_worklists w
-WHERE w.visit_code = '$visitCode'
+WHERE w.hospital_id = $worklistHospitalId
+  AND w.visit_code IS NOT NULL
+  AND BTRIM(w.visit_code) <> ''
+  AND LOWER(w.visit_code) = LOWER('$visitCode')
 LIMIT 1
 "@
         Measure-ExplainQuery -Name "patient_uid" -Sql @"
 SELECT p.id
 FROM patients p
-WHERE p.patient_uid = '$patientUid'
+WHERE p.hospital_id = $patientHospitalId
+  AND LOWER(p.patient_uid) = LOWER('$patientUid')
 LIMIT 1
 "@
         Measure-ExplainQuery -Name "study_accession" -Sql @"
 SELECT st.id
 FROM pacs_studies st
-WHERE st.accession_number = '$accessionNumber'
+WHERE st.hospital_id = $studyHospitalId
+  AND st.accession_number = '$accessionNumber'
 LIMIT 1
 "@
     )

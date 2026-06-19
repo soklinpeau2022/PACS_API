@@ -167,3 +167,84 @@ curl -fsS http://localhost:8080/pacsApi/actuator/health
 docker logs --tail 200 udaya_pacs_qa_api
 docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
+
+## Partition Maintenance
+
+Flyway V197+ uses `partition_maintenance_configs` for fixed technical-log retention and policy-aware audit retention:
+
+```sql
+SELECT run_partition_maintenance();
+```
+
+Flyway V205 removes the obsolete `future_months` column and keeps only
+`future_partitions`. The config table contains exactly the six native
+log/history parents; `pacs_worklists` and `pacs_studies` remain unpartitioned
+source-of-truth tables.
+
+Flyway V196 adds the missing clinical config rows, trims final duplicate
+indexes, and moves unknown-hospital DICOM callbacks into
+`dicom_server_unmatched_callback_log` so `dicom_server_callback_log` remains
+hospital-scoped.
+
+Fixed technical/event logs use monthly partitions with 12-month auto-drop.
+Worklist histories and study retention delete requests use yearly partitions
+and only clean up rows with policy metadata such as `purge_after`.
+
+Spring Boot runs partition maintenance monthly with an advisory lock. To
+validate partitions:
+
+```bash
+psql -d emr_pacs_db -f tools/sql/partition-maintenance/validate_partition_maintenance.sql
+```
+
+Full notes: [PARTITION_MAINTENANCE.md](docs/database/PARTITION_MAINTENANCE.md).
+
+## PACS Week Cache
+
+Flyway V199+ adds rebuildable 7-day list caches:
+
+```sql
+SELECT refresh_pacs_week_cache();
+SELECT cleanup_pacs_week_cache();
+```
+
+Default Worklist/Study list screens read `pacs_worklists_week_cache` and
+`pacs_studies_week_cache`. Detail, exact search, old date ranges, retention,
+audit, and export flows continue to read the main `pacs_worklists` and
+`pacs_studies` tables.
+
+Spring Boot refreshes the cache weekly and cleans old rows daily with an
+advisory lock. Validate and benchmark it with:
+
+```bash
+psql -d emr_pacs_db -f tools/sql/week-cache/validate_pacs_week_cache.sql
+psql -d emr_pacs_db -f tools/sql/week-cache/explain_pacs_week_cache.sql
+```
+
+Full notes: [PACS_WEEK_CACHE.md](docs/database/PACS_WEEK_CACHE.md).
+
+## Docker Database Operations
+
+```powershell
+.\scripts\stack.ps1 -Target local -Action db-backup
+.\scripts\stack.ps1 -Target local -Action db-migrate -Build
+.\scripts\stack.ps1 -Target local -Action db-validate
+.\scripts\stack.ps1 -Target local -Action db-refresh-cache
+.\scripts\stack.ps1 -Target local -Action db-partition-maintenance
+```
+
+Linux uses the same actions through `bash scripts/stack.sh`. See
+[DB_DOCKER_MIGRATION_GUIDE.md](docs/DB_DOCKER_MIGRATION_GUIDE.md).
+
+## Complete Schema Export
+
+Use PostgreSQL `pg_dump`, not a generic table-DDL exporter:
+
+```powershell
+.\tools\export_complete_schema.ps1 `
+  -OutputPath "C:\Users\MSI\Desktop\emr_pacs_db(9).sql"
+```
+
+The export is restored into a temporary database and catalog-count validated
+before it is accepted. See
+[COMPLETE_SCHEMA_EXPORT.md](docs/database/COMPLETE_SCHEMA_EXPORT.md).

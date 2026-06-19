@@ -52,11 +52,21 @@ public interface DicomServerClientService {
 
     ResponseEntity<byte[]> getInstancePreview(String baseUrl, String username, String password, String instanceId);
 
-    ResponseEntity<StreamingResponseBody> proxyDicomWeb(
+    ResponseEntity<byte[]> proxyDicomWeb(
             String dicomwebBaseUrl,
             String username,
             String password,
             String pathAndQuery,
             String acceptHeader
+    );
+
+    ResponseEntity<StreamingResponseBody> proxyDicomWebStream(
+            String dicomwebBaseUrl,
+            String username,
+            String password,
+            String pathAndQuery,
+            String acceptHeader,
+            String rangeHeader,
+            String requestMethod
     );
 }

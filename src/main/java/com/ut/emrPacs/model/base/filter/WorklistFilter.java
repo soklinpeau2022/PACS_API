@@ -27,6 +27,8 @@ public class WorklistFilter extends Filter {
     @JsonIgnore
     @Schema(hidden = true)
     private Long lastWorklistId;
+    @Schema(description = "Cursor timestamp for big-data paging. Send with lastWorklistId from the last row of the previous page.", example = "2026-06-18T10:15:30Z")
+    private String lastCreatedAt;
     private String status;
     @JsonIgnore
     @Schema(hidden = true)
@@ -116,6 +118,14 @@ public class WorklistFilter extends Filter {
 
     public void setAccessionNumber(String accessionNumber) {
         this.accessionNumber = trimToNull(accessionNumber);
+    }
+
+    public void setLastWorklistId(Long lastWorklistId) {
+        this.lastWorklistId = lastWorklistId != null && lastWorklistId > 0L ? lastWorklistId : null;
+    }
+
+    public void setLastCreatedAt(String lastCreatedAt) {
+        this.lastCreatedAt = trimToNull(lastCreatedAt);
     }
 
     private String trimToNull(String value) {

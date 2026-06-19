@@ -54,7 +54,7 @@
             #{accessionNumber},
             #{dedupeKey}
         )
-        ON CONFLICT (hospital_id, dedupe_key) DO NOTHING
+        ON CONFLICT DO NOTHING
     </insert>
 
     <select id="findLatestEventId" resultType="java.lang.Long">

@@ -21,6 +21,14 @@ public final class PaginationHelper {
     private static final int MAX_PAGE = 100000;
     /** Maximum page size accepted before falling back to default. */
     private static final int MAX_ROWS_PER_PAGE = 100;
+    /**
+     * Hard ceiling on the SQL OFFSET an offset-paged query may use. Realistic UI
+     * paging never approaches this; it only bounds the worst-case sequential scan
+     * on very large tables. Legitimate deep paging must use the keyset cursors
+     * (lastWorklistId / lastStudyId / lastPatientId / lastActivityId /
+     * lastUserLogId) which avoid OFFSET entirely.
+     */
+    private static final int MAX_OFFSET = 200000;
 
     private PaginationHelper() {
     }
@@ -151,7 +159,9 @@ public final class PaginationHelper {
         pagination.setRowsPerPage(rowsPerPage);
 
         int page0 = Math.max(0, page - 1);
-        filter.setPage(page0 * rowsPerPage); // offset
+        long rawOffset = (long) page0 * rowsPerPage;
+        int offset = rawOffset > MAX_OFFSET ? MAX_OFFSET : (int) rawOffset; // bound worst-case scan; deep paging should use keyset cursors
+        filter.setPage(offset);
         filter.setRowsPerPage(rowsPerPage);
 
         return pagination;

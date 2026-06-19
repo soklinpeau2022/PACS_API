@@ -903,6 +903,7 @@ class WorklistServiceImplWorklistCrudTest {
         ResponseMessage<BaseResult> response = WorklistService.assignWorklist(request, null);
 
         assertTrue(response.isSuccess(), response.getHeader() != null ? String.valueOf(response.getHeader().getErrorText()) : "Unknown error");
+        verify(WorklistMapper, never()).findWorklistByVisitCodeAnyHospital(expectedVisitCode);
         verify(WorklistMapper).assignWorklist(eq(11L), eq(99L), eq(expectedVisitCode), eq(request));
     }
 

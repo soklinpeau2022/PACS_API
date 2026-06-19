@@ -254,7 +254,7 @@ class PacsResultServiceImplAccessTest {
         when(modalityMapper.countActiveModalitiesByIds(List.of(3L))).thenReturn(1L);
         when(modalityMapper.countActiveHospitalModality(1L, 3L)).thenReturn(1L);
         when(pacsResultMapper.findExisting(any(PacsResultSaveRequest.class))).thenReturn(null);
-        when(pacsResultMapper.insertResult(any(PacsResultSaveRequest.class), eq("COMPLETED"), eq(99L)))
+        when(pacsResultMapper.insertResult(any(PacsResultSaveRequest.class), eq("FINAL"), eq(99L)))
                 .thenReturn(88L);
         PacsResultResponse saved = resultResponse(88L, 99L);
         saved.setResultText("<p>GGGG</p>");
@@ -268,7 +268,7 @@ class PacsResultServiceImplAccessTest {
         var response = service.createBrowser(saveRequest, List.of(), request);
 
         assertTrue(response.isSuccess());
-        verify(pacsResultMapper).insertResult(any(PacsResultSaveRequest.class), eq("COMPLETED"), eq(99L));
+        verify(pacsResultMapper).insertResult(any(PacsResultSaveRequest.class), eq("FINAL"), eq(99L));
     }
 
     @Test
@@ -283,7 +283,7 @@ class PacsResultServiceImplAccessTest {
         when(modalityMapper.countActiveModalitiesByIds(List.of(3L))).thenReturn(1L);
         when(modalityMapper.countActiveHospitalModality(1L, 3L)).thenReturn(1L);
         when(pacsResultMapper.findExisting(any(PacsResultSaveRequest.class))).thenReturn(null);
-        when(pacsResultMapper.insertResult(any(PacsResultSaveRequest.class), eq("COMPLETED"), eq(99L)))
+        when(pacsResultMapper.insertResult(any(PacsResultSaveRequest.class), eq("FINAL"), eq(99L)))
                 .thenReturn(89L);
         PacsResultResponse saved = resultResponse(89L, 99L);
         saved.setWorklistId(null);
@@ -299,7 +299,7 @@ class PacsResultServiceImplAccessTest {
 
         assertTrue(response.isSuccess());
         ArgumentCaptor<PacsResultSaveRequest> captor = ArgumentCaptor.forClass(PacsResultSaveRequest.class);
-        verify(pacsResultMapper).insertResult(captor.capture(), eq("COMPLETED"), eq(99L));
+        verify(pacsResultMapper).insertResult(captor.capture(), eq("FINAL"), eq(99L));
         PacsResultSaveRequest persisted = captor.getValue();
         assertEquals(22L, persisted.getStudyId());
         assertNull(persisted.getWorklistId());

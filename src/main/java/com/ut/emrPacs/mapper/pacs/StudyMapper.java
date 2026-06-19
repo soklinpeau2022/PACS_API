@@ -51,7 +51,11 @@ public interface StudyMapper {
                               @Param("statusCode") Integer statusCode);
     List<StudyResponse> list(@Param("hospitalId") Long hospitalId,
                              @Param("filter") StudyListFilter filter);
+    List<StudyResponse> listWeekCache(@Param("hospitalId") Long hospitalId,
+                             @Param("filter") StudyListFilter filter);
     Long count(@Param("hospitalId") Long hospitalId,
+               @Param("filter") StudyListFilter filter);
+    Long countWeekCache(@Param("hospitalId") Long hospitalId,
                @Param("filter") StudyListFilter filter);
     StudyResponse findById(@Param("hospitalId") Long hospitalId, @Param("id") Long id);
 }

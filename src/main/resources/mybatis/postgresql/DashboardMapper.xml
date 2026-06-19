@@ -59,6 +59,15 @@
           AND s.is_active = 1
     </select>
 
+    <select id="sumReceivedStudies" resultType="java.lang.Long">
+        SELECT COALESCE(SUM(received_study_count), 0)
+        FROM pacs_daily_stats
+        WHERE 1 = 1
+          <if test="hospitalId != null and hospitalId > 0">
+              AND hospital_id = #{hospitalId}
+          </if>
+    </select>
+
     <select id="countTotalDicomServers" resultType="java.lang.Long">
         SELECT COUNT(1)
         FROM hospital_dicom_servers s

@@ -232,7 +232,7 @@ public class StudyRetentionServiceImpl implements StudyRetentionService {
             safeFilter.setDicomServerId(publicEntityKeyResolver.resolve(Entity.DICOM_SERVER, safeFilter.getDicomServerKey(), safeFilter.getDicomServerId()));
             safeFilter.setModalityId(publicEntityKeyResolver.resolve(Entity.MODALITY, safeFilter.getModalityKey(), safeFilter.getModalityId()));
 
-            Pagination pagination = PaginationHelper.buildAndApplyOffset(safeFilter, studyRetentionMapper.countReview(hospitalId, safeFilter));
+            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
             List<StudyRetentionReviewResponse> rows = studyRetentionMapper.listReview(hospitalId, safeFilter);
 
             logSuccess(ApiConstants.StudyRetention.REVIEW_LIST_PATH, "Study Retention Review (List)", "View", startDuration, httpServletRequest);

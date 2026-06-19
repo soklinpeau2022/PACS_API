@@ -54,6 +54,15 @@ public class DashboardServiceImpl implements DashboardService {
     @Autowired
     private DicomServerHealthService dicomServerHealthService;
 
+    /**
+     * "live"   -> COUNT(*) on pacs_studies (exact active count; fine at small scale).
+     * "summary" -> cumulative received-study count from pacs_daily_stats (avoids
+     * scanning a 100M-row table). Switch to "summary" once the daily-stats
+     * scheduler has been running and seeded.
+     */
+    @org.springframework.beans.factory.annotation.Value("${dashboard.studies-count-source:summary}")
+    private String studiesCountSource;
+
     @Override
     public ResponseMessage<BaseResult> getOverview(DashboardOverviewRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
         LocalTime startDuration = LocalTime.now();
@@ -69,7 +78,9 @@ public class DashboardServiceImpl implements DashboardService {
             DashboardOverviewResponse response = new DashboardOverviewResponse();
             response.setRecentPatients(nullSafeLong(dashboardMapper.countRecentPatients(hospitalId)));
             response.setWorklistItems(nullSafeLong(dashboardMapper.countWorklistItems(hospitalId)));
-            response.setStudies(nullSafeLong(dashboardMapper.countStudies(hospitalId)));
+            response.setStudies("summary".equalsIgnoreCase(studiesCountSource)
+                    ? nullSafeLong(dashboardMapper.sumReceivedStudies(hospitalId))
+                    : nullSafeLong(dashboardMapper.countStudies(hospitalId)));
 
             response.setTotalDicomServers(nullSafeLong(dashboardMapper.countTotalDicomServers(hospitalId)));
             response.setActiveDicomServers(nullSafeLong(dashboardMapper.countActiveDicomServers(hospitalId)));

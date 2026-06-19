@@ -22,6 +22,19 @@
     <sql id="STUDY_FILTER_WHERE">
         WHERE s.hospital_id = #{hospitalId}
           AND s.is_active = 1
+        <choose>
+            <when test="filter != null
+                    and filter.lastStudySortAt != null and filter.lastStudySortAt != ''
+                    and filter.lastStudyId != null and filter.lastStudyId > 0">
+                AND (
+                    COALESCE(s.image_received_at, s.received_at, s.study_date::timestamp, s.created_at, s.created),
+                    s.id
+                ) &lt; (CAST(#{filter.lastStudySortAt} AS TIMESTAMPTZ), #{filter.lastStudyId})
+            </when>
+            <when test="filter != null and filter.lastStudyId != null and filter.lastStudyId > 0">
+                AND s.id &lt; #{filter.lastStudyId}
+            </when>
+        </choose>
         <if test="filter != null and filter.searchText != null and filter.searchText != ''">
             AND (
                 p.first_name ILIKE '%' || #{filter.searchText} || '%'
@@ -327,10 +340,61 @@
             LIMIT 1
         ) q ON TRUE
         <include refid="STUDY_FILTER_WHERE"/>
-        ORDER BY COALESCE(s.image_received_at, s.received_at, s.study_date::timestamp, s.created) DESC, s.id DESC
+        ORDER BY
         <choose>
-            <when test="filter != null and filter.page != null and filter.rowsPerPage != null">
-                LIMIT #{filter.rowsPerPage} OFFSET #{filter.page}
+            <when test="filter != null
+                    and filter.lastStudySortAt == null
+                    and filter.lastStudyId != null and filter.lastStudyId > 0">
+                s.id DESC
+            </when>
+            <otherwise>
+                COALESCE(s.image_received_at, s.received_at, s.study_date::timestamp, s.created_at, s.created) DESC, s.id DESC
+            </otherwise>
+        </choose>
+        <choose>
+            <when test="filter != null and filter.rowsPerPage != null">
+                LIMIT #{filter.rowsPerPage}
+            </when>
+            <otherwise>
+                LIMIT 20
+            </otherwise>
+        </choose>
+    </select>
+
+    <select id="listWeekCache" resultType="com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse">
+        SELECT
+            <include refid="STUDY_SELECT_COLUMNS"/>
+        FROM pacs_studies_week_cache s
+        INNER JOIN hospitals h ON h.id = s.hospital_id
+        INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+        LEFT JOIN modalities study_modality ON study_modality.id = s.modality_id AND study_modality.is_active = 1
+        LEFT JOIN LATERAL (
+            SELECT linked_q.*
+            FROM pacs_worklist_study_links linked_qsl
+            INNER JOIN pacs_worklists linked_q
+                    ON linked_q.id = linked_qsl.worklist_id
+                   AND linked_q.hospital_id = linked_qsl.hospital_id
+            WHERE linked_qsl.hospital_id = s.hospital_id
+              AND linked_qsl.study_id = s.id
+              AND linked_qsl.is_primary = 1
+            ORDER BY linked_qsl.linked_at DESC, linked_qsl.id DESC
+            LIMIT 1
+        ) q ON TRUE
+        <include refid="STUDY_FILTER_WHERE"/>
+        ORDER BY
+        <choose>
+            <when test="filter != null
+                    and filter.lastStudySortAt == null
+                    and filter.lastStudyId != null and filter.lastStudyId > 0">
+                s.id DESC
+            </when>
+            <otherwise>
+                COALESCE(s.image_received_at, s.received_at, s.study_date::timestamp, s.created_at, s.created) DESC, s.id DESC
+            </otherwise>
+        </choose>
+        <choose>
+            <when test="filter != null and filter.rowsPerPage != null">
+                LIMIT #{filter.rowsPerPage}
             </when>
             <otherwise>
                 LIMIT 20
@@ -341,6 +405,14 @@
     <select id="count" resultType="java.lang.Long">
         SELECT COUNT(1)
         FROM pacs_studies s
+        INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
+        LEFT JOIN modalities study_modality ON study_modality.id = s.modality_id AND study_modality.is_active = 1
+        <include refid="STUDY_FILTER_WHERE"/>
+    </select>
+
+    <select id="countWeekCache" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM pacs_studies_week_cache s
         INNER JOIN patients p ON p.id = s.patient_id AND p.hospital_id = s.hospital_id
         LEFT JOIN modalities study_modality ON study_modality.id = s.modality_id AND study_modality.is_active = 1
         <include refid="STUDY_FILTER_WHERE"/>

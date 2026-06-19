@@ -36,8 +36,6 @@ public interface StudyRetentionMapper {
 
     Integer deletePolicy(@Param("id") Long id, @Param("hospitalId") Long hospitalId, @Param("userId") Long userId);
 
-    Long countReview(@Param("hospitalId") Long hospitalId, @Param("filter") StudyRetentionReviewFilter filter);
-
     List<StudyRetentionReviewResponse> listReview(@Param("hospitalId") Long hospitalId, @Param("filter") StudyRetentionReviewFilter filter);
 
     StudyRetentionReviewResponse findReviewCandidateByStudyId(@Param("hospitalId") Long hospitalId, @Param("studyId") Long studyId);

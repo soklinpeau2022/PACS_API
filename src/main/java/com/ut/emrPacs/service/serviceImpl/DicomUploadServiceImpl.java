@@ -41,12 +41,15 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.io.InputStreamResource;
+import org.springframework.core.io.Resource;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -67,6 +70,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -76,10 +80,16 @@ import static com.ut.emrPacs.helper.dicomServer.DicomResponseReadHelper.readDico
 public class DicomUploadServiceImpl implements DicomUploadService {
     private static final Logger LOGGER = LoggerFactory.getLogger(DicomUploadServiceImpl.class);
     private static final int PATIENT_CODE_CREATE_RETRY = 5;
-    private static final int MAX_ZIP_ENTRIES = 5000;
+    private static final int DEFAULT_MAX_ZIP_ENTRIES = 20000;
     private static final long DEFAULT_MAX_DICOM_UPLOAD_BYTES = 4L * 1024L * 1024L * 1024L;
     private static final int ZIP_READ_BUFFER_BYTES = 64 * 1024;
     private static final int STATUS_IMAGE_RECEIVED = 1;
+    private static final int DEFAULT_INSTANCE_UPLOAD_MAX_ATTEMPTS = 3;
+    private static final long DEFAULT_INSTANCE_UPLOAD_RETRY_BACKOFF_MS = 250L;
+    private static final Set<String> KNOWN_NON_DICOM_EXTENSIONS = Set.of(
+            "bmp", "csv", "db", "doc", "docx", "gif", "htm", "html", "ini", "jpeg", "jpg",
+            "json", "log", "pdf", "png", "rtf", "text", "tif", "tiff", "txt", "xls", "xlsx", "xml"
+    );
 
     @Autowired
     private DicomServerClientService dicomServerClientService;
@@ -117,6 +127,15 @@ public class DicomUploadServiceImpl implements DicomUploadService {
 
     @Value("${pacs.dicom-upload.max-zip-entry-bytes:4294967296}")
     private long maxZipEntryBytes;
+
+    @Value("${pacs.dicom-upload.max-zip-entries:20000}")
+    private int maxZipEntries;
+
+    @Value("${pacs.dicom-upload.instance-max-attempts:3}")
+    private int instanceUploadMaxAttempts;
+
+    @Value("${pacs.dicom-upload.instance-retry-backoff-ms:250}")
+    private long instanceUploadRetryBackoffMs;
 
     @Override
     public ResponseMessage<BaseResult> uploadDicom(
@@ -168,7 +187,8 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                     uploadedBy,
                     receivedAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
                     uploadResponse,
-                    summariesByStudyUid
+                    summariesByStudyUid,
+                    new LinkedHashMap<>()
             );
 
             if (hasZip) {
@@ -185,6 +205,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         }
     }
 
+    @Override
     public Path resolveUploadTempDir() throws IOException {
         return resolveDicomUploadTempDirectory();
     }
@@ -196,6 +217,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
      * NO surrounding DB transaction (DicomUploadServiceImpl is excluded from the blanket tx advisor)
      * so the long network forward never holds a pooled connection.
      */
+    @Override
     public ResponseMessage<BaseResult> uploadDicomZipFile(
             String hospitalKey,
             String dicomServerKey,
@@ -226,6 +248,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                     currentUserId(),
                     OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
                     uploadResponse,
+                    new LinkedHashMap<>(),
                     new LinkedHashMap<>()
             );
             try (InputStream zipStream = Files.newInputStream(zipPath)) {
@@ -238,6 +261,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     }
 
     private ResponseMessage<BaseResult> finishUpload(UploadContext context, LocalTime startDuration, HttpServletRequest httpServletRequest) {
+        synchronizeUploadedStudies(context);
         DicomUploadResponse uploadResponse = context.response;
         uploadResponse.setStudyCount(context.summariesByStudyUid.size());
         uploadResponse.setStudies(new ArrayList<>(context.summariesByStudyUid.values()));
@@ -320,19 +344,18 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private void uploadMultipartFile(MultipartFile file, UploadContext context) {
         String filename = trimToNull(file.getOriginalFilename());
         try {
-            DicomServerInstanceUploadResponse uploaded;
-            try (InputStream inputStream = file.getInputStream()) {
-                uploaded = dicomServerClientService.uploadInstance(
-                        context.dicomServer.getBaseUrl(),
-                        context.dicomServer.getUsername(),
-                        context.dicomServer.getPassword(),
-                        new InputStreamResource(inputStream),
-                        file.getSize()
-                );
-            }
-            processUploadedInstanceInTransaction(uploaded, context);
+            DicomServerInstanceUploadResponse uploaded = uploadInstanceWithRetry(
+                    file.getResource(),
+                    file.getSize(),
+                    context
+            );
             context.response.setAcceptedFiles(context.response.getAcceptedFiles() + 1);
+            registerPendingStudySync(uploaded, filename, context);
         } catch (Exception error) {
+            if (isRejectedAsNonDicomInstance(error)) {
+                context.response.setSkippedFiles(context.response.getSkippedFiles() + 1);
+                return;
+            }
             context.response.setFailedFiles(context.response.getFailedFiles() + 1);
             addUploadError(context.response, filename, error);
         }
@@ -347,6 +370,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private void uploadZip(InputStream zipStream, UploadContext context, HttpServletRequest httpServletRequest) throws IOException {
         int entries = 0;
         long maxEntryBytes = configuredMaxZipEntryBytes();
+        int maxEntries = configuredMaxZipEntries();
         try (ZipInputStream zipInputStream = new ZipInputStream(zipStream)) {
             ZipEntry entry;
             while ((entry = zipInputStream.getNextEntry()) != null) {
@@ -361,9 +385,13 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                         throw new DicomUploadSecurityException("ZIP entry name is unsafe.");
                     }
                     entries++;
-                    if (entries > MAX_ZIP_ENTRIES) {
-                        reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "too_many_entries", entries + "/" + MAX_ZIP_ENTRIES);
+                    if (entries > maxEntries) {
+                        reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "too_many_entries", entries + "/" + maxEntries);
                         throw new DicomUploadSecurityException("ZIP contains too many files.");
+                    }
+                    if (isKnownNonDicomZipEntry(entryName)) {
+                        context.response.setSkippedFiles(context.response.getSkippedFiles() + 1);
+                        continue;
                     }
                     tempEntryPath = writeBoundedZipEntryToTempFile(zipInputStream, maxEntryBytes, httpServletRequest, entryName);
                     long entryBytes = Files.size(tempEntryPath);
@@ -374,18 +402,20 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                         reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "entry_too_large", entryName + " " + entryBytes + "/" + maxEntryBytes);
                         throw new DicomUploadSecurityException("ZIP entry is too large.");
                     }
-                    DicomServerInstanceUploadResponse uploaded = dicomServerClientService.uploadInstance(
-                            context.dicomServer.getBaseUrl(),
-                            context.dicomServer.getUsername(),
-                            context.dicomServer.getPassword(),
+                    DicomServerInstanceUploadResponse uploaded = uploadInstanceWithRetry(
                             new FileSystemResource(tempEntryPath),
-                            entryBytes
+                            entryBytes,
+                            context
                     );
-                    processUploadedInstanceInTransaction(uploaded, context);
                     context.response.setAcceptedFiles(context.response.getAcceptedFiles() + 1);
+                    registerPendingStudySync(uploaded, entryName, context);
                 } catch (Exception entryError) {
                     if (entryError instanceof DicomUploadSecurityException) {
                         throw (DicomUploadSecurityException) entryError;
+                    }
+                    if (isRejectedAsNonDicomInstance(entryError)) {
+                        context.response.setSkippedFiles(context.response.getSkippedFiles() + 1);
+                        continue;
                     }
                     context.response.setFailedFiles(context.response.getFailedFiles() + 1);
                     addUploadError(context.response, entryName, entryError);
@@ -447,6 +477,29 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         return false;
     }
 
+    private static boolean isKnownNonDicomZipEntry(String entryName) {
+        String normalized = trimToNull(entryName);
+        if (normalized == null) {
+            return true;
+        }
+        normalized = normalized.replace('\\', '/');
+        String lowerPath = normalized.toLowerCase(Locale.ROOT);
+        String fileName = lowerPath.substring(lowerPath.lastIndexOf('/') + 1);
+        if (lowerPath.startsWith("__macosx/")
+                || fileName.startsWith("._")
+                || ".ds_store".equals(fileName)
+                || "thumbs.db".equals(fileName)
+                || "desktop.ini".equals(fileName)
+                || "dicomdir".equals(fileName)) {
+            return true;
+        }
+        int extensionIndex = fileName.lastIndexOf('.');
+        if (extensionIndex < 0 || extensionIndex == fileName.length() - 1) {
+            return false;
+        }
+        return KNOWN_NON_DICOM_EXTENSIONS.contains(fileName.substring(extensionIndex + 1));
+    }
+
     private Path resolveDicomUploadTempDirectory() throws IOException {
         String configured = firstNonBlank(dicomUploadTempDir, multipartLocation);
         Path tempDirectory = configured == null
@@ -482,6 +535,10 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         return maxZipEntryBytes > 0 ? maxZipEntryBytes : configuredMaxUploadBytes();
     }
 
+    private int configuredMaxZipEntries() {
+        return maxZipEntries > 0 ? maxZipEntries : DEFAULT_MAX_ZIP_ENTRIES;
+    }
+
     private static String formatBytes(long bytes) {
         if (bytes >= 1024L * 1024L * 1024L) {
             long gib = bytes / (1024L * 1024L * 1024L);
@@ -503,6 +560,167 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         } catch (IOException error) {
             LOGGER.warn("Unable to delete temporary DICOM upload file {}: {}", path, error.toString());
         }
+    }
+
+    private DicomServerInstanceUploadResponse uploadInstanceWithRetry(
+            Resource dicomResource,
+            long contentLength,
+            UploadContext context
+    ) {
+        int maxAttempts = instanceUploadMaxAttempts > 0
+                ? instanceUploadMaxAttempts
+                : DEFAULT_INSTANCE_UPLOAD_MAX_ATTEMPTS;
+        RuntimeException lastError = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                DicomServerInstanceUploadResponse uploaded = dicomServerClientService.uploadInstance(
+                        context.dicomServer.getBaseUrl(),
+                        context.dicomServer.getUsername(),
+                        context.dicomServer.getPassword(),
+                        dicomResource,
+                        contentLength
+                );
+                validateInstanceUploadResponse(uploaded);
+                return uploaded;
+            } catch (RuntimeException error) {
+                lastError = error;
+                if (attempt >= maxAttempts || !isRetryableInstanceUploadError(error)) {
+                    throw error;
+                }
+                sleepBeforeRetry(attempt);
+            }
+        }
+        throw lastError == null ? new IllegalStateException("DICOM server upload failed.") : lastError;
+    }
+
+    private static void validateInstanceUploadResponse(DicomServerInstanceUploadResponse uploaded) {
+        if (uploaded == null) {
+            throw new IllegalStateException("DICOM server upload response was empty.");
+        }
+        String status = trimToNull(uploaded.getStatus());
+        if (status != null && ("failure".equalsIgnoreCase(status) || "failed".equalsIgnoreCase(status))) {
+            throw new IllegalStateException("DICOM server rejected the uploaded instance.");
+        }
+        if (trimToNull(uploaded.getParentStudy()) == null) {
+            throw new IllegalStateException("DICOM server upload response did not include a study id.");
+        }
+    }
+
+    private static boolean isRetryableInstanceUploadError(RuntimeException error) {
+        if (error instanceof ResourceAccessException) {
+            return true;
+        }
+        if (error instanceof HttpStatusCodeException statusError) {
+            return isRetryableHttpStatus(statusError.getStatusCode());
+        }
+        String message = trimToNull(error.getMessage());
+        if (message == null) {
+            return false;
+        }
+        String normalized = message.toLowerCase(Locale.ROOT);
+        if (normalized.contains("response was not readable")
+                || normalized.contains("response was empty")
+                || normalized.contains("did not include a study id")
+                || normalized.contains("timed out")
+                || normalized.contains("timeout")
+                || normalized.contains("connection reset")
+                || normalized.contains("temporarily unavailable")) {
+            return true;
+        }
+        int httpIndex = normalized.indexOf("http ");
+        if (httpIndex >= 0 && normalized.length() >= httpIndex + 8) {
+            try {
+                int status = Integer.parseInt(normalized.substring(httpIndex + 5, httpIndex + 8));
+                return isRetryableHttpStatus(HttpStatusCode.valueOf(status));
+            } catch (IllegalArgumentException ignored) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isRetryableHttpStatus(HttpStatusCode status) {
+        int value = status.value();
+        return value == 408 || value == 425 || value == 429 || value >= 500;
+    }
+
+    private void sleepBeforeRetry(int attempt) {
+        long baseBackoff = instanceUploadRetryBackoffMs >= 0
+                ? instanceUploadRetryBackoffMs
+                : DEFAULT_INSTANCE_UPLOAD_RETRY_BACKOFF_MS;
+        if (baseBackoff == 0L) {
+            return;
+        }
+        try {
+            Thread.sleep(baseBackoff * attempt);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("DICOM upload retry was interrupted.", interrupted);
+        }
+    }
+
+    private void registerPendingStudySync(
+            DicomServerInstanceUploadResponse uploaded,
+            String sourceName,
+            UploadContext context
+    ) {
+        String studyId = trimToNull(uploaded == null ? null : uploaded.getParentStudy());
+        if (studyId == null) {
+            addMetadataSyncError(context, sourceName, new IllegalStateException("DICOM server did not return a study id."));
+            return;
+        }
+        context.pendingStudySyncs.putIfAbsent(studyId, new PendingStudySync(uploaded, sourceName));
+    }
+
+    private void synchronizeUploadedStudies(UploadContext context) {
+        for (PendingStudySync pending : context.pendingStudySyncs.values()) {
+            try {
+                processUploadedInstanceInTransactionWithRetry(pending.upload(), context);
+            } catch (RuntimeException error) {
+                addMetadataSyncError(context, pending.sourceName(), error);
+            }
+        }
+    }
+
+    private void processUploadedInstanceInTransactionWithRetry(
+            DicomServerInstanceUploadResponse upload,
+            UploadContext context
+    ) {
+        int maxAttempts = instanceUploadMaxAttempts > 0
+                ? instanceUploadMaxAttempts
+                : DEFAULT_INSTANCE_UPLOAD_MAX_ATTEMPTS;
+        RuntimeException lastError = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                processUploadedInstanceInTransaction(upload, context);
+                return;
+            } catch (RuntimeException error) {
+                lastError = error;
+                if (attempt >= maxAttempts || !isRetryableStudySyncError(error)) {
+                    throw error;
+                }
+                sleepBeforeRetry(attempt);
+            }
+        }
+        throw lastError == null ? new IllegalStateException("Uploaded DICOM study metadata was not synchronized.") : lastError;
+    }
+
+    private static boolean isRetryableStudySyncError(RuntimeException error) {
+        if (error instanceof ResourceAccessException || error instanceof DataAccessException) {
+            return true;
+        }
+        if (error instanceof HttpStatusCodeException statusError) {
+            int value = statusError.getStatusCode().value();
+            return value == 404 || isRetryableHttpStatus(statusError.getStatusCode());
+        }
+        return error instanceof IllegalStateException;
+    }
+
+    private static void addMetadataSyncError(UploadContext context, String sourceName, RuntimeException error) {
+        context.response.setMetadataSyncFailures(context.response.getMetadataSyncFailures() + 1);
+        String label = trimToNull(sourceName) == null ? "DICOM study" : sourceName.trim();
+        String message = firstNonBlank(error.getMessage(), "Study Archive synchronization is pending.");
+        context.response.getErrors().add(label + ": instance accepted by the DICOM server, but metadata synchronization failed: " + message);
     }
 
     private void processUploadedInstanceInTransaction(DicomServerInstanceUploadResponse upload, UploadContext context) {
@@ -773,6 +991,36 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         response.getErrors().add(label + ": " + message);
     }
 
+    private static boolean isRejectedAsNonDicomInstance(Throwable error) {
+        String message = throwableMessageChain(error).toLowerCase(Locale.ROOT);
+        if (message.isBlank()) {
+            return false;
+        }
+        return message.contains("bad file format")
+                || message.contains("cannot parse an invalid dicom")
+                || message.contains("invalid dicom file")
+                || message.contains("not a dicom file")
+                || message.contains("not dicom");
+    }
+
+    private static String throwableMessageChain(Throwable error) {
+        StringBuilder builder = new StringBuilder();
+        Throwable current = error;
+        int depth = 0;
+        while (current != null && depth < 8) {
+            String message = trimToNull(current.getMessage());
+            if (message != null) {
+                if (!builder.isEmpty()) {
+                    builder.append(' ');
+                }
+                builder.append(message);
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return builder.toString();
+    }
+
     private static DicomPatientName splitPatientName(String value) {
         String raw = trimToNull(value);
         if (raw == null) {
@@ -938,8 +1186,12 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             Long uploadedBy,
             String receivedAtIso,
             DicomUploadResponse response,
-            Map<String, DicomUploadStudySummary> summariesByStudyUid
+            Map<String, DicomUploadStudySummary> summariesByStudyUid,
+            Map<String, PendingStudySync> pendingStudySyncs
     ) {
+    }
+
+    private record PendingStudySync(DicomServerInstanceUploadResponse upload, String sourceName) {
     }
 
     private record DicomServerResolution(HospitalDicomServerResponse server, String errorMessage) {

@@ -10,6 +10,12 @@ import lombok.EqualsAndHashCode;
 @EqualsAndHashCode(callSuper = true)
 @Data
 public class StudyListFilter extends Filter {
+    @Schema(description = "Cursor for large-data paging: fetch studies with id below this value.")
+    private Long lastStudyId;
+
+    @Schema(description = "Cursor timestamp for large-data paging. Send with lastStudyId from the last row of the previous page.", example = "2026-06-18T10:15:30Z")
+    private String lastStudySortAt;
+
     @Schema(description = "Filter by patient name (contains).", example = "Structured Reports")
     private String patientName;
 
@@ -69,6 +75,14 @@ public class StudyListFilter extends Filter {
 
     public void setAccessionNumberExact(String accessionNumberExact) {
         this.accessionNumberExact = trimToNull(accessionNumberExact);
+    }
+
+    public void setLastStudyId(Long lastStudyId) {
+        this.lastStudyId = lastStudyId != null && lastStudyId > 0L ? lastStudyId : null;
+    }
+
+    public void setLastStudySortAt(String lastStudySortAt) {
+        this.lastStudySortAt = trimToNull(lastStudySortAt);
     }
 
     private String trimToNull(String value) {

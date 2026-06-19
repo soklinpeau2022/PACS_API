@@ -28,6 +28,9 @@ public class StudyRetentionReviewFilter extends Filter {
     private String status;
     private String startDate;
     private String endDate;
+    private String lastStatus;
+    private String lastExpiresAt;
+    private Long lastStudyId;
 
     public void setDicomServerKey(String dicomServerKey) {
         this.dicomServerKey = trimToNull(dicomServerKey);
@@ -48,6 +51,19 @@ public class StudyRetentionReviewFilter extends Filter {
 
     public void setEndDate(String endDate) {
         this.endDate = trimToNull(endDate);
+    }
+
+    public void setLastStatus(String lastStatus) {
+        String value = trimToNull(lastStatus);
+        this.lastStatus = value == null ? null : value.toUpperCase(Locale.ROOT);
+    }
+
+    public void setLastExpiresAt(String lastExpiresAt) {
+        this.lastExpiresAt = trimToNull(lastExpiresAt);
+    }
+
+    public void setLastStudyId(Long lastStudyId) {
+        this.lastStudyId = lastStudyId != null && lastStudyId > 0 ? lastStudyId : null;
     }
 
     private String trimToNull(String value) {

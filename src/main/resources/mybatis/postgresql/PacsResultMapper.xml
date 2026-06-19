@@ -103,7 +103,7 @@
         )
         <choose>
             <when test="request.studyId != null">
-                ON CONFLICT (hospital_id, modality_id, study_id)
+                ON CONFLICT (hospital_id, study_id)
                 WHERE is_active = 1 AND study_id IS NOT NULL
                 DO UPDATE SET
                     worklist_id = COALESCE(EXCLUDED.worklist_id, pacs_results.worklist_id),
@@ -118,7 +118,7 @@
                    OR pacs_results.created_by = #{createdBy}
             </when>
             <when test="request.worklistId != null">
-                ON CONFLICT (hospital_id, modality_id, worklist_id)
+                ON CONFLICT (hospital_id, worklist_id)
                 WHERE is_active = 1 AND worklist_id IS NOT NULL
                 DO UPDATE SET
                     study_id = COALESCE(EXCLUDED.study_id, pacs_results.study_id),
@@ -445,7 +445,9 @@
             pi.sort_order AS sortOrder,
             TO_CHAR(pi.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt
         FROM pacs_result_images pi
-        INNER JOIN pacs_results pr ON pr.id = pi.result_id
+        INNER JOIN pacs_results pr
+                ON pr.id = pi.result_id
+               AND (pi.hospital_id IS NULL OR pi.hospital_id = pr.hospital_id)
         WHERE pi.result_id = #{resultId}
           AND pi.is_active = 1
         ORDER BY pi.sort_order ASC, pi.id ASC
@@ -465,7 +467,9 @@
             pi.sort_order AS sortOrder,
             TO_CHAR(pi.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt
         FROM pacs_result_images pi
-        INNER JOIN pacs_results pr ON pr.id = pi.result_id
+        INNER JOIN pacs_results pr
+                ON pr.id = pi.result_id
+               AND (pi.hospital_id IS NULL OR pi.hospital_id = pr.hospital_id)
         WHERE pi.is_active = 1
         <choose>
             <when test="request.imageKey != null and request.imageKey != ''">
@@ -481,6 +485,8 @@
     <insert id="insertImage">
         INSERT INTO pacs_result_images (
             result_id,
+            hospital_id,
+            modality_id,
             image_path,
             original_file_name,
             file_type,
@@ -490,6 +496,8 @@
             created_at
         ) VALUES (
             #{resultId},
+            #{hospitalId},
+            #{modalityId},
             #{imagePath},
             #{originalFileName},
             #{fileType},
@@ -611,6 +619,74 @@
     <select id="findViewerState" resultMap="PacsViewerStateResponse">
         SELECT
             <include refid="VIEWER_STATE_COLUMNS"/>
+        FROM pacs_viewer_states pvs
+        INNER JOIN hospitals h ON h.id = pvs.hospital_id
+        LEFT JOIN modalities m ON m.id = pvs.modality_id
+        LEFT JOIN pacs_studies s ON s.id = pvs.study_id AND s.hospital_id = pvs.hospital_id
+        LEFT JOIN pacs_worklists q ON q.id = pvs.worklist_id AND q.hospital_id = pvs.hospital_id
+        LEFT JOIN patients p ON p.id = pvs.patient_id AND p.hospital_id = pvs.hospital_id
+        WHERE pvs.is_active = 1
+          AND pvs.hospital_id = #{request.hospitalId}
+          AND pvs.state_type = #{request.stateType}
+        <choose>
+            <when test="request.viewerStateKey != null and request.viewerStateKey != ''">
+                AND pvs.public_id = CAST(#{request.viewerStateKey} AS uuid)
+            </when>
+            <when test="request.worklistId != null and request.worklistId > 0">
+                AND pvs.worklist_id = #{request.worklistId}
+            </when>
+            <when test="request.studyId != null and request.studyId > 0">
+                AND pvs.study_id = #{request.studyId}
+            </when>
+            <when test="request.studyInstanceUid != null and request.studyInstanceUid != ''">
+                AND pvs.study_instance_uid = #{request.studyInstanceUid}
+            </when>
+            <otherwise>
+                AND pvs.accession_number = #{request.accessionNumber}
+            </otherwise>
+        </choose>
+        ORDER BY pvs.modified_at DESC, pvs.id DESC
+        LIMIT 1
+    </select>
+
+    <!-- Lightweight metadata projection: identity, scope and payload size only,
+         deliberately excluding the heavy JSONB payload columns. -->
+    <sql id="VIEWER_STATE_META_COLUMNS">
+        pvs.id,
+        pvs.public_id::text AS viewerStateKey,
+        pvs.hospital_id AS hospitalId,
+        h.public_id::text AS hospitalKey,
+        h.code AS hospitalCode,
+        h.name AS hospitalName,
+        pvs.modality_id AS modalityId,
+        m.public_id::text AS modalityKey,
+        m.abbr AS modalityCode,
+        m.name AS modalityName,
+        pvs.study_id AS studyId,
+        s.public_id::text AS studyKey,
+        pvs.worklist_id AS worklistId,
+        q.public_id::text AS worklistKey,
+        q.dicom_server_worklist_id AS worklistCode,
+        pvs.patient_id AS patientId,
+        p.public_id::text AS patientKey,
+        COALESCE(p.patient_uid, pvs.patient_code) AS patientCode,
+        NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), '') AS patientName,
+        pvs.study_instance_uid AS studyInstanceUid,
+        pvs.accession_number AS accessionNumber,
+        pvs.state_type AS stateType,
+        pvs.schema_version AS schemaVersion,
+        pvs.version,
+        pvs.payload_size_bytes AS payloadSizeBytes,
+        pvs.payload_sha256 AS payloadSha256,
+        pvs.created_by AS createdBy,
+        pvs.modified_by AS modifiedBy,
+        TO_CHAR(pvs.created_at, 'YYYY-MM-DD HH24:MI:SS') AS createdAt,
+        TO_CHAR(pvs.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS updatedAt
+    </sql>
+
+    <select id="findViewerStateMeta" resultMap="PacsViewerStateResponse">
+        SELECT
+            <include refid="VIEWER_STATE_META_COLUMNS"/>
         FROM pacs_viewer_states pvs
         INNER JOIN hospitals h ON h.id = pvs.hospital_id
         LEFT JOIN modalities m ON m.id = pvs.modality_id

@@ -4,7 +4,20 @@ Param(
     [string]$Target,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet("up", "down", "restart", "deploy", "logs", "ps", "health")]
+    [ValidateSet(
+        "up",
+        "down",
+        "restart",
+        "deploy",
+        "logs",
+        "ps",
+        "health",
+        "db-backup",
+        "db-migrate",
+        "db-validate",
+        "db-refresh-cache",
+        "db-partition-maintenance"
+    )]
     [string]$Action,
 
     [switch]$Build,
@@ -589,6 +602,8 @@ function Start-ApiContainer {
         "REDIS_PASSWORD=$(Get-TargetEnvValue -Suffix 'REDIS_PASSWORD' -FallbackKey 'REDIS_PASSWORD')",
         "REDIS_DATABASE=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'REDIS_DATABASE' -DefaultValue '0')",
         "REDIS_TIMEOUT=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'REDIS_TIMEOUT' -DefaultValue '2s')",
+        "PACS_CACHE_SCHEDULER_ENABLED=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_CACHE_SCHEDULER_ENABLED' -DefaultValue 'true')",
+        "PACS_PARTITION_SCHEDULER_ENABLED=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_PARTITION_SCHEDULER_ENABLED' -DefaultValue 'true')",
         "SPRING_DATASOURCE_URL=$(Get-TargetEnvValue -Suffix 'SPRING_DATASOURCE_URL' -FallbackKey 'SPRING_DATASOURCE_URL')",
         "SPRING_DATASOURCE_USERNAME=$(Get-TargetEnvValue -Suffix 'SPRING_DATASOURCE_USERNAME' -FallbackKey 'SPRING_DATASOURCE_USERNAME')",
         "SPRING_DATASOURCE_PASSWORD=$(Get-TargetEnvValue -Suffix 'SPRING_DATASOURCE_PASSWORD' -FallbackKey 'SPRING_DATASOURCE_PASSWORD')",
@@ -719,6 +734,29 @@ Then redeploy the API:
 Show-LocalDockerPsSnapshot
 
 switch ($Action) {
+    "db-backup" {
+        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "db-admin.ps1") -Action backup -Target $Target
+    }
+    "db-migrate" {
+        $dbArgs = @(
+            "-ExecutionPolicy", "Bypass",
+            "-File", (Join-Path $PSScriptRoot "db-admin.ps1"),
+            "-Action", "migrate",
+            "-Target", $Target
+        )
+        if ($Build) { $dbArgs += "-Build" }
+        if ($NoBuild) { $dbArgs += "-NoBuild" }
+        & powershell @dbArgs
+    }
+    "db-validate" {
+        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "db-admin.ps1") -Action validate -Target $Target
+    }
+    "db-refresh-cache" {
+        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "db-admin.ps1") -Action refresh-cache -Target $Target
+    }
+    "db-partition-maintenance" {
+        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "db-admin.ps1") -Action partition-maintenance -Target $Target
+    }
     "up" {
         $args = @("-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "-Target", $Target, "-Action", "deploy")
         if ($Build) { $args += "-Build" }

@@ -27,7 +27,7 @@ class MigrationSafetyPolicyTest {
     private static final Pattern CREATE_TABLE_WITHOUT_IF_NOT_EXISTS = Pattern.compile(
             "(?is)^\\s*CREATE\\s+(?:TEMP(?:ORARY)?\\s+)?TABLE\\s+(?!IF\\s+NOT\\s+EXISTS\\b)");
     private static final Pattern CREATE_INDEX_WITHOUT_IF_NOT_EXISTS = Pattern.compile(
-            "(?is)^\\s*CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:CONCURRENTLY\\s+)?(?!IF\\s+NOT\\s+EXISTS\\b)");
+            "(?is)^\\s*CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?!(?:CONCURRENTLY\\s+)?IF\\s+NOT\\s+EXISTS\\b)");
     private static final Pattern ADD_COLUMN_WITHOUT_IF_NOT_EXISTS = Pattern.compile(
             "(?is)\\bADD\\s+COLUMN\\s+(?!IF\\s+NOT\\s+EXISTS\\b)");
     private static final Pattern ADD_NOT_NULL_COLUMN = Pattern.compile(

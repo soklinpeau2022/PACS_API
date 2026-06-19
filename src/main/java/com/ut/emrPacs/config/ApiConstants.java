@@ -209,6 +209,7 @@ public final class ApiConstants {
         public static final String TEMPLATE_LIST_PATH = "/pacs-result-template-list";
         public static final String TEMPLATE_FIND_PATH = "/pacs-result-template-find/{templateKey}";
         public static final String VIEWER_STATE_FIND_PATH = "/pacs-result-viewer-state-find";
+        public static final String VIEWER_STATE_META_PATH = "/pacs-result-viewer-state-meta";
         public static final String VIEWER_STATE_SAVE_PATH = "/pacs-result-viewer-state-save";
         public static final String VIEWER_STATE_DELETE_PATH = "/pacs-result-viewer-state-delete";
 

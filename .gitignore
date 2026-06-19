@@ -68,3 +68,4 @@ tools/.cache/
 tools/generated-dicom/
 tools/dicom_modality_simulator/.venv/
 tools/dicom_modality_simulator/runs/
+backups/

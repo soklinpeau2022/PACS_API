@@ -17,7 +17,11 @@ import java.util.List;
 public interface WorklistMapper {
     Long countList(@Param("hospitalId") Long hospitalId, @Param("filter") WorklistFilter filter);
 
+    Long countWeekCache(@Param("hospitalId") Long hospitalId, @Param("filter") WorklistFilter filter);
+
     List<WorklistListResponse> list(@Param("hospitalId") Long hospitalId, @Param("filter") WorklistFilter filter);
+
+    List<WorklistListResponse> listWeekCache(@Param("hospitalId") Long hospitalId, @Param("filter") WorklistFilter filter);
 
     Long nextVisitSequence(@Param("hospitalId") Long hospitalId, @Param("sequenceKey") String sequenceKey);
 

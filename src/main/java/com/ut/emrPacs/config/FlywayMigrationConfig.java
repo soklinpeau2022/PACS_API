@@ -2,6 +2,7 @@ package com.ut.emrPacs.config;
 
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.configuration.FluentConfiguration;
+import org.flywaydb.database.postgresql.PostgreSQLConfigurationExtension;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -25,7 +26,9 @@ public class FlywayMigrationConfig {
             @Value("${spring.flyway.clean-on-validation-error:false}") boolean cleanOnValidationError,
             @Value("${spring.flyway.validate-on-migrate:true}") boolean validateOnMigrate,
             @Value("${spring.flyway.out-of-order:false}") boolean outOfOrder,
-            @Value("${spring.flyway.fail-on-missing-locations:true}") boolean failOnMissingLocations
+            @Value("${spring.flyway.fail-on-missing-locations:true}") boolean failOnMissingLocations,
+            @Value("${spring.flyway.postgresql.transactional-lock:false}") boolean postgresqlTransactionalLock,
+            @Value("${spring.flyway.init-sql:CREATE EXTENSION IF NOT EXISTS pgcrypto; CREATE EXTENSION IF NOT EXISTS pg_trgm;}") String initSql
     ) {
         FluentConfiguration configuration = Flyway.configure()
                 .dataSource(dataSource)
@@ -36,6 +39,14 @@ public class FlywayMigrationConfig {
                 .validateOnMigrate(validateOnMigrate)
                 .outOfOrder(outOfOrder)
                 .failOnMissingLocations(failOnMissingLocations);
+
+        if (initSql != null && !initSql.trim().isEmpty()) {
+            configuration.initSql(initSql.trim());
+        }
+
+        PostgreSQLConfigurationExtension postgresql =
+                configuration.getPluginRegister().getPlugin(PostgreSQLConfigurationExtension.class);
+        postgresql.setTransactionalLock(postgresqlTransactionalLock);
 
         return configuration.load();
     }
