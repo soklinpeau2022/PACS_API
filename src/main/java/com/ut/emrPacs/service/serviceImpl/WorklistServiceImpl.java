@@ -2185,7 +2185,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
 
         Long requestedRouteId = request == null
                 ? null
-                : publicEntityKeyResolver.resolve(Entity.DICOM_ROUTE, request.getRouteKey(), null);
+                : publicEntityKeyResolver.resolve(Entity.DICOM_ROUTE, request.getRouteKey(), request.getRouteId());
         if (requestedRouteId != null && requestedRouteId > 0L) {
             for (HospitalModalityServerRouteResponse route : routes) {
                 if (route != null && requestedRouteId.equals(route.getId())) {
@@ -2200,7 +2200,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
 
         Long requestedServerId = request == null
                 ? null
-                : publicEntityKeyResolver.resolve(Entity.DICOM_SERVER, request.getDicomServerKey(), null);
+                : publicEntityKeyResolver.resolve(Entity.DICOM_SERVER, request.getDicomServerKey(), request.getDicomServerId());
         if (requestedServerId != null && requestedServerId > 0L) {
             List<HospitalModalityServerRouteResponse> matchingServerRoutes = routes.stream()
                     .filter(route -> route != null && requestedServerId.equals(route.getDicomServerId()))
