@@ -39,7 +39,7 @@ import java.util.concurrent.ConcurrentMap;
 public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
     private static final Logger LOGGER = LoggerFactory.getLogger(DicomChunkUploadServiceImpl.class);
     private static final long DEFAULT_MAX_DICOM_UPLOAD_BYTES = 4L * 1024L * 1024L * 1024L;
-    private static final long DEFAULT_MAX_CHUNK_BYTES = 32L * 1024L * 1024L;
+    private static final long DEFAULT_MAX_CHUNK_BYTES = 100L * 1024L * 1024L;
     private static final int COPY_BUFFER_BYTES = 64 * 1024;
     private static final int MAX_CHUNKS = 20_000;
     private static final String STATE_UPLOADING = "UPLOADING";
@@ -59,7 +59,7 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
     @Value("${app.security.dicom-upload.max-request-bytes:4294967296}")
     private long maxDicomUploadRequestBytes;
 
-    @Value("${pacs.dicom-upload.max-chunk-bytes:33554432}")
+    @Value("${pacs.dicom-upload.max-chunk-bytes:104857600}")
     private long maxChunkBytes;
 
     @Value("${pacs.dicom-upload.chunk-session-ttl-minutes:30}")
