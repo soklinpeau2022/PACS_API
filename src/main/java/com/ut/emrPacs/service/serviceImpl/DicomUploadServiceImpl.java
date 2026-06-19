@@ -94,8 +94,8 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private static final int STATUS_IMAGE_RECEIVED = 1;
     private static final int DEFAULT_INSTANCE_UPLOAD_MAX_ATTEMPTS = 3;
     private static final long DEFAULT_INSTANCE_UPLOAD_RETRY_BACKOFF_MS = 250L;
-    private static final int DEFAULT_INSTANCE_UPLOAD_PARALLELISM = 4;
-    private static final int MAX_INSTANCE_UPLOAD_PARALLELISM = 8;
+    private static final int DEFAULT_INSTANCE_UPLOAD_PARALLELISM = 200;
+    private static final int MAX_INSTANCE_UPLOAD_PARALLELISM = 400;
     private static final Set<String> KNOWN_NON_DICOM_EXTENSIONS = Set.of(
             "bmp", "csv", "db", "doc", "docx", "gif", "htm", "html", "ini", "jpeg", "jpg",
             "json", "log", "pdf", "png", "rtf", "text", "tif", "tiff", "txt", "xls", "xlsx", "xml"
@@ -147,7 +147,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     @Value("${pacs.dicom-upload.instance-retry-backoff-ms:250}")
     private long instanceUploadRetryBackoffMs;
 
-    @Value("${pacs.dicom-upload.instance-parallelism:4}")
+    @Value("${pacs.dicom-upload.instance-parallelism:200}")
     private int instanceUploadParallelism;
 
     @Override
@@ -431,7 +431,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         long maxEntryBytes = configuredMaxZipEntryBytes();
         int maxEntries = configuredMaxZipEntries();
         int parallelism = configuredInstanceUploadParallelism();
-        ExecutorService executor = Executors.newFixedThreadPool(parallelism);
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         Deque<PendingInstanceUpload> pendingUploads = new ArrayDeque<>();
         try (ZipInputStream zipInputStream = new ZipInputStream(zipStream)) {
             ZipEntry entry;

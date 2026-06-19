@@ -135,6 +135,18 @@ class DicomUploadServiceImplTest {
     }
 
     @Test
+    void configuredInstanceUploadParallelismAllowsFastBoundedForwarding() {
+        ReflectionTestUtils.setField(service, "instanceUploadParallelism", 200);
+        assertEquals(Integer.valueOf(200), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
+
+        ReflectionTestUtils.setField(service, "instanceUploadParallelism", 999);
+        assertEquals(Integer.valueOf(400), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
+
+        ReflectionTestUtils.setField(service, "instanceUploadParallelism", 0);
+        assertEquals(Integer.valueOf(200), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
+    }
+
+    @Test
     void singleDicomFileCreatesStudyWithoutWorklist() throws Exception {
         HospitalDicomServerResponse server = server();
         when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server));
