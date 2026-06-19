@@ -4,6 +4,11 @@ import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.service.service.ActivityLogService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import jakarta.validation.constraints.Max;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
@@ -19,6 +24,7 @@ import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.LocalTime;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -84,6 +90,27 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void shouldReturnFriendlyConstraintViolationMessage() {
+        Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
+        Set<ConstraintViolation<RetentionRequest>> violations =
+                validator.validate(new RetentionRequest(3651));
+
+        ResponseEntity<ResponseMessage<BaseResult>> response =
+                handler.handleValidation(new ConstraintViolationException(violations));
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals(
+                "Retention period cannot exceed 3650 days.",
+                response.getBody().getBody().getMessage()
+        );
+        assertEquals(
+                "Retention period cannot exceed 3650 days.",
+                response.getBody().getHeader().getErrorText()
+        );
+    }
+
+    @Test
     void shouldRecordUnexpectedServerErrorsToActivityLog() throws Exception {
         ActivityLogService activityLogService = mock(ActivityLogService.class);
         GlobalExceptionHandler handlerWithAudit = new GlobalExceptionHandler(activityLogService);
@@ -131,5 +158,11 @@ class GlobalExceptionHandlerTest {
                 any(LocalTime.class),
                 any(HttpServletRequest.class)
         );
+    }
+
+    private record RetentionRequest(
+            @Max(value = 3650, message = "Retention period cannot exceed 3650 days.")
+            int retentionDays
+    ) {
     }
 }

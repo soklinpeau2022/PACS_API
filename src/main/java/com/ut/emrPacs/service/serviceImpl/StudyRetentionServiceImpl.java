@@ -57,6 +57,7 @@ public class StudyRetentionServiceImpl implements StudyRetentionService {
     private static final int DEFAULT_NOTIFY_BEFORE_DAYS = 14;
     private static final int DEFAULT_RETENTION_VALUE = 1;
     private static final String DEFAULT_RETENTION_UNIT = "YEAR";
+    private static final int MAX_RETENTION_DAYS = 3650;
     private static final int DEFAULT_DELETE_CHUNK_SIZE = 25;
     private static final int MAX_DELETE_CHUNK_SIZE = 100;
     private static final int MAX_BULK_DELETE_ITEMS = 500;
@@ -545,7 +546,13 @@ public class StudyRetentionServiceImpl implements StudyRetentionService {
         if (!isSupportedRetentionUnit(request.getRetentionUnit())) {
             throw new IllegalArgumentException("Retention unit must be DAY, MONTH, or YEAR.");
         }
-        request.setRetentionDays(toApproximateRetentionDays(request.getRetentionValue(), request.getRetentionUnit()));
+        int retentionDays = toApproximateRetentionDays(request.getRetentionValue(), request.getRetentionUnit());
+        if (retentionDays > MAX_RETENTION_DAYS) {
+            throw new IllegalArgumentException(
+                    "Retention period cannot exceed 3650 days (117 months or 10 years)."
+            );
+        }
+        request.setRetentionDays(retentionDays);
         if (request.getNotifyBeforeDays() == null || request.getNotifyBeforeDays() < 0 || request.getNotifyBeforeDays() > 365) {
             throw new IllegalArgumentException("Notify-before days must be between 0 and 365.");
         }

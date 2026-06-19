@@ -33,19 +33,19 @@ public class StudyRetentionPolicySaveRequest {
     @JsonAlias({"modalityPublicKey", "modalityUuid", "modalityUUID"})
     private String modalityKey;
 
-    @Min(1)
-    @Max(3650)
+    @Min(value = 1, message = "Retention period must be at least 1 day.")
+    @Max(value = 3650, message = "Retention period cannot exceed 3650 days.")
     private Integer retentionDays;
 
-    @Min(1)
-    @Max(3650)
+    @Min(value = 1, message = "Retention value must be at least 1.")
+    @Max(value = 3650, message = "Retention value cannot exceed 3650.")
     private Integer retentionValue;
 
     @Size(max = 20)
     private String retentionUnit;
 
-    @Min(0)
-    @Max(365)
+    @Min(value = 0, message = "Alert window cannot be negative.")
+    @Max(value = 365, message = "Alert window cannot exceed 365 days.")
     private Integer notifyBeforeDays;
 
     private Boolean requireApproval;

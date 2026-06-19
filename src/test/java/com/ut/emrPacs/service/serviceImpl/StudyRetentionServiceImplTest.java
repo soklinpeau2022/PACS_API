@@ -171,6 +171,49 @@ class StudyRetentionServiceImplTest {
     }
 
     @Test
+    void savePolicyRejectsRetentionLongerThanTenYears() throws Exception {
+        StudyRetentionPolicySaveRequest request = new StudyRetentionPolicySaveRequest();
+        request.setRetentionValue(11);
+        request.setRetentionUnit("YEAR");
+        request.setNotifyBeforeDays(14);
+
+        ResponseMessage<BaseResult> response = service.savePolicy(request, new MockHttpServletRequest());
+
+        assertEquals(false, response.getHeader().getResult());
+        assertEquals(
+                "Retention period cannot exceed 3650 days (117 months or 10 years).",
+                response.getHeader().getErrorText()
+        );
+        verify(studyRetentionMapper, never()).insertPolicy(any(), anyLong());
+        verify(studyRetentionMapper, never()).updatePolicy(any(), anyLong());
+    }
+
+    @Test
+    void savePolicyAcceptsTenYearRetention() throws Exception {
+        StudyRetentionPolicySaveRequest request = new StudyRetentionPolicySaveRequest();
+        request.setRetentionValue(10);
+        request.setRetentionUnit("YEAR");
+        request.setNotifyBeforeDays(365);
+
+        StudyRetentionPolicyResponse saved = policy(88L, "policy-88", null);
+        saved.setRetentionValue(10);
+        saved.setRetentionDays(3650);
+
+        when(studyRetentionMapper.countDuplicatePolicyScope(null, null, null, null)).thenReturn(0L);
+        when(studyRetentionMapper.insertPolicy(request, 1L)).thenAnswer(invocation -> {
+            request.setId(88L);
+            return 1;
+        });
+        when(studyRetentionMapper.findPolicyById(88L, null)).thenReturn(saved);
+
+        ResponseMessage<BaseResult> response = service.savePolicy(request, new MockHttpServletRequest());
+
+        assertTrue(response.getHeader().getResult(), () -> String.valueOf(response.getHeader().getErrorText()));
+        assertEquals(3650, request.getRetentionDays());
+        verify(studyRetentionMapper).insertPolicy(request, 1L);
+    }
+
+    @Test
     void bulkDeleteDeletesSelectedStudiesInChunksAndReportsMissingRows() throws Exception {
         StudyRetentionBulkDeleteRequest request = new StudyRetentionBulkDeleteRequest();
         request.setStudyPublicKeys(List.of("Study-A", "study-b", "study-c", "missing", "study-a"));

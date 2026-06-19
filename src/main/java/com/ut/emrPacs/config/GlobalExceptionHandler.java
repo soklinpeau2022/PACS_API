@@ -4,6 +4,7 @@ import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import com.ut.emrPacs.service.service.ActivityLogService;
+import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import org.apache.ibatis.exceptions.PersistenceException;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +37,7 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.LocalTime;
+import java.util.Comparator;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -73,15 +75,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({MethodArgumentNotValidException.class, BindException.class, ConstraintViolationException.class})
     public ResponseEntity<ResponseMessage<BaseResult>> handleValidation(Exception exception) {
         LOGGER.warn("Validation error: {}", exception.getMessage());
+        String clientMessage = resolveValidationMessage(exception);
         ResponseMessage<BaseResult> response;
         if (exception instanceof MethodArgumentNotValidException ex) {
             response = ResponseMessageUtils.makeResponse(false, ex.getBindingResult());
         } else if (exception instanceof BindException ex) {
             response = ResponseMessageUtils.makeResponse(false, ex.getBindingResult());
         } else {
-            response = ResponseMessageUtils.makeResponse(false, HttpStatus.BAD_REQUEST.value(), "BAD_REQUEST", MESSAGE_BAD_REQUEST);
+            response = ResponseMessageUtils.makeResponse(false, HttpStatus.BAD_REQUEST.value(), "BAD_REQUEST", clientMessage);
         }
-        attachBody(response, MESSAGE_BAD_REQUEST);
+        attachBody(response, clientMessage);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
     }
 
@@ -215,6 +218,32 @@ public class GlobalExceptionHandler {
         ResponseMessage<BaseResult> response = ResponseMessageUtils.makeResponse(false, status.value(), code, message);
         attachBody(response, message);
         return ResponseEntity.status(status).body(response);
+    }
+
+    private static String resolveValidationMessage(Exception exception) {
+        if (exception instanceof MethodArgumentNotValidException ex) {
+            return ex.getBindingResult().getFieldErrors().stream()
+                    .map(error -> error.getDefaultMessage())
+                    .filter(message -> message != null && !message.isBlank())
+                    .findFirst()
+                    .orElse(MESSAGE_BAD_REQUEST);
+        }
+        if (exception instanceof BindException ex) {
+            return ex.getBindingResult().getFieldErrors().stream()
+                    .map(error -> error.getDefaultMessage())
+                    .filter(message -> message != null && !message.isBlank())
+                    .findFirst()
+                    .orElse(MESSAGE_BAD_REQUEST);
+        }
+        if (exception instanceof ConstraintViolationException ex) {
+            return ex.getConstraintViolations().stream()
+                    .sorted(Comparator.comparing(violation -> violation.getPropertyPath().toString()))
+                    .map(ConstraintViolation::getMessage)
+                    .filter(message -> message != null && !message.isBlank())
+                    .findFirst()
+                    .orElse(MESSAGE_BAD_REQUEST);
+        }
+        return MESSAGE_BAD_REQUEST;
     }
 
     private static void attachBody(ResponseMessage<BaseResult> response, String message) {
