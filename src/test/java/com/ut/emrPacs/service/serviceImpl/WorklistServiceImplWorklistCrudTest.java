@@ -1466,6 +1466,131 @@ class WorklistServiceImplWorklistCrudTest {
         );
     }
 
+    @Test
+    void cancelShouldRejectWhenWorklistAlreadyHasLocalImagingEvidence() throws Exception {
+        WorklistDetailRow Worklist = baseWorklist(1703L, WorklistStatus.IN_PROGRESS);
+        Worklist.setDicomServerId(4L);
+        Worklist.setDicomServerWorklistId("wl-1703");
+        Worklist.setDicomServerStudyId("study-1703");
+        when(WorklistMapper.findWorklistById(11L, 1703L)).thenReturn(Worklist);
+
+        WorklistActionRequest request = new WorklistActionRequest();
+        request.setId(1703L);
+
+        ResponseMessage<BaseResult> response = WorklistService.updateStatus(request, WorklistStatus.CANCELLED.name(), null);
+
+        assertFalse(response.isSuccess());
+        assertEquals(WorklistConstants.MSG_IMAGING_STARTED_CANNOT_CANCEL, response.getHeader().getErrorText());
+        verify(dicomServerClientService, never()).deleteWorklistById(anyString(), any(), any(), anyString());
+        verify(WorklistMapper, never()).updateWorklistWorkflowStatusById(anyLong(), anyLong(), any(), any(), anyLong());
+    }
+
+    @Test
+    void cancelShouldRejectWhenDicomServerHasStudyForAccession() throws Exception {
+        WorklistDetailRow Worklist = baseWorklist(1704L, WorklistStatus.IN_PROGRESS);
+        Worklist.setDicomServerId(4L);
+        Worklist.setDicomServerWorklistId("wl-1704");
+
+        HospitalDicomServerResponse targetServer = new HospitalDicomServerResponse();
+        targetServer.setId(4L);
+        targetServer.setBaseUrl("http://localhost:8042");
+        targetServer.setUsername("dicom_server");
+        targetServer.setPassword("dicom_server");
+
+        when(WorklistMapper.findWorklistById(11L, 1704L)).thenReturn(Worklist);
+        when(dicomServerMapper.findActiveDicomServerByWorklist(11L, 1704L)).thenReturn(targetServer);
+        when(dicomServerClientService.findStudyIdsByAccessionNumber(
+                eq("http://localhost:8042"),
+                eq("dicom_server"),
+                eq("dicom_server"),
+                any()
+        )).thenReturn(List.of("study-1704"));
+
+        WorklistActionRequest request = new WorklistActionRequest();
+        request.setId(1704L);
+
+        ResponseMessage<BaseResult> response = WorklistService.updateStatus(request, WorklistStatus.CANCELLED.name(), null);
+
+        assertFalse(response.isSuccess());
+        assertEquals(WorklistConstants.MSG_IMAGING_STARTED_CANNOT_CANCEL, response.getHeader().getErrorText());
+        verify(dicomServerClientService, never()).deleteWorklistById(anyString(), any(), any(), anyString());
+        verify(WorklistMapper, never()).updateWorklistWorkflowStatusById(anyLong(), anyLong(), any(), any(), anyLong());
+    }
+
+    @Test
+    void deleteWorklistShouldRejectWhenDicomServerHasStudyForAccession() throws Exception {
+        WorklistDetailRow Worklist = baseWorklist(1705L, WorklistStatus.IN_PROGRESS);
+        Worklist.setDicomServerId(4L);
+        Worklist.setDicomServerWorklistId("wl-1705");
+
+        HospitalDicomServerResponse targetServer = new HospitalDicomServerResponse();
+        targetServer.setId(4L);
+        targetServer.setBaseUrl("http://localhost:8042");
+        targetServer.setUsername("dicom_server");
+        targetServer.setPassword("dicom_server");
+
+        when(WorklistMapper.findWorklistById(11L, 1705L)).thenReturn(Worklist);
+        when(dicomServerMapper.findActiveDicomServerByWorklist(11L, 1705L)).thenReturn(targetServer);
+        when(dicomServerClientService.findStudyIdsByAccessionNumber(
+                eq("http://localhost:8042"),
+                eq("dicom_server"),
+                eq("dicom_server"),
+                any()
+        )).thenReturn(List.of("study-1705"));
+
+        ResponseMessage<BaseResult> response = WorklistService.deleteWorklist(1705L, null);
+
+        assertFalse(response.isSuccess());
+        assertEquals(WorklistConstants.MSG_IMAGING_STARTED_CANNOT_CANCEL, response.getHeader().getErrorText());
+        verify(dicomServerClientService, never()).deleteWorklistById(anyString(), any(), any(), anyString());
+        verify(WorklistMapper, never()).updateWorklistStatusById(anyLong(), anyLong(), any(), anyLong());
+    }
+
+    @Test
+    void cancelShouldDeleteRemoteWorklistForFailedWorklistThatWasAlreadySent() throws Exception {
+        WorklistDetailRow Worklist = baseWorklist(1706L, WorklistStatus.FAILED);
+        Worklist.setDicomServerId(4L);
+        Worklist.setDicomServerWorklistId("wl-1706");
+
+        WorklistDetailRow refreshed = baseWorklist(1706L, WorklistStatus.CANCELLED);
+        refreshed.setDicomServerId(4L);
+        refreshed.setDicomServerWorklistId("wl-1706");
+
+        HospitalDicomServerResponse targetServer = new HospitalDicomServerResponse();
+        targetServer.setId(4L);
+        targetServer.setBaseUrl("http://localhost:8042");
+        targetServer.setUsername("dicom_server");
+        targetServer.setPassword("dicom_server");
+
+        when(WorklistMapper.findWorklistById(11L, 1706L)).thenReturn(Worklist, refreshed);
+        when(dicomServerMapper.findActiveDicomServerByWorklist(11L, 1706L)).thenReturn(targetServer);
+        when(WorklistMapper.updateWorklistWorkflowStatusById(11L, 1706L, WorklistStatus.CANCELLED.code(), null, 99L)).thenReturn(1);
+
+        WorklistActionRequest request = new WorklistActionRequest();
+        request.setId(1706L);
+        request.setNotes("cancel failed sent worklist");
+
+        ResponseMessage<BaseResult> response = WorklistService.updateStatus(request, WorklistStatus.CANCELLED.name(), null);
+
+        assertTrue(response.isSuccess());
+        verify(dicomServerClientService).deleteWorklistById(
+                "http://localhost:8042",
+                "dicom_server",
+                "dicom_server",
+                "wl-1706"
+        );
+        verify(WorklistMapper).insertHistory(
+                eq(11L),
+                eq(1706L),
+                eq(501L),
+                eq(WorklistStatus.FAILED.code()),
+                eq(WorklistStatus.CANCELLED.code()),
+                eq(WorklistConstants.ACTION_CANCEL),
+                eq("cancel failed sent worklist"),
+                eq(99L)
+        );
+    }
+
     private static WorklistDetailRow baseWorklist(Long id, WorklistStatus status) {
         WorklistDetailRow Worklist = new WorklistDetailRow();
         Worklist.setId(id);

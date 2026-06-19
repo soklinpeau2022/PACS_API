@@ -889,16 +889,41 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             if (Worklist == null) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message(WorklistConstants.MSG_WORKLIST_NOT_FOUND, false));
             }
-            if (!hasText(Worklist.getDicomServerWorklistId())) {
-                return ResponseMessageUtils.makeResponse(false, messageService.message("Worklist has no DicomServer worklist ID.", false));
-            }
-
             WorklistStatus currentStatus = WorklistStatus.fromValue(Worklist.getStatus());
             if (currentStatus == WorklistStatus.CANCELLED) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Cancelled Worklist cannot delete DicomServer worklist.", false));
             }
 
+            if (hasLocalImagingEvidence(Worklist)) {
+                return rejectWorklistCancellation(
+                        WorklistConstants.MSG_IMAGING_STARTED_CANNOT_CANCEL,
+                        startDuration,
+                        httpServletRequest,
+                        ApiConstants.Worklist.WORKLIST_PATH,
+                        WorklistConstants.ACTION_WORKLIST_DELETE
+                );
+            }
             HospitalDicomServerResponse targetDicomServer = resolveTargetDicomServer(Worklist, userId);
+            ResponseMessage<BaseResult> cancellationBlocked = verifyWorklistCancellationSafety(
+                    Worklist,
+                    targetDicomServer,
+                    startDuration,
+                    httpServletRequest,
+                    ApiConstants.Worklist.WORKLIST_PATH,
+                    WorklistConstants.ACTION_WORKLIST_DELETE
+            );
+            if (cancellationBlocked != null) {
+                return cancellationBlocked;
+            }
+            if (!hasText(Worklist.getDicomServerWorklistId())) {
+                return rejectWorklistCancellation(
+                        WorklistConstants.MSG_CANCEL_SAFETY_UNVERIFIABLE,
+                        startDuration,
+                        httpServletRequest,
+                        ApiConstants.Worklist.WORKLIST_PATH,
+                        WorklistConstants.ACTION_WORKLIST_DELETE
+                );
+            }
             deleteDicomServerWorklist(Worklist.getDicomServerWorklistId(), targetDicomServer);
             int updated = WorklistMapper.updateWorklistStatusById(hospitalId, worklistId, WorklistStatus.CANCELLED.code(), userId);
             if (updated <= 0) {
@@ -1933,7 +1958,11 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             WorklistStatus currentStatus = WorklistStatus.fromValue(Worklist.getStatus());
 
             if (targetStatus == WorklistStatus.CANCELLED) {
-                if (currentStatus == WorklistStatus.WAITING || currentStatus == WorklistStatus.FAILED) {
+                boolean waitingWithoutImaging = currentStatus == WorklistStatus.WAITING && !hasLocalImagingEvidence(Worklist);
+                boolean unsentFailure = currentStatus == WorklistStatus.FAILED
+                        && !hasText(Worklist.getDicomServerWorklistId())
+                        && !hasLocalImagingEvidence(Worklist);
+                if (waitingWithoutImaging || unsentFailure) {
                     int updated = WorklistMapper.updateWorklistWorkflowStatusById(hospitalId, Worklist.getId(), WorklistStatus.CANCELLED.code(), null, actorId);
                     if (updated <= 0) {
                         return ResponseMessageUtils.makeResponse(false, messageService.message("Update failed", false));
@@ -1944,8 +1973,10 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                     return ResponseMessageUtils.makeResponse(true, messageService.message(WorklistConstants.RESULT_SUCCESS, true));
                 }
 
-                if (currentStatus == WorklistStatus.IN_PROGRESS) {
-                    return cancelInProgressWorklist(request, Worklist, hospitalId, actorId, startDuration, httpServletRequest);
+                if (currentStatus == WorklistStatus.WAITING
+                        || currentStatus == WorklistStatus.IN_PROGRESS
+                        || currentStatus == WorklistStatus.FAILED) {
+                    return cancelSentWorklist(request, Worklist, hospitalId, actorId, startDuration, httpServletRequest);
                 }
                 return ResponseMessageUtils.makeResponse(false, messageService.message("This Worklist cannot be cancelled in the current status.", false));
             }
@@ -1986,7 +2017,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         }
     }
 
-    private ResponseMessage<BaseResult> cancelInProgressWorklist(
+    private ResponseMessage<BaseResult> cancelSentWorklist(
             WorklistActionRequest request,
             WorklistDetailRow Worklist,
             Long hospitalId,
@@ -1995,20 +2026,59 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             HttpServletRequest httpServletRequest
     ) throws UnknownHostException {
         String remoteMessage = request.getNotes();
-        if (hasText(Worklist.getDicomServerWorklistId())) {
-            try {
-                HospitalDicomServerResponse targetDicomServer = resolveTargetDicomServer(Worklist, actorId);
-                deleteDicomServerWorklist(Worklist.getDicomServerWorklistId(), targetDicomServer);
-                remoteMessage = firstNonBlank(request.getNotes(), "Deleted DicomServer worklist " + Worklist.getDicomServerWorklistId());
-            } catch (HttpClientErrorException.NotFound ignored) {
-                remoteMessage = firstNonBlank(request.getNotes(), "DicomServer worklist already missing: " + Worklist.getDicomServerWorklistId());
-            } catch (HttpClientErrorException.Unauthorized error) {
-                return WorklistDicomServerClientError(startDuration, httpServletRequest, ApiConstants.Worklist.CANCEL_PATH, WorklistConstants.ACTION_CANCEL, WorklistConstants.MSG_DICOM_SERVER_UNAUTHORIZED, error);
-            } catch (ResourceAccessException error) {
-                return WorklistDicomServerClientError(startDuration, httpServletRequest, ApiConstants.Worklist.CANCEL_PATH, WorklistConstants.ACTION_CANCEL, WorklistConstants.MSG_DICOM_SERVER_UNREACHABLE, error);
-            } catch (RestClientException error) {
-                return WorklistDicomServerClientError(startDuration, httpServletRequest, ApiConstants.Worklist.CANCEL_PATH, WorklistConstants.ACTION_CANCEL, "Failed to delete DicomServer worklist.", error);
+        if (hasLocalImagingEvidence(Worklist)) {
+            return rejectWorklistCancellation(
+                    WorklistConstants.MSG_IMAGING_STARTED_CANNOT_CANCEL,
+                    startDuration,
+                    httpServletRequest,
+                    ApiConstants.Worklist.CANCEL_PATH,
+                    WorklistConstants.ACTION_CANCEL
+            );
+        }
+
+        HospitalDicomServerResponse targetDicomServer;
+        try {
+            targetDicomServer = resolveTargetDicomServer(Worklist, actorId);
+            ResponseMessage<BaseResult> cancellationBlocked = verifyWorklistCancellationSafety(
+                    Worklist,
+                    targetDicomServer,
+                    startDuration,
+                    httpServletRequest,
+                    ApiConstants.Worklist.CANCEL_PATH,
+                    WorklistConstants.ACTION_CANCEL
+            );
+            if (cancellationBlocked != null) {
+                return cancellationBlocked;
             }
+        } catch (HttpClientErrorException.Unauthorized error) {
+            return WorklistDicomServerClientError(startDuration, httpServletRequest, ApiConstants.Worklist.CANCEL_PATH, WorklistConstants.ACTION_CANCEL, WorklistConstants.MSG_DICOM_SERVER_UNAUTHORIZED, error);
+        } catch (ResourceAccessException error) {
+            return WorklistDicomServerClientError(startDuration, httpServletRequest, ApiConstants.Worklist.CANCEL_PATH, WorklistConstants.ACTION_CANCEL, WorklistConstants.MSG_DICOM_SERVER_UNREACHABLE, error);
+        } catch (RestClientException error) {
+            return WorklistDicomServerClientError(startDuration, httpServletRequest, ApiConstants.Worklist.CANCEL_PATH, WorklistConstants.ACTION_CANCEL, WorklistConstants.MSG_CANCEL_SAFETY_UNVERIFIABLE, error);
+        }
+
+        if (!hasText(Worklist.getDicomServerWorklistId())) {
+            return rejectWorklistCancellation(
+                    WorklistConstants.MSG_CANCEL_SAFETY_UNVERIFIABLE,
+                    startDuration,
+                    httpServletRequest,
+                    ApiConstants.Worklist.CANCEL_PATH,
+                    WorklistConstants.ACTION_CANCEL
+            );
+        }
+
+        try {
+            deleteDicomServerWorklist(Worklist.getDicomServerWorklistId(), targetDicomServer);
+            remoteMessage = firstNonBlank(request.getNotes(), "Deleted DicomServer worklist " + Worklist.getDicomServerWorklistId());
+        } catch (HttpClientErrorException.NotFound ignored) {
+            remoteMessage = firstNonBlank(request.getNotes(), "DicomServer worklist already missing: " + Worklist.getDicomServerWorklistId());
+        } catch (HttpClientErrorException.Unauthorized error) {
+            return WorklistDicomServerClientError(startDuration, httpServletRequest, ApiConstants.Worklist.CANCEL_PATH, WorklistConstants.ACTION_CANCEL, WorklistConstants.MSG_DICOM_SERVER_UNAUTHORIZED, error);
+        } catch (ResourceAccessException error) {
+            return WorklistDicomServerClientError(startDuration, httpServletRequest, ApiConstants.Worklist.CANCEL_PATH, WorklistConstants.ACTION_CANCEL, WorklistConstants.MSG_DICOM_SERVER_UNREACHABLE, error);
+        } catch (RestClientException error) {
+            return WorklistDicomServerClientError(startDuration, httpServletRequest, ApiConstants.Worklist.CANCEL_PATH, WorklistConstants.ACTION_CANCEL, "Failed to delete DicomServer worklist.", error);
         }
 
         int updated = WorklistMapper.updateWorklistWorkflowStatusById(hospitalId, Worklist.getId(), WorklistStatus.CANCELLED.code(), null, actorId);
@@ -2019,7 +2089,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 hospitalId,
                 Worklist.getId(),
                 Worklist.getPatientId(),
-                WorklistStatus.IN_PROGRESS.code(),
+                WorklistStatus.fromValue(Worklist.getStatus()).code(),
                 WorklistStatus.CANCELLED.code(),
                 WorklistConstants.ACTION_CANCEL,
                 remoteMessage,
@@ -2033,6 +2103,95 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 refreshedWorklist == null ? null : List.of(refreshedWorklist),
                 true
         ));
+    }
+
+    private ResponseMessage<BaseResult> verifyWorklistCancellationSafety(
+            WorklistDetailRow Worklist,
+            HospitalDicomServerResponse targetDicomServer,
+            LocalTime startDuration,
+            HttpServletRequest httpServletRequest,
+            String endpointPath,
+            String action
+    ) throws UnknownHostException {
+        if (hasLocalImagingEvidence(Worklist)) {
+            return rejectWorklistCancellation(
+                    WorklistConstants.MSG_IMAGING_STARTED_CANNOT_CANCEL,
+                    startDuration,
+                    httpServletRequest,
+                    endpointPath,
+                    action
+            );
+        }
+        if (!hasText(Worklist.getAccessionNumber())) {
+            return rejectWorklistCancellation(
+                    WorklistConstants.MSG_CANCEL_SAFETY_UNVERIFIABLE,
+                    startDuration,
+                    httpServletRequest,
+                    endpointPath,
+                    action
+            );
+        }
+
+        try {
+            String studyId = findDicomServerStudyIdByAccessionNumber(Worklist.getAccessionNumber(), targetDicomServer);
+            if (hasText(studyId)) {
+                return rejectWorklistCancellation(
+                        WorklistConstants.MSG_IMAGING_STARTED_CANNOT_CANCEL,
+                        startDuration,
+                        httpServletRequest,
+                        endpointPath,
+                        action
+                );
+            }
+            return null;
+        } catch (HttpClientErrorException.NotFound error) {
+            return WorklistDicomServerClientError(
+                    startDuration,
+                    httpServletRequest,
+                    endpointPath,
+                    action,
+                    WorklistConstants.MSG_CANCEL_SAFETY_UNVERIFIABLE,
+                    error
+            );
+        }
+    }
+
+    private boolean hasLocalImagingEvidence(WorklistDetailRow Worklist) {
+        return Worklist != null && (
+                Worklist.getStudyId() != null
+                        || hasText(Worklist.getStudyPublicKey())
+                        || hasText(Worklist.getDicomServerStudyId())
+                        || hasText(Worklist.getStudyInstanceUid())
+                        || hasText(Worklist.getStudyUuid())
+                        || hasText(Worklist.getDicomServerSeriesId())
+                        || hasText(Worklist.getImageReceivedAt())
+                        || hasText(Worklist.getReceivedAt())
+                        || hasText(Worklist.getViewerUrl())
+        );
+    }
+
+    private ResponseMessage<BaseResult> rejectWorklistCancellation(
+            String message,
+            LocalTime startDuration,
+            HttpServletRequest httpServletRequest,
+            String endpointPath,
+            String action
+    ) throws UnknownHostException {
+        LocalTime endDuration = LocalTime.now();
+        activityLogService.insert(
+                ApiConstants.Worklist.BASE_PATH + endpointPath,
+                null,
+                message,
+                WorklistConstants.MODULE_CODE,
+                "Worklist (" + action + ")",
+                action,
+                WorklistConstants.LOG_STATUS_SUCCESS,
+                WorklistConstants.RESULT_REJECTED,
+                startDuration,
+                endDuration,
+                httpServletRequest
+        );
+        return ResponseMessageUtils.makeResponse(false, messageService.message(message, false));
     }
 
     private String generateVisitCode(Long hospitalId, Long modalityId) {

@@ -6,6 +6,7 @@ import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistActionRequest;
 import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistDicomWorklistUpdateRequest;
+import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistRestActionRequest;
 import com.ut.emrPacs.service.service.WorklistService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -56,7 +57,7 @@ public class WorklistRestController {
     }
 
     @DeleteMapping("/{worklistId}")
-    @Operation(summary = "Delete DicomServer Worklist", description = "Module -> Worklist. Endpoint -> DELETE /worklists/{worklistId}. Deletes the DicomServer worklist and marks the EMR Worklist cancelled.")
+    @Operation(summary = "Delete DicomServer Worklist", description = "Module -> Worklist. Endpoint -> DELETE /worklists/{worklistId}. Deletes the DicomServer worklist and marks the EMR Worklist cancelled only when no matching study or image exists.")
     public ResponseMessage<BaseResult> deleteWorklist(
             @PathVariable("worklistId") String worklistId,
             HttpServletRequest httpServletRequest
@@ -65,14 +66,19 @@ public class WorklistRestController {
     }
 
     @PostMapping("/{worklistId}/cancel")
-    @Operation(summary = "Cancel Worklist", description = "Module -> Worklist. Endpoint -> POST /worklists/{worklistId}/cancel. WAITING cancels locally. IN_PROGRESS deletes the DicomServer worklist first.")
+    @Operation(summary = "Cancel Worklist", description = "Module -> Worklist. Endpoint -> POST /worklists/{worklistId}/cancel. WAITING cancels locally. Sent Worklists are removed from DicomServer only when no matching study or image exists.")
     public ResponseMessage<BaseResult> cancelWorklist(
             @PathVariable("worklistId") String worklistId,
-            @RequestBody(required = false) WorklistActionRequest request,
+            @RequestBody(required = false) WorklistRestActionRequest request,
             HttpServletRequest httpServletRequest
     ) throws UnknownHostException {
-        WorklistActionRequest actionRequest = request == null ? new WorklistActionRequest() : request;
+        WorklistActionRequest actionRequest = new WorklistActionRequest();
         actionRequest.setId(resolveWorklistPathId(worklistId));
+        actionRequest.setPublicKey(worklistId);
+        if (request != null) {
+            actionRequest.setHospitalKey(request.getHospitalKey());
+            actionRequest.setNotes(request.getNotes());
+        }
         return worklistService.updateStatus(actionRequest, "CANCELLED", httpServletRequest);
     }
 

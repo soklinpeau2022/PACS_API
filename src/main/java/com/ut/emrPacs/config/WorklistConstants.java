@@ -41,6 +41,8 @@ public final class WorklistConstants {
     public static final String MSG_ID_REQUIRED = "id is required.";
     public static final String MSG_DICOM_SERVER_UNAUTHORIZED = "DicomServer unauthorized (401).";
     public static final String MSG_DICOM_SERVER_UNREACHABLE = "DicomServer is unreachable.";
+    public static final String MSG_IMAGING_STARTED_CANNOT_CANCEL = "This Worklist cannot be cancelled because imaging has already started or images have already been received.";
+    public static final String MSG_CANCEL_SAFETY_UNVERIFIABLE = "Unable to verify that imaging has not started. The Worklist was not cancelled.";
     public static final String MSG_UNABLE_TO_UPDATE_STATUS = "Unable to update Worklist status.";
     public static final String MSG_VIEWER_DICOMWEB_PATH_REQUIRED = "Viewer DICOMweb path is required.";
 }

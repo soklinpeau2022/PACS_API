@@ -1,5 +1,7 @@
 package com.ut.emrPacs.controller;
 
+import com.ut.emrPacs.config.GlobalExceptionHandler;
+import com.ut.emrPacs.config.RequestBodySanitizerAdvice;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver.Entity;
 import com.ut.emrPacs.model.base.BaseResult;
@@ -8,6 +10,7 @@ import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistActionRequest;
 import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistDicomWorklistUpdateRequest;
 import com.ut.emrPacs.service.service.WorklistService;
+import jakarta.validation.Validation;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,7 +50,12 @@ class WorklistRestControllerTest {
         WorklistRestController controller = new WorklistRestController();
         ReflectionTestUtils.setField(controller, "worklistService", worklistService);
         ReflectionTestUtils.setField(controller, "publicEntityKeyResolver", publicEntityKeyResolver);
-        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        mockMvc = MockMvcBuilders.standaloneSetup(controller)
+                .setControllerAdvice(
+                        new RequestBodySanitizerAdvice(Validation.buildDefaultValidatorFactory().getValidator()),
+                        new GlobalExceptionHandler()
+                )
+                .build();
 
         when(publicEntityKeyResolver.resolveFromPath(Entity.WORKLIST, WORKLIST_KEY, "Worklist"))
                 .thenReturn(WORKLIST_ID);
@@ -125,9 +133,9 @@ class WorklistRestControllerTest {
         verify(publicEntityKeyResolver).resolveFromPath(Entity.WORKLIST, WORKLIST_KEY, "Worklist");
         verify(worklistService).updateStatus(captor.capture(), eq("CANCELLED"), any(HttpServletRequest.class));
         assertEquals(WORKLIST_ID, captor.getValue().getId());
+        assertEquals(WORKLIST_KEY, captor.getValue().getPublicKey());
         assertEquals("hospital-key", captor.getValue().getHospitalKey());
         assertEquals("cancel from ui", captor.getValue().getNotes());
-        assertNull(captor.getValue().getPublicKey());
     }
 
     @Test
@@ -139,9 +147,9 @@ class WorklistRestControllerTest {
         verify(publicEntityKeyResolver).resolveFromPath(Entity.WORKLIST, WORKLIST_KEY, "Worklist");
         verify(worklistService).updateStatus(captor.capture(), eq("CANCELLED"), any(HttpServletRequest.class));
         assertEquals(WORKLIST_ID, captor.getValue().getId());
+        assertEquals(WORKLIST_KEY, captor.getValue().getPublicKey());
         assertNull(captor.getValue().getHospitalKey());
         assertNull(captor.getValue().getNotes());
-        assertNull(captor.getValue().getPublicKey());
     }
 
     private static ResponseMessage<BaseResult> okResponse() {
