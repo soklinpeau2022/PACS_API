@@ -11,6 +11,8 @@ public interface DicomChunkUploadService {
 
     ResponseMessage<BaseResult> uploadChunk(String uploadId, Integer index, MultipartFile chunk, HttpServletRequest httpServletRequest);
 
+    ResponseMessage<BaseResult> status(String uploadId, HttpServletRequest httpServletRequest);
+
     ResponseMessage<BaseResult> complete(String uploadId, HttpServletRequest httpServletRequest);
 
     ResponseMessage<BaseResult> abort(String uploadId, HttpServletRequest httpServletRequest);

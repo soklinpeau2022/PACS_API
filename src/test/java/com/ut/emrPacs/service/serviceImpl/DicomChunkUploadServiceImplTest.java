@@ -7,7 +7,9 @@ import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import com.ut.emrPacs.model.dto.request.pacs.dicomUpload.DicomChunkUploadInitRequest;
 import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomChunkUploadInitResponse;
+import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomChunkUploadProgressResponse;
 import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomUploadResponse;
+import com.ut.emrPacs.service.service.DicomUploadProgressListener;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,10 +26,18 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -70,10 +80,13 @@ class DicomChunkUploadServiceImplTest {
                 true,
                 new MessageService().message("DICOM upload completed.", List.of(new DicomUploadResponse()), true)
         );
-        when(dicomUploadService.uploadDicomZipFile(eq("H001"), eq("SERVER1"), any(Path.class), eq((long) expected.length), any()))
+        when(dicomUploadService.uploadDicomZipFile(
+                eq("H001"), eq("SERVER1"), any(Path.class), eq((long) expected.length), any(), any(DicomUploadProgressListener.class)))
                 .thenAnswer(invocation -> {
                     Path path = invocation.getArgument(2);
                     assertArrayEquals(expected, Files.readAllBytes(path));
+                    DicomUploadProgressListener listener = invocation.getArgument(5);
+                    listener.onProgress(70, 7, 10, "Forwarding DICOM instances");
                     return success;
                 });
 
@@ -84,7 +97,109 @@ class DicomChunkUploadServiceImplTest {
         ResponseMessage<BaseResult> response = service.complete(uploadId, new MockHttpServletRequest());
 
         assertTrue(response.isSuccess());
-        verify(dicomUploadService).uploadDicomZipFile(eq("H001"), eq("SERVER1"), any(Path.class), eq(11L), any());
+        DicomChunkUploadProgressResponse status = status(uploadId);
+        assertEquals("COMPLETED", status.getState());
+        assertEquals(100, status.getProcessingPercent());
+        assertTrue(Boolean.TRUE.equals(status.getSuccessful()));
+        assertTrue(service.complete(uploadId, new MockHttpServletRequest()).isSuccess());
+        verify(dicomUploadService).uploadDicomZipFile(
+                eq("H001"), eq("SERVER1"), any(Path.class), eq(11L), any(), any(DicomUploadProgressListener.class));
+    }
+
+    @Test
+    void abortShouldBeBlockedWhileDicomServerProcessingIsActive() throws Exception {
+        byte[] expected = "hello".getBytes(StandardCharsets.UTF_8);
+        String uploadId = initUpload(expected.length, 5L, 1).getUploadId();
+        assertTrue(service.uploadChunk(uploadId, 0, chunk("chunk-0", "hello"), new MockHttpServletRequest()).isSuccess());
+
+        ResponseMessage<BaseResult> success = ResponseMessageUtils.makeResponse(
+                true,
+                new MessageService().message("DICOM upload completed.", List.of(new DicomUploadResponse()), true)
+        );
+        CountDownLatch processingStarted = new CountDownLatch(1);
+        CountDownLatch allowCompletion = new CountDownLatch(1);
+        when(dicomUploadService.uploadDicomZipFile(
+                eq("H001"), eq("SERVER1"), any(Path.class), eq(5L), any(), any(DicomUploadProgressListener.class)))
+                .thenAnswer(invocation -> {
+                    DicomUploadProgressListener listener = invocation.getArgument(5);
+                    listener.onProgress(55, 5, 10, "Forwarding DICOM instances");
+                    processingStarted.countDown();
+                    assertTrue(allowCompletion.await(5, TimeUnit.SECONDS));
+                    return success;
+                });
+
+        AtomicReference<ResponseMessage<BaseResult>> completion = new AtomicReference<>();
+        Thread completeThread = Thread.ofPlatform().start(() -> {
+            authenticate(99L);
+            try {
+                completion.set(service.complete(uploadId, new MockHttpServletRequest()));
+            } finally {
+                SecurityContextHolder.clearContext();
+            }
+        });
+
+        assertTrue(processingStarted.await(5, TimeUnit.SECONDS));
+        DicomChunkUploadProgressResponse status = status(uploadId);
+        assertEquals("PROCESSING", status.getState());
+        assertEquals(55, status.getProcessingPercent());
+        assertEquals("Forwarding DICOM instances", status.getStage());
+        assertFalse(service.abort(uploadId, new MockHttpServletRequest()).isSuccess());
+
+        allowCompletion.countDown();
+        completeThread.join(5000);
+        assertNotNull(completion.get());
+        assertTrue(completion.get().isSuccess());
+    }
+
+    @Test
+    void cleanupShouldNotRemoveStaleSessionWhileDicomServerProcessingIsActive() throws Exception {
+        byte[] expected = "hello".getBytes(StandardCharsets.UTF_8);
+        String uploadId = initUpload(expected.length, 5L, 1).getUploadId();
+        assertTrue(service.uploadChunk(uploadId, 0, chunk("chunk-0", "hello"), new MockHttpServletRequest()).isSuccess());
+
+        ResponseMessage<BaseResult> success = ResponseMessageUtils.makeResponse(
+                true,
+                new MessageService().message("DICOM upload completed.", List.of(new DicomUploadResponse()), true)
+        );
+        CountDownLatch processingStarted = new CountDownLatch(1);
+        CountDownLatch allowCompletion = new CountDownLatch(1);
+        when(dicomUploadService.uploadDicomZipFile(
+                eq("H001"), eq("SERVER1"), any(Path.class), eq(5L), any(), any(DicomUploadProgressListener.class)))
+                .thenAnswer(invocation -> {
+                    DicomUploadProgressListener listener = invocation.getArgument(5);
+                    listener.onProgress(45, 4, 10, "Forwarding DICOM instances");
+                    processingStarted.countDown();
+                    assertTrue(allowCompletion.await(5, TimeUnit.SECONDS));
+                    return success;
+                });
+
+        AtomicReference<ResponseMessage<BaseResult>> completion = new AtomicReference<>();
+        Thread completeThread = Thread.ofPlatform().start(() -> {
+            authenticate(99L);
+            try {
+                completion.set(service.complete(uploadId, new MockHttpServletRequest()));
+            } finally {
+                SecurityContextHolder.clearContext();
+            }
+        });
+
+        assertTrue(processingStarted.await(5, TimeUnit.SECONDS));
+        ConcurrentMap<String, ?> sessions = (ConcurrentMap<String, ?>) ReflectionTestUtils.getField(service, "sessions");
+        assertNotNull(sessions);
+        Object session = sessions.get(uploadId);
+        assertNotNull(session);
+        ReflectionTestUtils.setField(session, "lastTouchedAt", Instant.now().minus(Duration.ofMinutes(5)));
+
+        service.cleanupStaleSessions();
+
+        DicomChunkUploadProgressResponse status = status(uploadId);
+        assertEquals("PROCESSING", status.getState());
+        assertEquals(45, status.getProcessingPercent());
+
+        allowCompletion.countDown();
+        completeThread.join(5000);
+        assertNotNull(completion.get());
+        assertTrue(completion.get().isSuccess());
     }
 
     @Test
@@ -113,6 +228,12 @@ class DicomChunkUploadServiceImplTest {
         ResponseMessage<BaseResult> response = service.init(request, new MockHttpServletRequest());
         assertTrue(response.isSuccess());
         return (DicomChunkUploadInitResponse) response.getBody().getData().get(0);
+    }
+
+    private DicomChunkUploadProgressResponse status(String uploadId) {
+        ResponseMessage<BaseResult> response = service.status(uploadId, new MockHttpServletRequest());
+        assertTrue(response.isSuccess());
+        return (DicomChunkUploadProgressResponse) response.getBody().getData().get(0);
     }
 
     private static MockMultipartFile chunk(String name, String value) {

@@ -34,6 +34,7 @@ import com.ut.emrPacs.model.dto.response.systemSettings.modality.ModalityRespons
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.DicomServerClientService;
 import com.ut.emrPacs.service.service.DicomUploadService;
+import com.ut.emrPacs.service.service.DicomUploadProgressListener;
 import com.ut.emrPacs.service.service.RealtimeNotificationService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -66,12 +67,19 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 
 import static com.ut.emrPacs.helper.dicomServer.DicomResponseReadHelper.readDicomServerInstanceCount;
@@ -86,6 +94,8 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private static final int STATUS_IMAGE_RECEIVED = 1;
     private static final int DEFAULT_INSTANCE_UPLOAD_MAX_ATTEMPTS = 3;
     private static final long DEFAULT_INSTANCE_UPLOAD_RETRY_BACKOFF_MS = 250L;
+    private static final int DEFAULT_INSTANCE_UPLOAD_PARALLELISM = 4;
+    private static final int MAX_INSTANCE_UPLOAD_PARALLELISM = 8;
     private static final Set<String> KNOWN_NON_DICOM_EXTENSIONS = Set.of(
             "bmp", "csv", "db", "doc", "docx", "gif", "htm", "html", "ini", "jpeg", "jpg",
             "json", "log", "pdf", "png", "rtf", "text", "tif", "tiff", "txt", "xls", "xlsx", "xml"
@@ -136,6 +146,9 @@ public class DicomUploadServiceImpl implements DicomUploadService {
 
     @Value("${pacs.dicom-upload.instance-retry-backoff-ms:250}")
     private long instanceUploadRetryBackoffMs;
+
+    @Value("${pacs.dicom-upload.instance-parallelism:4}")
+    private int instanceUploadParallelism;
 
     @Override
     public ResponseMessage<BaseResult> uploadDicom(
@@ -225,8 +238,30 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             long zipSize,
             HttpServletRequest httpServletRequest
     ) {
+        return uploadDicomZipFile(
+                hospitalKey,
+                dicomServerKey,
+                zipPath,
+                zipSize,
+                httpServletRequest,
+                DicomUploadProgressListener.NO_OP
+        );
+    }
+
+    public ResponseMessage<BaseResult> uploadDicomZipFile(
+            String hospitalKey,
+            String dicomServerKey,
+            Path zipPath,
+            long zipSize,
+            HttpServletRequest httpServletRequest,
+            DicomUploadProgressListener progressListener
+    ) {
         LocalTime startDuration = LocalTime.now();
+        DicomUploadProgressListener listener = progressListener == null
+                ? DicomUploadProgressListener.NO_OP
+                : progressListener;
         try {
+            reportProgress(listener, 2, 0, 0, "Resolving DICOM destination");
             Long hospitalId = resolveHospitalId(publicEntityKeyResolver.resolve(Entity.HOSPITAL, hospitalKey, null));
             DicomServerResolution dicomServerResolution = resolveDicomServer(hospitalId, dicomServerKey);
             if (dicomServerResolution.errorMessage() != null) {
@@ -251,17 +286,28 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                     new LinkedHashMap<>(),
                     new LinkedHashMap<>()
             );
+            int totalEntries = countZipFileEntries(zipPath);
+            reportProgress(listener, 8, 0, totalEntries, "Inspecting archive");
             try (InputStream zipStream = Files.newInputStream(zipPath)) {
-                uploadZip(zipStream, context, httpServletRequest);
+                uploadZip(zipStream, context, httpServletRequest, listener, totalEntries);
             }
-            return finishUpload(context, startDuration, httpServletRequest);
+            return finishUpload(context, startDuration, httpServletRequest, listener);
         } catch (Exception error) {
             return failUpload(error, startDuration, httpServletRequest);
         }
     }
 
     private ResponseMessage<BaseResult> finishUpload(UploadContext context, LocalTime startDuration, HttpServletRequest httpServletRequest) {
-        synchronizeUploadedStudies(context);
+        return finishUpload(context, startDuration, httpServletRequest, DicomUploadProgressListener.NO_OP);
+    }
+
+    private ResponseMessage<BaseResult> finishUpload(
+            UploadContext context,
+            LocalTime startDuration,
+            HttpServletRequest httpServletRequest,
+            DicomUploadProgressListener progressListener
+    ) {
+        synchronizeUploadedStudies(context, progressListener);
         DicomUploadResponse uploadResponse = context.response;
         uploadResponse.setStudyCount(context.summariesByStudyUid.size());
         uploadResponse.setStudies(new ArrayList<>(context.summariesByStudyUid.values()));
@@ -282,8 +328,10 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                 httpServletRequest
         );
         if (!success) {
+            reportProgress(progressListener, 100, 0, 0, "Processing finished with errors");
             return ResponseMessageUtils.makeResponse(false, messageService.message("No DICOM instances were uploaded.", List.of(uploadResponse), false));
         }
+        reportProgress(progressListener, 100, uploadResponse.getAcceptedFiles(), uploadResponse.getAcceptedFiles(), "Completed");
         return ResponseMessageUtils.makeResponse(true, messageService.message("DICOM upload completed.", List.of(uploadResponse), true));
     }
 
@@ -363,19 +411,34 @@ public class DicomUploadServiceImpl implements DicomUploadService {
 
     private void uploadZip(MultipartFile zipFile, UploadContext context, HttpServletRequest httpServletRequest) throws IOException {
         try (InputStream zipStream = zipFile.getInputStream()) {
-            uploadZip(zipStream, context, httpServletRequest);
+            uploadZip(zipStream, context, httpServletRequest, DicomUploadProgressListener.NO_OP, 0);
         }
     }
 
     private void uploadZip(InputStream zipStream, UploadContext context, HttpServletRequest httpServletRequest) throws IOException {
+        uploadZip(zipStream, context, httpServletRequest, DicomUploadProgressListener.NO_OP, 0);
+    }
+
+    private void uploadZip(
+            InputStream zipStream,
+            UploadContext context,
+            HttpServletRequest httpServletRequest,
+            DicomUploadProgressListener progressListener,
+            int totalEntries
+    ) throws IOException {
         int entries = 0;
+        int processedEntries = 0;
         long maxEntryBytes = configuredMaxZipEntryBytes();
         int maxEntries = configuredMaxZipEntries();
+        int parallelism = configuredInstanceUploadParallelism();
+        ExecutorService executor = Executors.newFixedThreadPool(parallelism);
+        Deque<PendingInstanceUpload> pendingUploads = new ArrayDeque<>();
         try (ZipInputStream zipInputStream = new ZipInputStream(zipStream)) {
             ZipEntry entry;
             while ((entry = zipInputStream.getNextEntry()) != null) {
                 String entryName = entry.getName();
                 Path tempEntryPath = null;
+                boolean countedEntry = false;
                 try {
                     if (entry.isDirectory()) {
                         continue;
@@ -385,45 +448,101 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                         throw new DicomUploadSecurityException("ZIP entry name is unsafe.");
                     }
                     entries++;
+                    countedEntry = true;
                     if (entries > maxEntries) {
                         reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "too_many_entries", entries + "/" + maxEntries);
                         throw new DicomUploadSecurityException("ZIP contains too many files.");
                     }
                     if (isKnownNonDicomZipEntry(entryName)) {
                         context.response.setSkippedFiles(context.response.getSkippedFiles() + 1);
+                        processedEntries++;
+                        reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
                         continue;
                     }
                     tempEntryPath = writeBoundedZipEntryToTempFile(zipInputStream, maxEntryBytes, httpServletRequest, entryName);
                     long entryBytes = Files.size(tempEntryPath);
                     if (entryBytes == 0) {
+                        processedEntries++;
+                        reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
                         continue;
                     }
                     if (entryBytes > maxEntryBytes) {
                         reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "entry_too_large", entryName + " " + entryBytes + "/" + maxEntryBytes);
                         throw new DicomUploadSecurityException("ZIP entry is too large.");
                     }
-                    DicomServerInstanceUploadResponse uploaded = uploadInstanceWithRetry(
-                            new FileSystemResource(tempEntryPath),
+                    Path submittedPath = tempEntryPath;
+                    Future<DicomServerInstanceUploadResponse> future = executor.submit(() -> uploadInstanceWithRetry(
+                            new FileSystemResource(submittedPath),
                             entryBytes,
                             context
-                    );
-                    context.response.setAcceptedFiles(context.response.getAcceptedFiles() + 1);
-                    registerPendingStudySync(uploaded, entryName, context);
+                    ));
+                    pendingUploads.addLast(new PendingInstanceUpload(entryName, submittedPath, future));
+                    tempEntryPath = null;
+                    if (pendingUploads.size() >= parallelism) {
+                        completePendingInstanceUpload(pendingUploads.removeFirst(), context);
+                        processedEntries++;
+                        reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
+                    }
                 } catch (Exception entryError) {
                     if (entryError instanceof DicomUploadSecurityException) {
                         throw (DicomUploadSecurityException) entryError;
                     }
                     if (isRejectedAsNonDicomInstance(entryError)) {
                         context.response.setSkippedFiles(context.response.getSkippedFiles() + 1);
+                        if (countedEntry) {
+                            processedEntries++;
+                            reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
+                        }
                         continue;
                     }
                     context.response.setFailedFiles(context.response.getFailedFiles() + 1);
                     addUploadError(context.response, entryName, entryError);
+                    if (countedEntry) {
+                        processedEntries++;
+                        reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
+                    }
                 } finally {
                     deleteTempFile(tempEntryPath);
                     zipInputStream.closeEntry();
                 }
             }
+            while (!pendingUploads.isEmpty()) {
+                completePendingInstanceUpload(pendingUploads.removeFirst(), context);
+                processedEntries++;
+                reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
+            }
+            reportProgress(progressListener, 90, processedEntries, Math.max(totalEntries, entries), "DICOM forwarding complete");
+        } finally {
+            pendingUploads.forEach(pending -> {
+                pending.future().cancel(true);
+                deleteTempFile(pending.path());
+            });
+            executor.shutdownNow();
+        }
+    }
+
+    private void completePendingInstanceUpload(PendingInstanceUpload pending, UploadContext context) throws IOException {
+        try {
+            DicomServerInstanceUploadResponse uploaded = pending.future().get();
+            context.response.setAcceptedFiles(context.response.getAcceptedFiles() + 1);
+            registerPendingStudySync(uploaded, pending.sourceName(), context);
+        } catch (InterruptedException error) {
+            pending.future().cancel(true);
+            Thread.currentThread().interrupt();
+            throw new IOException("DICOM server processing was interrupted.", error);
+        } catch (ExecutionException error) {
+            Throwable cause = error.getCause();
+            Exception uploadError = cause instanceof Exception exception
+                    ? exception
+                    : new IllegalStateException("DICOM server upload failed.", cause);
+            if (isRejectedAsNonDicomInstance(uploadError)) {
+                context.response.setSkippedFiles(context.response.getSkippedFiles() + 1);
+            } else {
+                context.response.setFailedFiles(context.response.getFailedFiles() + 1);
+                addUploadError(context.response, pending.sourceName(), uploadError);
+            }
+        } finally {
+            deleteTempFile(pending.path());
         }
     }
 
@@ -537,6 +656,52 @@ public class DicomUploadServiceImpl implements DicomUploadService {
 
     private int configuredMaxZipEntries() {
         return maxZipEntries > 0 ? maxZipEntries : DEFAULT_MAX_ZIP_ENTRIES;
+    }
+
+    private int configuredInstanceUploadParallelism() {
+        int configured = instanceUploadParallelism > 0
+                ? instanceUploadParallelism
+                : DEFAULT_INSTANCE_UPLOAD_PARALLELISM;
+        return Math.max(1, Math.min(MAX_INSTANCE_UPLOAD_PARALLELISM, configured));
+    }
+
+    private static int countZipFileEntries(Path zipPath) throws IOException {
+        try (ZipFile zipFile = new ZipFile(zipPath.toFile())) {
+            long count = zipFile.stream().filter(entry -> !entry.isDirectory()).count();
+            return (int) Math.min(Integer.MAX_VALUE, count);
+        }
+    }
+
+    private static void reportForwardingProgress(
+            DicomUploadProgressListener listener,
+            int processedEntries,
+            int expectedEntries,
+            int discoveredEntries
+    ) {
+        int total = Math.max(expectedEntries, discoveredEntries);
+        int percent = total <= 0
+                ? 10
+                : Math.min(90, 10 + (int) Math.round((processedEntries * 80.0d) / total));
+        reportProgress(listener, percent, processedEntries, total, "Forwarding DICOM instances");
+    }
+
+    private static void reportProgress(
+            DicomUploadProgressListener listener,
+            int percent,
+            int processedItems,
+            int totalItems,
+            String stage
+    ) {
+        try {
+            listener.onProgress(
+                    Math.max(0, Math.min(100, percent)),
+                    Math.max(0, processedItems),
+                    Math.max(processedItems, totalItems),
+                    stage
+            );
+        } catch (RuntimeException error) {
+            LOGGER.warn("DICOM upload progress listener failed: {}", error.toString());
+        }
     }
 
     private static String formatBytes(long bytes) {
@@ -672,13 +837,21 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         context.pendingStudySyncs.putIfAbsent(studyId, new PendingStudySync(uploaded, sourceName));
     }
 
-    private void synchronizeUploadedStudies(UploadContext context) {
+    private void synchronizeUploadedStudies(UploadContext context, DicomUploadProgressListener progressListener) {
+        int total = context.pendingStudySyncs.size();
+        int processed = 0;
+        reportProgress(progressListener, 92, processed, total, "Synchronizing study metadata");
         for (PendingStudySync pending : context.pendingStudySyncs.values()) {
             try {
                 processUploadedInstanceInTransactionWithRetry(pending.upload(), context);
             } catch (RuntimeException error) {
                 addMetadataSyncError(context, pending.sourceName(), error);
             }
+            processed++;
+            int percent = total <= 0
+                    ? 99
+                    : Math.min(99, 92 + (int) Math.round((processed * 7.0d) / total));
+            reportProgress(progressListener, percent, processed, total, "Synchronizing study metadata");
         }
     }
 
@@ -1192,6 +1365,13 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     }
 
     private record PendingStudySync(DicomServerInstanceUploadResponse upload, String sourceName) {
+    }
+
+    private record PendingInstanceUpload(
+            String sourceName,
+            Path path,
+            Future<DicomServerInstanceUploadResponse> future
+    ) {
     }
 
     private record DicomServerResolution(HospitalDicomServerResponse server, String errorMessage) {

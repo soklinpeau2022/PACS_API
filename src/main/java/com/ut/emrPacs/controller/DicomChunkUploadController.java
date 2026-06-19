@@ -13,6 +13,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -54,6 +55,18 @@ public class DicomChunkUploadController {
             return unauthorized();
         }
         return dicomChunkUploadService.uploadChunk(uploadId, index, chunk, httpServletRequest);
+    }
+
+    @GetMapping(ApiConstants.DicomUpload.CHUNK_STATUS_PATH)
+    @Operation(summary = "Get chunk transfer and DICOM server processing progress")
+    public ResponseMessage<BaseResult> status(
+            @PathVariable String uploadId,
+            HttpServletRequest httpServletRequest
+    ) {
+        if (UserAuthSession.getCurrentUser() == null) {
+            return unauthorized();
+        }
+        return dicomChunkUploadService.status(uploadId, httpServletRequest);
     }
 
     @PostMapping(ApiConstants.DicomUpload.CHUNK_COMPLETE_PATH)
