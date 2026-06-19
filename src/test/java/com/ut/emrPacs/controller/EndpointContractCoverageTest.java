@@ -58,6 +58,10 @@ class EndpointContractCoverageTest {
                 "HEAD /worklist/viewer-dicom-web/{viewerToken}/{hospitalId}/{worklistId}/**",
                 "POST /worklist/viewer-dicom-web-authorize",
                 "POST /worklist/viewer-dicom-web-renew",
+                "GET /worklists/{worklistId}",
+                "PUT /worklists/{worklistId}",
+                "DELETE /worklists/{worklistId}",
+                "POST /worklists/{worklistId}/cancel",
                 "POST /user/user-group-list"
         );
 

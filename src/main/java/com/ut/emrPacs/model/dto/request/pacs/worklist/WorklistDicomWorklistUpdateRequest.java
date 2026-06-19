@@ -10,10 +10,22 @@ import java.time.LocalTime;
 @Data
 public class WorklistDicomWorklistUpdateRequest {
     @JsonIgnore
+    private Long hospitalId;
+    @JsonAlias({"hospitalPublicKey", "hospitalUuid", "hospitalUUID"})
+    private String hospitalKey;
+
+    @JsonIgnore
     private Long modalityId;
     @JsonAlias({"modalityPublicKey", "modalityUuid", "modalityUUID"})
     private String modalityKey;
+
+    @JsonIgnore
+    private Long dicomServerId;
+    @JsonAlias({"dicomServerPublicKey", "dicomServerUuid", "dicomServerUUID"})
+    private String dicomServerKey;
+
     private String studyDescription;
     private LocalDate scheduledDate;
     private LocalTime scheduledTime;
+    private String notes;
 }

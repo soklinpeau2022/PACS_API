@@ -27,6 +27,7 @@ import com.ut.emrPacs.controller.UserController;
 import com.ut.emrPacs.controller.UserLogController;
 import com.ut.emrPacs.controller.UserProfileController;
 import com.ut.emrPacs.controller.WorklistController;
+import com.ut.emrPacs.controller.WorklistRestController;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.core.type.filter.AnnotationTypeFilter;
 import org.springframework.http.MediaType;
@@ -80,7 +81,8 @@ public final class EndpointTestCatalog {
             UserController.class,
             UserLogController.class,
             UserProfileController.class,
-            WorklistController.class
+            WorklistController.class,
+            WorklistRestController.class
     );
 
     private EndpointTestCatalog() {

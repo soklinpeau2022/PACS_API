@@ -64,7 +64,7 @@ public class WorklistController {
     }
 
     @PostMapping(ApiConstants.Worklist.UPDATE_PATH)
-    @Operation(summary = "Update Worklist", description = "Module -> Worklist. Endpoint -> POST /worklist/worklist-update. WAITING and FAILED can be edited. IN_PROGRESS and CANCELLED are read-only.")
+    @Operation(summary = "Update Worklist", description = "Module -> Worklist. Endpoint -> POST /worklist/worklist-update. WAITING and FAILED update EMR fields. IN_PROGRESS mirrors editable scheduling changes to DicomServer. CANCELLED is read-only.")
     public ResponseMessage<BaseResult> updateWorklist(@Valid @RequestBody WorklistUpdateRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
         Long worklistId = publicEntityKeyResolver.resolve(Entity.WORKLIST, request.getPublicKey(), null);
         request.setId(worklistId);

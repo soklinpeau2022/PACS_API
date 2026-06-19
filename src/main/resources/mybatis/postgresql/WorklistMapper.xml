@@ -455,6 +455,7 @@
             scheduled_time = #{scheduledTime},
             dicom_server_worklist_id = #{worklistId},
             dicom_server_worklist_path = #{worklistPath},
+            error_message = NULL,
             modified_by = #{modifiedBy},
             modified_at = NOW(),
             modified = NOW()

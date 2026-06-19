@@ -20,6 +20,7 @@ import com.ut.emrPacs.model.base.MessageService;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistActionRequest;
 import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistAssignRequest;
+import com.ut.emrPacs.model.dto.request.pacs.dicomServer.DicomServerWorklistCreateRequest;
 import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistUpdateRequest;
 import com.ut.emrPacs.model.dto.request.pacs.worklist.WorklistViewStudyRequest;
 import com.ut.emrPacs.model.dto.request.pacs.worklist.PublicViewerAuthorizeRequest;
@@ -646,7 +647,7 @@ class WorklistServiceImplWorklistCrudTest {
 
         var response = WorklistService.authorizePublicViewer(request, new MockHttpServletRequest());
 
-        assertTrue(response.isSuccess());
+        assertTrue(response.isSuccess(), response.getHeader() != null ? String.valueOf(response.getHeader().getErrorText()) : "Unknown error");
         ViewerInfoResponse viewerInfo = (ViewerInfoResponse) response.getBody().getData().get(0);
         assertEquals(ViewerAccessKeyService.ACCESS_PUBLIC, viewerInfo.getViewerAccess());
         assertEquals(Boolean.FALSE, viewerInfo.getCanEditResult());
@@ -731,7 +732,7 @@ class WorklistServiceImplWorklistCrudTest {
 
         var response = WorklistService.authorizePublicViewer(request, new MockHttpServletRequest());
 
-        assertTrue(response.isSuccess());
+        assertTrue(response.isSuccess(), response.getHeader() != null ? String.valueOf(response.getHeader().getErrorText()) : "Unknown error");
         ViewerInfoResponse viewerInfo = (ViewerInfoResponse) response.getBody().getData().get(0);
         assertEquals(ViewerAccessKeyService.ACCESS_PUBLIC, viewerInfo.getViewerAccess());
         assertEquals(Boolean.FALSE, viewerInfo.getCanEditResult());
@@ -925,20 +926,105 @@ class WorklistServiceImplWorklistCrudTest {
     }
 
     @Test
-    void updateWorklistShouldRejectInProgressWorklist() throws Exception {
+    void updateWorklistShouldUpdateDicomServerForInProgressWorklist() throws Exception {
         WorklistDetailRow Worklist = baseWorklist(15015L, WorklistStatus.IN_PROGRESS);
+        Worklist.setDicomServerId(4L);
         Worklist.setDicomServerWorklistId("wl-15015");
-        when(WorklistMapper.findWorklistById(11L, 15015L)).thenReturn(Worklist);
+        Worklist.setDicomServerWorklistPath("/worklists/wl-15015");
+        Worklist.setStudyDescription("Old Study");
+        Worklist.setScheduledDate(LocalDate.of(2026, 5, 23));
+        Worklist.setScheduledTime(LocalTime.of(8, 30));
+
+        WorklistDetailRow refreshed = baseWorklist(15015L, WorklistStatus.IN_PROGRESS);
+        refreshed.setDicomServerId(4L);
+        refreshed.setDicomServerWorklistId("wl-15015");
+        refreshed.setDicomServerWorklistPath("/worklists/wl-15015");
+        refreshed.setStudyDescription("Updated PACS Study");
+        refreshed.setScheduledDate(LocalDate.of(2026, 5, 24));
+        refreshed.setScheduledTime(LocalTime.of(10, 15));
+
+        HospitalDicomServerResponse targetServer = new HospitalDicomServerResponse();
+        targetServer.setId(4L);
+        targetServer.setBaseUrl("http://localhost:8042");
+        targetServer.setUsername("dicom_server");
+        targetServer.setPassword("dicom_server");
+        targetServer.setAeTitle("dicom_server");
+
+        ModalityResponse modality = new ModalityResponse();
+        modality.setAbbr("CT");
+
+        DicomServerWorklistResponse remoteWorklist = worklistResponse(
+                "wl-15015",
+                "/worklists/wl-15015",
+                "CT",
+                "Updated PACS Study",
+                "20260524",
+                "101500"
+        );
+
+        when(WorklistMapper.findWorklistById(11L, 15015L)).thenReturn(Worklist, refreshed);
+        when(modalityMapper.countActiveModalitiesByIds(List.of(5L))).thenReturn(1L);
+        when(modalityMapper.getModalityById(5L)).thenReturn(List.of(modality));
+        when(dicomServerMapper.findActiveDicomServerByWorklist(11L, 15015L)).thenReturn(targetServer);
+        when(dicomServerClientService.updateWorklistById(
+                eq("http://localhost:8042"),
+                eq("dicom_server"),
+                eq("dicom_server"),
+                eq("wl-15015"),
+                any(DicomServerWorklistCreateRequest.class)
+        )).thenReturn(remoteWorklist);
+        when(WorklistMapper.updateWorklistDicomWorklistFieldsById(
+                eq(11L),
+                eq(15015L),
+                eq(5L),
+                eq("ACC-15015"),
+                eq("CT"),
+                eq("DICOM_SERVER"),
+                eq("Updated PACS Study"),
+                eq(LocalDate.of(2026, 5, 24)),
+                eq(LocalTime.of(10, 15)),
+                eq("wl-15015"),
+                eq("/worklists/wl-15015"),
+                eq(99L)
+        )).thenReturn(1);
 
         WorklistUpdateRequest request = new WorklistUpdateRequest();
         request.setModalityId(5L);
-        request.setStudyDescription("Blocked Study");
+        request.setStudyDescription("Updated PACS Study");
         request.setScheduledDate(LocalDate.of(2026, 5, 24));
+        request.setScheduledTime(LocalTime.of(10, 15));
+        request.setNotes("update from ui");
 
         ResponseMessage<BaseResult> response = WorklistService.updateWorklist(15015L, request, null);
 
-        assertFalse(response.isSuccess());
-        verify(dicomServerClientService, never()).updateWorklistById(any(), any());
+        assertTrue(response.isSuccess(), response.getHeader() != null ? String.valueOf(response.getHeader().getErrorText()) : "Unknown error");
+        verify(dicomServerClientService).updateWorklistById(
+                eq("http://localhost:8042"),
+                eq("dicom_server"),
+                eq("dicom_server"),
+                eq("wl-15015"),
+                argThat((DicomServerWorklistCreateRequest payload) ->
+                        payload != null
+                                && payload.getTags() != null
+                                && "ACC-15015".equals(payload.getTags().getAccessionNumber())
+                                && "Updated PACS Study".equals(payload.getTags().getStudyDescription())
+                                && payload.getTags().getScheduledProcedureStepSequence() != null
+                                && !payload.getTags().getScheduledProcedureStepSequence().isEmpty()
+                                && "CT".equals(payload.getTags().getScheduledProcedureStepSequence().get(0).getModality())
+                                && "20260524".equals(payload.getTags().getScheduledProcedureStepSequence().get(0).getScheduledProcedureStepStartDate())
+                                && "101500".equals(payload.getTags().getScheduledProcedureStepSequence().get(0).getScheduledProcedureStepStartTime())
+                )
+        );
+        verify(WorklistMapper).insertHistory(
+                eq(11L),
+                eq(15015L),
+                eq(501L),
+                eq(WorklistStatus.IN_PROGRESS.code()),
+                eq(WorklistStatus.IN_PROGRESS.code()),
+                eq(WorklistConstants.ACTION_UPDATE),
+                eq("update from ui"),
+                eq(99L)
+        );
     }
 
     @Test
@@ -1089,21 +1175,49 @@ class WorklistServiceImplWorklistCrudTest {
     }
 
     @Test
-    void cancelShouldRejectInProgressWorklist() throws Exception {
+    void cancelShouldDeleteDicomServerWorklistForInProgressWorklist() throws Exception {
         WorklistDetailRow Worklist = baseWorklist(1702L, WorklistStatus.IN_PROGRESS);
+        Worklist.setDicomServerId(4L);
         Worklist.setDicomServerWorklistId("wl-1702");
 
-        when(WorklistMapper.findWorklistById(11L, 1702L)).thenReturn(Worklist);
+        WorklistDetailRow refreshed = baseWorklist(1702L, WorklistStatus.CANCELLED);
+        refreshed.setDicomServerId(4L);
+        refreshed.setDicomServerWorklistId("wl-1702");
+
+        HospitalDicomServerResponse targetServer = new HospitalDicomServerResponse();
+        targetServer.setId(4L);
+        targetServer.setBaseUrl("http://localhost:8042");
+        targetServer.setUsername("dicom_server");
+        targetServer.setPassword("dicom_server");
+
+        when(WorklistMapper.findWorklistById(11L, 1702L)).thenReturn(Worklist, refreshed);
+        when(dicomServerMapper.findActiveDicomServerByWorklist(11L, 1702L)).thenReturn(targetServer);
+        when(WorklistMapper.updateWorklistWorkflowStatusById(11L, 1702L, WorklistStatus.CANCELLED.code(), null, 99L)).thenReturn(1);
 
         WorklistActionRequest request = new WorklistActionRequest();
         request.setId(1702L);
-        request.setNotes("cancel blocked");
+        request.setNotes("cancel from ui");
 
         ResponseMessage<BaseResult> response = WorklistService.updateStatus(request, WorklistStatus.CANCELLED.name(), null);
 
-        assertFalse(response.isSuccess());
-        verify(dicomServerClientService, never()).deleteWorklistById(any());
-        verify(WorklistMapper, never()).updateWorklistWorkflowStatusById(anyLong(), anyLong(), any(), any(), any());
+        assertTrue(response.isSuccess());
+        verify(dicomServerClientService).deleteWorklistById(
+                "http://localhost:8042",
+                "dicom_server",
+                "dicom_server",
+                "wl-1702"
+        );
+        verify(WorklistMapper).updateWorklistWorkflowStatusById(11L, 1702L, WorklistStatus.CANCELLED.code(), null, 99L);
+        verify(WorklistMapper).insertHistory(
+                eq(11L),
+                eq(1702L),
+                eq(501L),
+                eq(WorklistStatus.IN_PROGRESS.code()),
+                eq(WorklistStatus.CANCELLED.code()),
+                eq(WorklistConstants.ACTION_CANCEL),
+                eq("cancel from ui"),
+                eq(99L)
+        );
     }
 
     private static WorklistDetailRow baseWorklist(Long id, WorklistStatus status) {
