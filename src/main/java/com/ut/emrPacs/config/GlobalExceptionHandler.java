@@ -27,6 +27,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
@@ -154,6 +155,13 @@ public class GlobalExceptionHandler {
         // This is normal when the viewer cancels in-flight frame prefetches; the response can no
         // longer be written, so there is nothing to return. Log at DEBUG to avoid flooding ERROR.
         LOGGER.debug("Client disconnected before the response completed: {}", exception.getMessage());
+    }
+
+    @ExceptionHandler(AsyncRequestTimeoutException.class)
+    public void handleAsyncRequestTimeout(AsyncRequestTimeoutException exception) {
+        // Long-lived SSE requests such as /notification/notification-stream naturally expire and
+        // reconnect. Treat that as connection lifecycle noise, not an application failure.
+        LOGGER.debug("Async request timed out before completion: {}", exception.getMessage());
     }
 
     @ExceptionHandler(Exception.class)

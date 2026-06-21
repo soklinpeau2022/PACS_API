@@ -17,6 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
@@ -144,6 +145,30 @@ class GlobalExceptionHandlerTest {
         RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
 
         handlerWithAudit.handleUnexpected(new RuntimeException("boom"));
+
+        verify(activityLogService, never()).insert(
+                any(String.class),
+                any(Long.class),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                eq(2),
+                any(String.class),
+                any(LocalTime.class),
+                any(LocalTime.class),
+                any(HttpServletRequest.class)
+        );
+    }
+
+    @Test
+    void shouldNotRecordNotificationStreamTimeoutAsGlobalError() throws Exception {
+        ActivityLogService activityLogService = mock(ActivityLogService.class);
+        GlobalExceptionHandler handlerWithAudit = new GlobalExceptionHandler(activityLogService);
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/pacsApi/notification/notification-stream");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        handlerWithAudit.handleAsyncRequestTimeout(new AsyncRequestTimeoutException());
 
         verify(activityLogService, never()).insert(
                 any(String.class),

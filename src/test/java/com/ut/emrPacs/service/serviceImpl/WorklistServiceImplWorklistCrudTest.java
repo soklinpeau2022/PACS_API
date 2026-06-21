@@ -227,6 +227,11 @@ class WorklistServiceImplWorklistCrudTest {
         grantedStudyQuery.addHeader("X-Original-Method", "GET");
         grantedStudyQuery.addHeader("X-PACS-DICOMWEB-TOKEN", "viewer-token");
 
+        MockHttpServletRequest grantedPluralStudyQuery = new MockHttpServletRequest("GET", "/pacsApi/worklist/viewer-dicom-web-proxy-authorize");
+        grantedPluralStudyQuery.addHeader("X-Original-URI", "/pacs-dicomweb/studies?StudyInstanceUIDs=1.2.840.113619.102201.1660");
+        grantedPluralStudyQuery.addHeader("X-Original-Method", "GET");
+        grantedPluralStudyQuery.addHeader("X-PACS-DICOMWEB-TOKEN", "viewer-token");
+
         MockHttpServletRequest deniedWideQuery = new MockHttpServletRequest("GET", "/pacsApi/worklist/viewer-dicom-web-proxy-authorize");
         deniedWideQuery.addHeader("X-Original-URI", "/pacs-dicomweb/studies");
         deniedWideQuery.addHeader("X-Original-Method", "GET");
@@ -237,15 +242,45 @@ class WorklistServiceImplWorklistCrudTest {
         deniedWrongStudy.addHeader("X-Original-Method", "GET");
         deniedWrongStudy.addHeader("X-PACS-DICOMWEB-TOKEN", "viewer-token");
 
+        MockHttpServletRequest deniedPluralMixedStudyQuery = new MockHttpServletRequest("GET", "/pacsApi/worklist/viewer-dicom-web-proxy-authorize");
+        deniedPluralMixedStudyQuery.addHeader("X-Original-URI", "/pacs-dicomweb/studies?StudyInstanceUIDs=1.2.840.113619.102201.1660,1.2.840.113619.102201.9999");
+        deniedPluralMixedStudyQuery.addHeader("X-Original-Method", "GET");
+        deniedPluralMixedStudyQuery.addHeader("X-PACS-DICOMWEB-TOKEN", "viewer-token");
+
         MockHttpServletRequest deniedQueryTokenOnly = new MockHttpServletRequest("GET", "/pacsApi/worklist/viewer-dicom-web-proxy-authorize");
         deniedQueryTokenOnly.addHeader("X-Original-URI", "/pacs-dicomweb/studies/1.2.840.113619.102201.1660/series?token=viewer-token");
         deniedQueryTokenOnly.addHeader("X-Original-Method", "GET");
 
         assertEquals(HttpStatus.NO_CONTENT.value(), WorklistService.authorizeViewerDicomWebProxy(granted).getStatusCode().value());
         assertEquals(HttpStatus.NO_CONTENT.value(), WorklistService.authorizeViewerDicomWebProxy(grantedStudyQuery).getStatusCode().value());
+        assertEquals(HttpStatus.NO_CONTENT.value(), WorklistService.authorizeViewerDicomWebProxy(grantedPluralStudyQuery).getStatusCode().value());
         assertEquals(HttpStatus.FORBIDDEN.value(), WorklistService.authorizeViewerDicomWebProxy(deniedWideQuery).getStatusCode().value());
         assertEquals(HttpStatus.FORBIDDEN.value(), WorklistService.authorizeViewerDicomWebProxy(deniedWrongStudy).getStatusCode().value());
+        assertEquals(HttpStatus.FORBIDDEN.value(), WorklistService.authorizeViewerDicomWebProxy(deniedPluralMixedStudyQuery).getStatusCode().value());
         assertEquals(HttpStatus.FORBIDDEN.value(), WorklistService.authorizeViewerDicomWebProxy(deniedQueryTokenOnly).getStatusCode().value());
+    }
+
+    @Test
+    void normalizeViewerDicomwebQueryShouldAcceptPluralStudyFilterFromOhif() {
+        String studyInstanceUid = "1.2.840.113619.102201.1660";
+
+        String pluralQuery = ReflectionTestUtils.invokeMethod(
+                WorklistService,
+                "normalizeViewerDicomwebQuery",
+                "/studies",
+                "StudyInstanceUIDs=1.2.840.113619.102201.1660&includefield=all",
+                studyInstanceUid
+        );
+        String appendedQuery = ReflectionTestUtils.invokeMethod(
+                WorklistService,
+                "normalizeViewerDicomwebQuery",
+                "/studies",
+                "includefield=all",
+                studyInstanceUid
+        );
+
+        assertEquals("StudyInstanceUIDs=1.2.840.113619.102201.1660&includefield=all", pluralQuery);
+        assertEquals("includefield=all&StudyInstanceUID=1.2.840.113619.102201.1660", appendedQuery);
     }
 
     @Test

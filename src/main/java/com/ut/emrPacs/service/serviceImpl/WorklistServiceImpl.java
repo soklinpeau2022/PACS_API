@@ -3203,10 +3203,10 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         for (String param : params) {
             String[] parts = param.split("=", 2);
             String name = decodePathSegment(parts[0]);
-            if (DicomTagConstants.STUDY_INSTANCE_UID.equals(name)) {
+            if (isStudyInstanceUidQueryName(name)) {
                 foundStudyParam = true;
                 String value = parts.length > 1 ? decodePathSegment(parts[1]) : "";
-                if (!studyInstanceUid.equals(value)) {
+                if (!studyQueryValueOnlyContainsBoundStudy(value, studyInstanceUid)) {
                     throw new SecurityException("Requested study query does not match the viewer token.");
                 }
             }
@@ -3262,26 +3262,44 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         if (!hasText(rawQuery) || !hasText(studyInstanceUid)) {
             return false;
         }
-        boolean sawStudyFilter = false;
+        boolean matchedStudyFilter = false;
         for (String param : rawQuery.split("&")) {
             if (!hasText(param)) {
                 continue;
             }
             String[] parts = param.split("=", 2);
             String name = decodePathSegment(parts[0]);
-            if (!DicomTagConstants.STUDY_INSTANCE_UID.equals(name) && !"StudyInstanceUIDs".equals(name)) {
+            if (!isStudyInstanceUidQueryName(name)) {
                 continue;
             }
-            sawStudyFilter = true;
             String value = parts.length > 1 ? decodePathSegment(parts[1]) : "";
-            if (studyInstanceUid.equals(value)) {
-                return true;
+            if (!studyQueryValueOnlyContainsBoundStudy(value, studyInstanceUid)) {
+                throw new SecurityException("Requested study query does not match the viewer token.");
+            }
+            matchedStudyFilter = true;
+        }
+        return matchedStudyFilter;
+    }
+
+    private static boolean isStudyInstanceUidQueryName(String name) {
+        return DicomTagConstants.STUDY_INSTANCE_UID.equals(name) || "StudyInstanceUIDs".equals(name);
+    }
+
+    private static boolean studyQueryValueOnlyContainsBoundStudy(String value, String studyInstanceUid) {
+        if (!hasText(value) || !hasText(studyInstanceUid)) {
+            return false;
+        }
+        boolean foundValue = false;
+        for (String token : value.split("[,\\\\]")) {
+            if (!hasText(token)) {
+                continue;
+            }
+            foundValue = true;
+            if (!studyInstanceUid.equals(token.trim())) {
+                return false;
             }
         }
-        if (sawStudyFilter) {
-            throw new SecurityException("Requested study query does not match the viewer token.");
-        }
-        return false;
+        return foundValue;
     }
 
     private static String decodePathSegment(String value) {

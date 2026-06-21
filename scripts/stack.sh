@@ -717,6 +717,7 @@ start_api_container() {
   local image_override="${5:-$image_name}"
   local key_path
   local image_path
+  local dicom_upload_mount
   local port_spec
 
   remove_container_if_exists "$name"
@@ -728,6 +729,27 @@ start_api_container() {
     chown -R 10001:10001 "$image_path" 2>/dev/null || true
   fi
   chmod -R u+rwX "$image_path" 2>/dev/null || true
+  if [[ "$TARGET" == "local" ]]; then
+    local compose_project upload_volume
+    compose_project="$(env_value_or_default API_COMPOSE_PROJECT_NAME udaya_pacs_api)"
+    upload_volume="${compose_project}_udaya_pacs_local_dicom_upload_temp"
+    docker volume create "$upload_volume" >/dev/null
+    docker run --rm --user 0 \
+      -v "${upload_volume}:/var/ut-dicom-upload-temp" \
+      --entrypoint sh \
+      "$image_override" \
+      -c "chown -R 10001:10001 /var/ut-dicom-upload-temp" >/dev/null
+    dicom_upload_mount="${upload_volume}:/var/ut-dicom-upload-temp"
+  else
+    local dicom_upload_temp_path
+    dicom_upload_temp_path="$(resolve_host_path "$(env_value PACS_DICOM_UPLOAD_TEMP_HOST_PATH)" "../runtime-dicom-upload-temp")"
+    mkdir -p "$dicom_upload_temp_path"
+    if command -v chown >/dev/null 2>&1; then
+      chown -R 10001:10001 "$dicom_upload_temp_path" 2>/dev/null || true
+    fi
+    chmod -R u+rwX "$dicom_upload_temp_path" 2>/dev/null || true
+    dicom_upload_mount="${dicom_upload_temp_path}:/var/ut-dicom-upload-temp"
+  fi
   ensure_docker_network "$redis_network_name"
   if [[ "$public_bind" == "true" ]]; then
     port_spec="${host_port}:8080"
@@ -757,6 +779,10 @@ start_api_container() {
     "SECURITY_JWT_PUBLIC_KEY=$(env_value SECURITY_JWT_PUBLIC_KEY)"
     "SECURITY_JWT_KEY_ID=$(env_value SECURITY_JWT_KEY_ID)"
     "HOSPITAL_IMAGE_ROOT_PATH=$(env_value HOSPITAL_IMAGE_ROOT_PATH)"
+    "PACS_DICOM_UPLOAD_TEMP_DIR=$(env_value_or_default PACS_DICOM_UPLOAD_TEMP_DIR /var/ut-dicom-upload-temp)"
+    "SPRING_SERVLET_MULTIPART_LOCATION=$(env_value_or_default SPRING_SERVLET_MULTIPART_LOCATION /var/ut-dicom-upload-temp)"
+    "PACS_DICOM_UPLOAD_INSTANCE_PARALLELISM=$(env_value_or_default PACS_DICOM_UPLOAD_INSTANCE_PARALLELISM 400)"
+    "PACS_DICOM_UPLOAD_IN_MEMORY_ENTRY_MAX_BYTES=$(env_value_or_default PACS_DICOM_UPLOAD_IN_MEMORY_ENTRY_MAX_BYTES 1048576)"
     "PACS_RESULT_STATIC_AUTH_ENABLED=$(env_value PACS_RESULT_STATIC_AUTH_ENABLED)"
     "PACS_RESULT_API_KEY=$(env_value PACS_RESULT_API_KEY)"
     "PACS_RESULT_UPLOAD_ROOT=$(env_value_or_default PACS_RESULT_UPLOAD_ROOT /var/ut-image)"
@@ -777,7 +803,7 @@ start_api_container() {
     "TZ=$(env_value TZ)"
   )
 
-  local args=(run -d --name "$name" -p "$port_spec" --restart "$restart_policy" --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --network "$redis_network_name" --tmpfs /tmp:size=64m,mode=1777 -v "${key_path}:/app/config/key:ro" -v "${image_path}:/var/ut-image")
+  local args=(run -d --name "$name" -p "$port_spec" --restart "$restart_policy" --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --network "$redis_network_name" --tmpfs /tmp:size=64m,mode=1777 -v "${key_path}:/app/config/key:ro" -v "${image_path}:/var/ut-image" -v "$dicom_upload_mount")
   local pair
   for pair in "${env_pairs[@]}"; do
     if [[ "$pair" != *= ]]; then

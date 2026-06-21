@@ -32,6 +32,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.authentication.TestingAuthenticationToken;
@@ -40,12 +43,14 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.ResourceAccessException;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -118,7 +123,8 @@ class DicomUploadServiceImplTest {
         ReflectionTestUtils.setField(service, "instanceUploadMaxAttempts", 3);
         ReflectionTestUtils.setField(service, "instanceUploadRetryBackoffMs", 0L);
         ReflectionTestUtils.setField(service, "instanceUploadParallelism", 2);
-        ReflectionTestUtils.setField(service, "dicomUploadTempDir", System.getProperty("java.io.tmpdir"));
+        ReflectionTestUtils.setField(service, "inMemoryZipEntryMaxBytes", 1024L * 1024L);
+        ReflectionTestUtils.setField(service, "dicomUploadTempDir", tempDir.toString());
 
         lenient().when(publicEntityKeyResolver.resolve(any(PublicEntityKeyResolver.Entity.class), any(), any()))
                 .thenAnswer(invocation -> invocation.getArgument(2));
@@ -143,7 +149,7 @@ class DicomUploadServiceImplTest {
         assertEquals(Integer.valueOf(400), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
 
         ReflectionTestUtils.setField(service, "instanceUploadParallelism", 0);
-        assertEquals(Integer.valueOf(200), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
+        assertEquals(Integer.valueOf(400), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
     }
 
     @Test
@@ -415,6 +421,103 @@ class DicomUploadServiceImplTest {
         assertEquals(100, percents.getLast());
         assertTrue(stages.contains("Forwarding DICOM instances"));
         assertTrue(stages.contains("Synchronizing study metadata"));
+    }
+
+    @Test
+    void completedUploadFreesCapacityWithoutWaitingForOldestRequest() throws Exception {
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        CountDownLatch firstUploadStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstUpload = new CountDownLatch(1);
+        CountDownLatch thirdUploadStarted = new CountDownLatch(1);
+        when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
+                .thenAnswer(invocation -> {
+                    Resource resource = invocation.getArgument(3);
+                    assertTrue(resource instanceof ByteArrayResource);
+                    int marker;
+                    try (InputStream inputStream = resource.getInputStream()) {
+                        marker = inputStream.read();
+                    }
+                    if (marker == 1) {
+                        firstUploadStarted.countDown();
+                        assertTrue(releaseFirstUpload.await(5, TimeUnit.SECONDS));
+                    } else if (marker == 2) {
+                        assertTrue(firstUploadStarted.await(5, TimeUnit.SECONDS));
+                    } else if (marker == 3) {
+                        thirdUploadStarted.countDown();
+                    }
+                    return uploadResponse();
+                });
+        stubSuccessfulStudyPersistence();
+
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("slow-first.dcm", new byte[] {1, 2, 3, 4});
+        entries.put("fast-second.dcm", new byte[] {2, 3, 4, 5});
+        entries.put("third.dcm", new byte[] {3, 4, 5, 6});
+        Path zipPath = tempDir.resolve("completion-order.zip");
+        Files.write(zipPath, zipBytes(entries));
+
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        CompletableFuture<ResponseMessage<BaseResult>> processing = CompletableFuture.supplyAsync(() -> {
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+            try {
+                return service.uploadDicomZipFile(
+                        null,
+                        null,
+                        zipPath,
+                        zipPath.toFile().length(),
+                        new MockHttpServletRequest(),
+                        DicomUploadProgressListener.NO_OP
+                );
+            } finally {
+                SecurityContextHolder.clearContext();
+            }
+        });
+
+        try {
+            assertTrue(firstUploadStarted.await(5, TimeUnit.SECONDS));
+            assertTrue(thirdUploadStarted.await(5, TimeUnit.SECONDS));
+        } finally {
+            releaseFirstUpload.countDown();
+        }
+
+        ResponseMessage<BaseResult> response = processing.get(10, TimeUnit.SECONDS);
+        assertTrue(response.isSuccess());
+        DicomUploadResponse body = (DicomUploadResponse) response.getBody().getData().get(0);
+        assertEquals(3, body.getAcceptedFiles());
+    }
+
+    @Test
+    void largeZipEntrySpillsToTempStorageAndIsDeletedAfterForwarding() throws Exception {
+        ReflectionTestUtils.setField(service, "inMemoryZipEntryMaxBytes", 64L * 1024L);
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        byte[] payload = new byte[70 * 1024];
+        payload[0] = 7;
+        Path[] uploadedPath = new Path[1];
+        when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq((long) payload.length)))
+                .thenAnswer(invocation -> {
+                    Resource resource = invocation.getArgument(3);
+                    assertTrue(resource instanceof FileSystemResource);
+                    uploadedPath[0] = resource.getFile().toPath();
+                    assertTrue(Files.exists(uploadedPath[0]));
+                    return uploadResponse();
+                });
+        stubSuccessfulStudyPersistence();
+
+        Path zipPath = tempDir.resolve("large-entry.zip");
+        Files.write(zipPath, zipBytes("large.dcm", payload));
+
+        ResponseMessage<BaseResult> response = service.uploadDicomZipFile(
+                null,
+                null,
+                zipPath,
+                Files.size(zipPath),
+                new MockHttpServletRequest(),
+                DicomUploadProgressListener.NO_OP
+        );
+
+        assertTrue(response.isSuccess());
+        assertNotNull(uploadedPath[0]);
+        assertFalse(Files.exists(uploadedPath[0]));
     }
 
     private void stubSuccessfulStudyPersistence() {

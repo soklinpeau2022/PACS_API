@@ -22,10 +22,30 @@ WHERE created_at IS NULL
    OR received_at IS NULL;
 
 -- Result status lifecycle: old rows used COMPLETED; new PACS result rows use
--- FINAL while study workflow remains IMAGE_RECEIVED/COMPLETED.
+-- FINAL while study workflow remains IMAGE_RECEIVED/COMPLETED. Drop the old
+-- narrow check before the data repair, otherwise QA rows cannot be updated to
+-- the new FINAL value.
+ALTER TABLE pacs_results
+    DROP CONSTRAINT IF EXISTS chk_pacs_results_status;
+
 UPDATE pacs_results
-SET status = 'FINAL'
-WHERE status = 'COMPLETED';
+SET status = CASE UPPER(BTRIM(status))
+    WHEN 'COMPLETED' THEN 'FINAL'
+    WHEN 'FINALIZED' THEN 'FINAL'
+    WHEN 'SIGNED' THEN 'FINAL'
+    WHEN 'PRELIM' THEN 'PRELIMINARY'
+    WHEN 'CANCELED' THEN 'CANCELLED'
+    ELSE UPPER(BTRIM(status))
+END
+WHERE status IS NOT NULL
+  AND status IS DISTINCT FROM CASE UPPER(BTRIM(status))
+      WHEN 'COMPLETED' THEN 'FINAL'
+      WHEN 'FINALIZED' THEN 'FINAL'
+      WHEN 'SIGNED' THEN 'FINAL'
+      WHEN 'PRELIM' THEN 'PRELIMINARY'
+      WHEN 'CANCELED' THEN 'CANCELLED'
+      ELSE UPPER(BTRIM(status))
+  END;
 
 -- Backfill denormalized image scope before making hospital_id mandatory.
 UPDATE pacs_result_images pi

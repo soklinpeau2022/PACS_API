@@ -14,6 +14,8 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -21,6 +23,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.test.web.client.ExpectedCount.once;
@@ -253,6 +256,48 @@ class DicomServerClientServiceImplWorklistCrudTest {
             assertEquals(basicAuth("dicom_server", "dicom_server"), authHeader.get());
             assertEquals("bytes", response.getHeaders().getFirst(HttpHeaders.ACCEPT_RANGES));
             assertArrayEquals(frame, outputStream.toByteArray());
+        } finally {
+            streamServer.stop(0);
+        }
+    }
+
+    @Test
+    void proxyDicomWebStreamShouldNotThrowWhenViewerCancelsLargeStream() throws Exception {
+        byte[] frame = "streamed-frame".getBytes(StandardCharsets.UTF_8);
+        HttpServer streamServer = HttpServer.create(new InetSocketAddress(0), 0);
+        streamServer.createContext("/dicom-web/studies/1/series/2/instances/3/frames/1", exchange -> {
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "multipart/related; type=\"application/octet-stream\"; boundary=abc");
+            exchange.sendResponseHeaders(200, frame.length);
+            try (var responseBody = exchange.getResponseBody()) {
+                responseBody.write(frame);
+            }
+        });
+        streamServer.start();
+
+        try {
+            int port = streamServer.getAddress().getPort();
+            var response = dicomServerClientService.proxyDicomWebStream(
+                    "http://localhost:" + port + "/dicom-web",
+                    null,
+                    null,
+                    "/studies/1/series/2/instances/3/frames/1",
+                    "multipart/related; type=\"application/octet-stream\"",
+                    null,
+                    "GET"
+            );
+
+            assertNotNull(response.getBody());
+            assertDoesNotThrow(() -> response.getBody().writeTo(new OutputStream() {
+                @Override
+                public void write(int b) throws IOException {
+                    throw new IOException("Broken pipe");
+                }
+
+                @Override
+                public void write(byte[] b, int off, int len) throws IOException {
+                    throw new IOException("Broken pipe");
+                }
+            }));
         } finally {
             streamServer.stop(0);
         }

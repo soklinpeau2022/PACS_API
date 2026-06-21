@@ -41,6 +41,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.dao.DataAccessException;
@@ -55,6 +56,7 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -67,14 +69,14 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletionService;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -94,8 +96,9 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private static final int STATUS_IMAGE_RECEIVED = 1;
     private static final int DEFAULT_INSTANCE_UPLOAD_MAX_ATTEMPTS = 3;
     private static final long DEFAULT_INSTANCE_UPLOAD_RETRY_BACKOFF_MS = 250L;
-    private static final int DEFAULT_INSTANCE_UPLOAD_PARALLELISM = 200;
+    private static final int DEFAULT_INSTANCE_UPLOAD_PARALLELISM = 400;
     private static final int MAX_INSTANCE_UPLOAD_PARALLELISM = 400;
+    private static final long DEFAULT_IN_MEMORY_ZIP_ENTRY_MAX_BYTES = 1024L * 1024L;
     private static final Set<String> KNOWN_NON_DICOM_EXTENSIONS = Set.of(
             "bmp", "csv", "db", "doc", "docx", "gif", "htm", "html", "ini", "jpeg", "jpg",
             "json", "log", "pdf", "png", "rtf", "text", "tif", "tiff", "txt", "xls", "xlsx", "xml"
@@ -147,8 +150,11 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     @Value("${pacs.dicom-upload.instance-retry-backoff-ms:250}")
     private long instanceUploadRetryBackoffMs;
 
-    @Value("${pacs.dicom-upload.instance-parallelism:200}")
+    @Value("${pacs.dicom-upload.instance-parallelism:400}")
     private int instanceUploadParallelism;
+
+    @Value("${pacs.dicom-upload.in-memory-entry-max-bytes:1048576}")
+    private long inMemoryZipEntryMaxBytes;
 
     @Override
     public ResponseMessage<BaseResult> uploadDicom(
@@ -432,12 +438,15 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         int maxEntries = configuredMaxZipEntries();
         int parallelism = configuredInstanceUploadParallelism();
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-        Deque<PendingInstanceUpload> pendingUploads = new ArrayDeque<>();
+        CompletionService<DicomServerInstanceUploadResponse> completionService =
+                new ExecutorCompletionService<>(executor);
+        Map<Future<DicomServerInstanceUploadResponse>, PendingInstanceUpload> pendingUploads =
+                new LinkedHashMap<>();
         try (ZipInputStream zipInputStream = new ZipInputStream(zipStream)) {
             ZipEntry entry;
             while ((entry = zipInputStream.getNextEntry()) != null) {
                 String entryName = entry.getName();
-                Path tempEntryPath = null;
+                PreparedZipEntry preparedEntry = null;
                 boolean countedEntry = false;
                 try {
                     if (entry.isDirectory()) {
@@ -459,8 +468,8 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                         reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
                         continue;
                     }
-                    tempEntryPath = writeBoundedZipEntryToTempFile(zipInputStream, maxEntryBytes, httpServletRequest, entryName);
-                    long entryBytes = Files.size(tempEntryPath);
+                    preparedEntry = prepareZipEntry(zipInputStream, maxEntryBytes, httpServletRequest, entryName);
+                    long entryBytes = preparedEntry.size();
                     if (entryBytes == 0) {
                         processedEntries++;
                         reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
@@ -470,16 +479,16 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                         reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "entry_too_large", entryName + " " + entryBytes + "/" + maxEntryBytes);
                         throw new DicomUploadSecurityException("ZIP entry is too large.");
                     }
-                    Path submittedPath = tempEntryPath;
-                    Future<DicomServerInstanceUploadResponse> future = executor.submit(() -> uploadInstanceWithRetry(
-                            new FileSystemResource(submittedPath),
+                    PreparedZipEntry submittedEntry = preparedEntry;
+                    Future<DicomServerInstanceUploadResponse> future = completionService.submit(() -> uploadInstanceWithRetry(
+                            submittedEntry.resource(),
                             entryBytes,
                             context
                     ));
-                    pendingUploads.addLast(new PendingInstanceUpload(entryName, submittedPath, future));
-                    tempEntryPath = null;
+                    pendingUploads.put(future, new PendingInstanceUpload(entryName, submittedEntry.tempPath(), future));
+                    preparedEntry = null;
                     if (pendingUploads.size() >= parallelism) {
-                        completePendingInstanceUpload(pendingUploads.removeFirst(), context);
+                        completeNextPendingInstanceUpload(completionService, pendingUploads, context);
                         processedEntries++;
                         reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
                     }
@@ -502,23 +511,43 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                         reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
                     }
                 } finally {
-                    deleteTempFile(tempEntryPath);
+                    deleteTempFile(preparedEntry == null ? null : preparedEntry.tempPath());
                     zipInputStream.closeEntry();
                 }
             }
             while (!pendingUploads.isEmpty()) {
-                completePendingInstanceUpload(pendingUploads.removeFirst(), context);
+                completeNextPendingInstanceUpload(completionService, pendingUploads, context);
                 processedEntries++;
                 reportForwardingProgress(progressListener, processedEntries, totalEntries, entries);
             }
             reportProgress(progressListener, 90, processedEntries, Math.max(totalEntries, entries), "DICOM forwarding complete");
         } finally {
-            pendingUploads.forEach(pending -> {
+            pendingUploads.values().forEach(pending -> {
                 pending.future().cancel(true);
                 deleteTempFile(pending.path());
             });
             executor.shutdownNow();
         }
+    }
+
+    private void completeNextPendingInstanceUpload(
+            CompletionService<DicomServerInstanceUploadResponse> completionService,
+            Map<Future<DicomServerInstanceUploadResponse>, PendingInstanceUpload> pendingUploads,
+            UploadContext context
+    ) throws IOException {
+        Future<DicomServerInstanceUploadResponse> completedFuture;
+        try {
+            completedFuture = completionService.take();
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IOException("DICOM server processing was interrupted.", error);
+        }
+        PendingInstanceUpload pending = pendingUploads.remove(completedFuture);
+        if (pending == null) {
+            completedFuture.cancel(true);
+            throw new IOException("DICOM upload completion could not be matched to its source file.");
+        }
+        completePendingInstanceUpload(pending, context);
     }
 
     private void completePendingInstanceUpload(PendingInstanceUpload pending, UploadContext context) throws IOException {
@@ -546,31 +575,58 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         }
     }
 
-    private Path writeBoundedZipEntryToTempFile(
+    private PreparedZipEntry prepareZipEntry(
             ZipInputStream zipInputStream,
             long maxEntryBytes,
             HttpServletRequest httpServletRequest,
             String entryName
     ) throws IOException {
-        Path tempDirectory = resolveDicomUploadTempDirectory();
-        Path tempFile = Files.createTempFile(tempDirectory, "dicom-zip-entry-", ".dcm");
+        long memoryLimit = configuredInMemoryZipEntryMaxBytes();
+        int initialCapacity = (int) Math.min(memoryLimit, ZIP_READ_BUFFER_BYTES);
+        ByteArrayOutputStream memoryOutput = new ByteArrayOutputStream(Math.max(initialCapacity, 1024));
+        BufferedOutputStream fileOutput = null;
+        Path tempFile = null;
         byte[] buffer = new byte[ZIP_READ_BUFFER_BYTES];
         long total = 0;
         int read;
-        try (OutputStream outputStream = new BufferedOutputStream(Files.newOutputStream(tempFile), ZIP_READ_BUFFER_BYTES)) {
+        try {
             while ((read = zipInputStream.read(buffer)) != -1) {
                 total += read;
                 if (total > maxEntryBytes) {
                     reportSecurityIncident(httpServletRequest, "dicom_upload_zip", "entry_too_large", entryName + " " + total + "/" + maxEntryBytes);
                     throw new DicomUploadSecurityException("ZIP entry is too large.");
                 }
-                outputStream.write(buffer, 0, read);
+                if (tempFile == null && total > memoryLimit) {
+                    Path tempDirectory = resolveDicomUploadTempDirectory();
+                    tempFile = Files.createTempFile(tempDirectory, "dicom-zip-entry-", ".dcm");
+                    fileOutput = new BufferedOutputStream(Files.newOutputStream(tempFile), ZIP_READ_BUFFER_BYTES);
+                    memoryOutput.writeTo(fileOutput);
+                    memoryOutput = null;
+                }
+                if (fileOutput != null) {
+                    fileOutput.write(buffer, 0, read);
+                } else {
+                    memoryOutput.write(buffer, 0, read);
+                }
             }
+            if (fileOutput != null) {
+                fileOutput.close();
+                fileOutput = null;
+                return new PreparedZipEntry(new FileSystemResource(tempFile), tempFile, total);
+            }
+            return new PreparedZipEntry(new ByteArrayResource(memoryOutput.toByteArray()), null, total);
         } catch (Exception error) {
             deleteTempFile(tempFile);
             throw error;
+        } finally {
+            if (fileOutput != null) {
+                try {
+                    fileOutput.close();
+                } catch (IOException closeError) {
+                    deleteTempFile(tempFile);
+                }
+            }
         }
-        return tempFile;
     }
 
     private void reportSecurityIncident(HttpServletRequest request, String event, String reason, String detail) {
@@ -663,6 +719,13 @@ public class DicomUploadServiceImpl implements DicomUploadService {
                 ? instanceUploadParallelism
                 : DEFAULT_INSTANCE_UPLOAD_PARALLELISM;
         return Math.max(1, Math.min(MAX_INSTANCE_UPLOAD_PARALLELISM, configured));
+    }
+
+    private long configuredInMemoryZipEntryMaxBytes() {
+        long configured = inMemoryZipEntryMaxBytes > 0
+                ? inMemoryZipEntryMaxBytes
+                : DEFAULT_IN_MEMORY_ZIP_ENTRY_MAX_BYTES;
+        return Math.max(1L, Math.min(configuredMaxZipEntryBytes(), configured));
     }
 
     private static int countZipFileEntries(Path zipPath) throws IOException {
@@ -1372,6 +1435,9 @@ public class DicomUploadServiceImpl implements DicomUploadService {
             Path path,
             Future<DicomServerInstanceUploadResponse> future
     ) {
+    }
+
+    private record PreparedZipEntry(Resource resource, Path tempPath, long size) {
     }
 
     private record DicomServerResolution(HospitalDicomServerResponse server, String errorMessage) {

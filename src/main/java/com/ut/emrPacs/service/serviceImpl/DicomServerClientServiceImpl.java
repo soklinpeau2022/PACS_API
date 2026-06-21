@@ -19,6 +19,8 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
@@ -28,6 +30,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -44,6 +47,8 @@ import java.util.concurrent.Flow;
 @Service
 public class DicomServerClientServiceImpl implements DicomServerClientService {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(DicomServerClientServiceImpl.class);
+
     private final RestTemplate restTemplate;
     private final HttpClient uploadHttpClient;
     private final ObjectMapper objectMapper;
@@ -55,6 +60,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     // few times with a short backoff so a single hiccup does not surface to the viewer as a 502.
     private static final int DICOMWEB_PROXY_MAX_ATTEMPTS = 3;
     private static final long DICOMWEB_PROXY_RETRY_BACKOFF_MS = 200L;
+    private static final int DICOMWEB_STREAM_BUFFER_BYTES = 1024 * 1024;
     private static final int UPLOAD_ERROR_BODY_MAX_CHARS = 400;
 
     DicomServerClientServiceImpl(RestTemplate restTemplate) {
@@ -340,12 +346,44 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         StreamingResponseBody body = outputStream -> {
             try (InputStream inputStream = upstream.body()) {
                 if (!HttpMethod.HEAD.matches(resolvedMethod)) {
-                    inputStream.transferTo(outputStream);
-                    outputStream.flush();
+                    copyDicomWebStream(inputStream, outputStream);
+                }
+            } catch (IOException | IllegalStateException error) {
+                // The OHIF viewer may cancel/restart large frame or metadata requests while
+                // building 3D context. After streaming starts, throwing here makes Spring try
+                // to render an error response on an already-active async response, which can
+                // surface as Tomcat header NPEs. Let the client retry the interrupted request.
+                if (isExpectedStreamStop(error)) {
+                    LOGGER.debug("DICOMweb stream stopped by client/viewer: {}", error.toString());
+                } else {
+                    LOGGER.warn("DICOMweb stream stopped before completion: {}", error.toString());
                 }
             }
         };
         return new ResponseEntity<>(body, responseHeaders, HttpStatusCode.valueOf(upstream.statusCode()));
+    }
+
+    private static void copyDicomWebStream(InputStream inputStream, OutputStream outputStream) throws IOException {
+        byte[] buffer = new byte[DICOMWEB_STREAM_BUFFER_BYTES];
+        int bytesRead;
+        while ((bytesRead = inputStream.read(buffer)) != -1) {
+            outputStream.write(buffer, 0, bytesRead);
+        }
+        outputStream.flush();
+    }
+
+    private static boolean isExpectedStreamStop(Throwable error) {
+        if (error == null) {
+            return true;
+        }
+        String message = error.getMessage() == null ? "" : error.getMessage().toLowerCase(java.util.Locale.ROOT);
+        String type = error.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+        return message.contains("broken pipe")
+                || message.contains("connection reset")
+                || message.contains("forcibly closed")
+                || message.contains("stream is closed")
+                || message.contains("clientabort")
+                || type.contains("clientabort");
     }
 
     private ResponseEntity<byte[]> exchangeDicomWebWithRetry(String url, HttpEntity<?> entity) {

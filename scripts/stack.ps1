@@ -574,17 +574,31 @@ function Start-ApiContainer {
 
     $keyPath = Resolve-HostPath -PathValue (Get-EnvValue -FilePath $envFile -Key "KEY_PATH") -DefaultValue "./src/main/resources/key"
     $imagePath = Resolve-HostPath -PathValue (Get-EnvValue -FilePath $envFile -Key "HOSPITAL_IMAGE_HOST_PATH") -DefaultValue "./runtime-image"
-    $dicomUploadTempPath = Resolve-HostPath -PathValue (Get-EnvValue -FilePath $envFile -Key "PACS_DICOM_UPLOAD_TEMP_HOST_PATH") -DefaultValue "../runtime-dicom-upload-temp"
-    Assert-DicomUploadTempPath -PathValue $dicomUploadTempPath
+    $resolvedImage = if ([string]::IsNullOrWhiteSpace($ImageOverride)) { $imageName } else { $ImageOverride }
+    $dicomUploadMount = ""
+    if ($Target -eq "local") {
+        $composeProject = Get-EnvValueOrDefault -FilePath $envFile -Key "API_COMPOSE_PROJECT_NAME" -DefaultValue "udaya_pacs_api"
+        $dicomUploadVolume = "${composeProject}_udaya_pacs_local_dicom_upload_temp"
+        docker volume create $dicomUploadVolume | Out-Null
+        & docker run --rm --user 0 -v "${dicomUploadVolume}:/var/ut-dicom-upload-temp" --entrypoint sh $resolvedImage -c "chown -R 10001:10001 /var/ut-dicom-upload-temp" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Unable to initialize local DICOM upload volume $dicomUploadVolume." }
+        $dicomUploadMount = "${dicomUploadVolume}:/var/ut-dicom-upload-temp"
+    } else {
+        $dicomUploadTempPath = Resolve-HostPath -PathValue (Get-EnvValue -FilePath $envFile -Key "PACS_DICOM_UPLOAD_TEMP_HOST_PATH") -DefaultValue "../runtime-dicom-upload-temp"
+        Assert-DicomUploadTempPath -PathValue $dicomUploadTempPath
+        if (-not (Test-Path $dicomUploadTempPath)) {
+            New-Item -ItemType Directory -Path $dicomUploadTempPath | Out-Null
+        }
+        if (Get-Command chown -ErrorAction SilentlyContinue) {
+            try { & chown -R "10001:10001" $dicomUploadTempPath | Out-Null } catch {}
+        }
+        $dicomUploadMount = "${dicomUploadTempPath}:/var/ut-dicom-upload-temp"
+    }
     if (-not (Test-Path $imagePath)) {
         New-Item -ItemType Directory -Path $imagePath | Out-Null
     }
-    if (-not (Test-Path $dicomUploadTempPath)) {
-        New-Item -ItemType Directory -Path $dicomUploadTempPath | Out-Null
-    }
     if (Get-Command chown -ErrorAction SilentlyContinue) {
         try { & chown -R "10001:10001" $imagePath | Out-Null } catch {}
-        try { & chown -R "10001:10001" $dicomUploadTempPath | Out-Null } catch {}
     }
     Ensure-DockerNetwork -Name $redisNetworkName
 
@@ -612,8 +626,10 @@ function Start-ApiContainer {
         "SECURITY_JWT_PUBLIC_KEY=$(Get-EnvValue -FilePath $envFile -Key 'SECURITY_JWT_PUBLIC_KEY')",
         "SECURITY_JWT_KEY_ID=$(Get-EnvValue -FilePath $envFile -Key 'SECURITY_JWT_KEY_ID')",
         "HOSPITAL_IMAGE_ROOT_PATH=$(Get-EnvValue -FilePath $envFile -Key 'HOSPITAL_IMAGE_ROOT_PATH')",
-        "PACS_DICOM_UPLOAD_TEMP_DIR=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_UPLOAD_TEMP_DIR' -DefaultValue '/var/ut-image/tmp/dicom-upload')",
-        "SPRING_SERVLET_MULTIPART_LOCATION=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'SPRING_SERVLET_MULTIPART_LOCATION' -DefaultValue '/var/ut-image')",
+        "PACS_DICOM_UPLOAD_TEMP_DIR=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_UPLOAD_TEMP_DIR' -DefaultValue '/var/ut-dicom-upload-temp')",
+        "SPRING_SERVLET_MULTIPART_LOCATION=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'SPRING_SERVLET_MULTIPART_LOCATION' -DefaultValue '/var/ut-dicom-upload-temp')",
+        "PACS_DICOM_UPLOAD_INSTANCE_PARALLELISM=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_UPLOAD_INSTANCE_PARALLELISM' -DefaultValue '400')",
+        "PACS_DICOM_UPLOAD_IN_MEMORY_ENTRY_MAX_BYTES=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_UPLOAD_IN_MEMORY_ENTRY_MAX_BYTES' -DefaultValue '1048576')",
         "APP_SECURITY_DICOM_UPLOAD_MAX_REQUEST_BYTES=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'APP_SECURITY_DICOM_UPLOAD_MAX_REQUEST_BYTES' -DefaultValue '4294967296')",
         "APP_SECURITY_DICOM_UPLOAD_MAX_TRANSPORT_REQUEST_BYTES=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'APP_SECURITY_DICOM_UPLOAD_MAX_TRANSPORT_REQUEST_BYTES' -DefaultValue '4362076160')",
         "SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE' -DefaultValue '4GB')",
@@ -649,7 +665,7 @@ function Start-ApiContainer {
         "--tmpfs", "/tmp:size=64m,mode=1777",
         "-v", "${keyPath}:/app/config/key:ro",
         "-v", "${imagePath}:/var/ut-image",
-        "-v", "${dicomUploadTempPath}:/var/ut-dicom-upload-temp"
+        "-v", $dicomUploadMount
     )
     foreach ($pair in $envPairs) {
         $idx = $pair.IndexOf("=")
@@ -657,7 +673,7 @@ function Start-ApiContainer {
             $args += @("-e", $pair)
         }
     }
-    $args += $(if ([string]::IsNullOrWhiteSpace($ImageOverride)) { $imageName } else { $ImageOverride })
+    $args += $resolvedImage
     & docker @args | Out-Null
 }
 
