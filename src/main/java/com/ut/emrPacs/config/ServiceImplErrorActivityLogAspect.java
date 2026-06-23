@@ -34,7 +34,7 @@ public class ServiceImplErrorActivityLogAspect {
             return joinPoint.proceed();
         } catch (Throwable error) {
             LocalTime endDuration = LocalTime.now();
-            if (!isExpectedDicomUploadRejection(error)
+            if (!isExpectedHandledClientException(joinPoint, error)
                     && !ErrorReportingAttributes.isErrorActivityLogged(resolveHttpRequest())) {
                 safeInsertActivityLog(joinPoint, error, "Exception", startDuration, endDuration);
             }
@@ -42,11 +42,24 @@ public class ServiceImplErrorActivityLogAspect {
         }
     }
 
-    private static boolean isExpectedDicomUploadRejection(Throwable error) {
-        if (!(error instanceof IllegalStateException) || error.getMessage() == null) {
+    private static boolean isExpectedHandledClientException(ProceedingJoinPoint joinPoint, Throwable error) {
+        return isDicomServerClientCall(joinPoint) || isExpectedDicomUploadRejection(error);
+    }
+
+    private static boolean isDicomServerClientCall(ProceedingJoinPoint joinPoint) {
+        if (!(joinPoint.getSignature() instanceof MethodSignature signature) || signature.getDeclaringType() == null) {
             return false;
         }
-        return error.getMessage().startsWith("DICOM server upload failed with HTTP 400");
+        return "com.ut.emrPacs.service.serviceImpl.DicomServerClientServiceImpl"
+                .equals(signature.getDeclaringType().getName());
+    }
+
+    private static boolean isExpectedDicomUploadRejection(Throwable error) {
+        String message = error == null ? null : error.getMessage();
+        if (!(error instanceof IllegalStateException) || message == null) {
+            return false;
+        }
+        return message.startsWith("DICOM server upload failed with HTTP 400");
     }
 
     private void safeInsertActivityLog(

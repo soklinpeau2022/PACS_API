@@ -26,6 +26,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -69,6 +70,7 @@ class DicomChunkUploadServiceImplTest {
 
     @AfterEach
     void tearDown() {
+        service.shutdownProcessingExecutor();
         SecurityContextHolder.clearContext();
     }
 
@@ -97,7 +99,7 @@ class DicomChunkUploadServiceImplTest {
         ResponseMessage<BaseResult> response = service.complete(uploadId, new MockHttpServletRequest());
 
         assertTrue(response.isSuccess());
-        DicomChunkUploadProgressResponse status = status(uploadId);
+        DicomChunkUploadProgressResponse status = awaitTerminalStatus(uploadId);
         assertEquals("COMPLETED", status.getState());
         assertEquals(100, status.getProcessingPercent());
         assertTrue(Boolean.TRUE.equals(status.getSuccessful()));
@@ -149,6 +151,7 @@ class DicomChunkUploadServiceImplTest {
         completeThread.join(5000);
         assertNotNull(completion.get());
         assertTrue(completion.get().isSuccess());
+        assertEquals("COMPLETED", awaitTerminalStatus(uploadId).getState());
     }
 
     @Test
@@ -200,6 +203,7 @@ class DicomChunkUploadServiceImplTest {
         completeThread.join(5000);
         assertNotNull(completion.get());
         assertTrue(completion.get().isSuccess());
+        assertEquals("COMPLETED", awaitTerminalStatus(uploadId).getState());
     }
 
     @Test
@@ -215,6 +219,20 @@ class DicomChunkUploadServiceImplTest {
         );
 
         assertFalse(response.isSuccess());
+    }
+
+    @Test
+    void cleanupShouldDeleteRestartOrphanedChunkFileAfterTtl() throws Exception {
+        ReflectionTestUtils.setField(service, "sessionTtlMinutes", 1L);
+        Path chunksDir = tempDir.resolve("chunks");
+        Files.createDirectories(chunksDir);
+        Path orphan = chunksDir.resolve("restart-orphan.part");
+        Files.writeString(orphan, "orphan");
+        Files.setLastModifiedTime(orphan, FileTime.from(Instant.now().minus(Duration.ofMinutes(2))));
+
+        service.cleanupStaleSessions();
+
+        assertFalse(Files.exists(orphan));
     }
 
     private DicomChunkUploadInitResponse initUpload(long totalSize, long chunkSize, int totalChunks) {
@@ -234,6 +252,19 @@ class DicomChunkUploadServiceImplTest {
         ResponseMessage<BaseResult> response = service.status(uploadId, new MockHttpServletRequest());
         assertTrue(response.isSuccess());
         return (DicomChunkUploadProgressResponse) response.getBody().getData().get(0);
+    }
+
+    private DicomChunkUploadProgressResponse awaitTerminalStatus(String uploadId) throws InterruptedException {
+        DicomChunkUploadProgressResponse current = status(uploadId);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!"COMPLETED".equals(current.getState()) && !"FAILED".equals(current.getState())) {
+            if (System.nanoTime() >= deadline) {
+                return current;
+            }
+            Thread.sleep(10L);
+            current = status(uploadId);
+        }
+        return current;
     }
 
     private static MockMultipartFile chunk(String name, String value) {

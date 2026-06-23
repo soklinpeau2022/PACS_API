@@ -47,6 +47,9 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
     private static final int DEFAULT_POLL_INTERVAL_SECONDS = 5;
     private static final int MIN_POLL_INTERVAL_SECONDS = 5;
     private static final int MAX_POLL_INTERVAL_SECONDS = 300;
+    private static final int DEFAULT_OFFLINE_FAILURE_THRESHOLD = 3;
+    private static final int MAX_OFFLINE_FAILURE_THRESHOLD = 20;
+    private static final long DEFAULT_OFFLINE_GRACE_MS = 180_000L;
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault());
 
     private final DicomServerMapper dicomServerMapper;
@@ -57,8 +60,14 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
     private volatile Instant settingsCacheUntil = Instant.EPOCH;
     private volatile Instant nextProbeAt = Instant.EPOCH;
 
-    @Value("${dicom.server.health.timeout-ms:1500}")
+    @Value("${dicom.server.health.timeout-ms:5000}")
     private long timeoutMs;
+
+    @Value("${dicom.server.health.offline-failure-threshold:3}")
+    private int offlineFailureThreshold;
+
+    @Value("${dicom.server.health.offline-grace-ms:180000}")
+    private long offlineGraceMs;
 
     public DicomServerHealthServiceImpl(DicomServerMapper dicomServerMapper, JdbcTemplate jdbcTemplate) {
         this.dicomServerMapper = dicomServerMapper;
@@ -218,21 +227,47 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
             HealthSnapshot previous,
             Long responseTimeMs
     ) {
-        Instant lastOnlineAt = online
-                ? checkedAt
-                : previous == null ? null : previous.lastOnlineAt();
-        Instant offlineSince = online
-                ? null
-                : previous != null && !previous.online() && previous.offlineSince() != null
-                        ? previous.offlineSince()
-                        : checkedAt;
+        if (online) {
+            return new HealthSnapshot(
+                    STATUS_ONLINE,
+                    true,
+                    checkedAt,
+                    checkedAt,
+                    null,
+                    responseTimeMs,
+                    0
+            );
+        }
+
+        int consecutiveFailures = previous == null ? 1 : previous.consecutiveFailures() + 1;
+        Instant lastOnlineAt = previous == null ? null : previous.lastOnlineAt();
+        boolean hadKnownOnlineState = lastOnlineAt != null;
+        boolean belowFailureThreshold = consecutiveFailures < normalizeOfflineFailureThreshold(offlineFailureThreshold);
+        boolean insideGraceWindow = hadKnownOnlineState
+                && !checkedAt.isAfter(lastOnlineAt.plusMillis(normalizeOfflineGraceMs(offlineGraceMs)));
+        if (belowFailureThreshold || insideGraceWindow) {
+            return new HealthSnapshot(
+                    hadKnownOnlineState ? STATUS_ONLINE : STATUS_UNKNOWN,
+                    hadKnownOnlineState,
+                    checkedAt,
+                    lastOnlineAt,
+                    null,
+                    responseTimeMs,
+                    consecutiveFailures
+            );
+        }
+
+        Instant offlineSince = previous != null && STATUS_OFFLINE.equals(previous.status()) && previous.offlineSince() != null
+                ? previous.offlineSince()
+                : checkedAt;
         return new HealthSnapshot(
-                online ? STATUS_ONLINE : STATUS_OFFLINE,
-                online,
+                STATUS_OFFLINE,
+                false,
                 checkedAt,
                 lastOnlineAt,
                 offlineSince,
-                responseTimeMs
+                responseTimeMs,
+                consecutiveFailures
         );
     }
 
@@ -359,6 +394,19 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
         return Math.min(normalized, MAX_POLL_INTERVAL_SECONDS);
     }
 
+    private static int normalizeOfflineFailureThreshold(Integer value) {
+        int normalized = value == null ? DEFAULT_OFFLINE_FAILURE_THRESHOLD : value;
+        if (normalized < 1) {
+            return 1;
+        }
+        return Math.min(normalized, MAX_OFFLINE_FAILURE_THRESHOLD);
+    }
+
+    private static long normalizeOfflineGraceMs(Long value) {
+        long normalized = value == null ? DEFAULT_OFFLINE_GRACE_MS : value;
+        return Math.max(0L, normalized);
+    }
+
     private static boolean isReachableStatus(int statusCode) {
         return (statusCode >= 200 && statusCode < 400) || statusCode == 401 || statusCode == 403;
     }
@@ -420,7 +468,8 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
             Instant checkedAt,
             Instant lastOnlineAt,
             Instant offlineSince,
-            Long responseTimeMs
+            Long responseTimeMs,
+            int consecutiveFailures
     ) {
     }
 

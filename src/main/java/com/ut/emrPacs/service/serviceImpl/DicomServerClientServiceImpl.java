@@ -33,15 +33,19 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Flow;
 
 @Service
@@ -53,6 +57,9 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     private final HttpClient uploadHttpClient;
     private final ObjectMapper objectMapper;
     private final Duration uploadTimeout;
+    private final boolean loopbackRewriteEnabled;
+    private final boolean runningInContainer;
+    private final String loopbackHostOverride;
 
     // DICOMweb frame/pixel retrieval is idempotent (GET/HEAD). The archive can transiently
     // fail or reset connections when it is momentarily saturated (e.g. its HTTP worker threads
@@ -62,29 +69,42 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     private static final long DICOMWEB_PROXY_RETRY_BACKOFF_MS = 200L;
     private static final int DICOMWEB_STREAM_BUFFER_BYTES = 1024 * 1024;
     private static final int UPLOAD_ERROR_BODY_MAX_CHARS = 400;
+    private static final String DEFAULT_LOOPBACK_HOST_OVERRIDE = "host.docker.internal";
 
     DicomServerClientServiceImpl(RestTemplate restTemplate) {
-        this(restTemplate, new ObjectMapper(), 10000, 7200000);
+        this(restTemplate, new ObjectMapper(), 10000, 7200000, true, DEFAULT_LOOPBACK_HOST_OVERRIDE, isRunningInContainer());
+    }
+
+    DicomServerClientServiceImpl(RestTemplate restTemplate, boolean runningInContainer) {
+        this(restTemplate, new ObjectMapper(), 10000, 7200000, true, DEFAULT_LOOPBACK_HOST_OVERRIDE, runningInContainer);
     }
 
     @Autowired
     public DicomServerClientServiceImpl(
             RestTemplate restTemplate,
             @Value("${pacs.dicom-server.client.connect-timeout-ms:10000}") int connectTimeoutMs,
-            @Value("${pacs.dicom-server.client.read-timeout-ms:7200000}") int readTimeoutMs
+            @Value("${pacs.dicom-server.client.read-timeout-ms:7200000}") int readTimeoutMs,
+            @Value("${pacs.dicom-server.client.rewrite-loopback-in-container:true}") boolean loopbackRewriteEnabled,
+            @Value("${pacs.dicom-server.client.loopback-host-override:host.docker.internal}") String loopbackHostOverride
     ) {
-        this(restTemplate, new ObjectMapper(), connectTimeoutMs, readTimeoutMs);
+        this(restTemplate, new ObjectMapper(), connectTimeoutMs, readTimeoutMs, loopbackRewriteEnabled, loopbackHostOverride, isRunningInContainer());
     }
 
     private DicomServerClientServiceImpl(
             RestTemplate restTemplate,
             ObjectMapper objectMapper,
             int connectTimeoutMs,
-            int readTimeoutMs
+            int readTimeoutMs,
+            boolean loopbackRewriteEnabled,
+            String loopbackHostOverride,
+            boolean runningInContainer
     ) {
         this.restTemplate = restTemplate;
         this.objectMapper = objectMapper;
         this.uploadTimeout = Duration.ofMillis(Math.max(1000, readTimeoutMs));
+        this.loopbackRewriteEnabled = loopbackRewriteEnabled;
+        this.runningInContainer = runningInContainer;
+        this.loopbackHostOverride = firstNonBlank(loopbackHostOverride, DEFAULT_LOOPBACK_HOST_OVERRIDE);
         this.uploadHttpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(Math.max(1000, connectTimeoutMs)))
                 .build();
@@ -99,7 +119,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     public DicomServerWorklistCreateResponse postToDicomServerWorklist(String worklistUrl, String username, String password, DicomServerWorklistCreateRequest request) {
         HttpEntity<DicomServerWorklistCreateRequest> entity = new HttpEntity<>(request, buildHeaders(username, password));
         ResponseEntity<DicomServerWorklistCreateResponse> response = restTemplate.postForEntity(
-                worklistUrl,
+                normalizeWorklistCreateUrl(worklistUrl),
                 entity,
                 DicomServerWorklistCreateResponse.class
         );
@@ -108,7 +128,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
 
     @Override
     public DicomServerInstanceUploadResponse uploadInstance(String baseUrl, String username, String password, Resource dicomResource, long contentLength) {
-        String url = normalizeDicomServerBaseUrl(baseUrl) + "/instances";
+        String url = normalizeDicomServerRestBaseUrl(baseUrl) + "/instances";
         HttpRequest.BodyPublisher bodyPublisher = HttpRequest.BodyPublishers.ofInputStream(() -> {
             try {
                 return dicomResource.getInputStream();
@@ -145,6 +165,30 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
             return objectMapper.readValue(response.body(), DicomServerInstanceUploadResponse.class);
         } catch (IOException error) {
             throw new IllegalStateException("DICOM server upload response was not readable.", error);
+        }
+    }
+
+    @Override
+    public void deleteInstanceById(
+            String baseUrl,
+            String username,
+            String password,
+            String instanceId
+    ) {
+        String normalizedInstanceId = instanceId == null ? "" : instanceId.trim();
+        if (normalizedInstanceId.isEmpty()) {
+            throw new IllegalArgumentException("DICOM server instance ID is required.");
+        }
+        String url = normalizeDicomServerRestBaseUrl(baseUrl) + "/instances/" + normalizedInstanceId;
+        try {
+            restTemplate.exchange(
+                    url,
+                    HttpMethod.DELETE,
+                    new HttpEntity<>(buildHeaders(username, password)),
+                    Void.class
+            );
+        } catch (HttpClientErrorException.NotFound notFound) {
+            // Rollback deletion is idempotent.
         }
     }
 
@@ -216,7 +260,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
 
     @Override
     public DicomServerStudyResponse getStudyById(String baseUrl, String username, String password, String studyId) {
-        String url = normalizeDicomServerBaseUrl(baseUrl) + "/studies/" + studyId;
+        String url = normalizeDicomServerRestBaseUrl(baseUrl) + "/studies/" + studyId;
         ResponseEntity<DicomServerStudyResponse> response = restTemplate.exchange(
                 url,
                 HttpMethod.GET,
@@ -237,7 +281,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         if (normalizedStudyId.isEmpty()) {
             throw new IllegalArgumentException("DICOM server study ID is required.");
         }
-        String url = normalizeDicomServerBaseUrl(baseUrl) + "/studies/" + normalizedStudyId;
+        String url = normalizeDicomServerRestBaseUrl(baseUrl) + "/studies/" + normalizedStudyId;
         try {
             restTemplate.exchange(
                     url,
@@ -257,7 +301,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
 
     @Override
     public List<DicomServerSeriesResponse> getSeriesByStudyId(String baseUrl, String username, String password, String studyId) {
-        String url = normalizeDicomServerBaseUrl(baseUrl) + "/studies/" + studyId + "/series";
+        String url = normalizeDicomServerRestBaseUrl(baseUrl) + "/studies/" + studyId + "/series";
         ResponseEntity<List<DicomServerSeriesResponse>> response = restTemplate.exchange(
                 url,
                 HttpMethod.GET,
@@ -275,7 +319,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
 
     @Override
     public ResponseEntity<byte[]> getInstancePreview(String baseUrl, String username, String password, String instanceId) {
-        String url = normalizeDicomServerBaseUrl(baseUrl) + "/instances/" + instanceId + "/preview";
+        String url = normalizeDicomServerRestBaseUrl(baseUrl) + "/instances/" + instanceId + "/preview";
         HttpEntity<Void> entity = new HttpEntity<>(buildHeaders(username, password));
         return restTemplate.exchange(
                 url,
@@ -293,7 +337,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
             String pathAndQuery,
             String acceptHeader
     ) {
-        String url = normalizeDicomServerBaseUrl(dicomwebBaseUrl) + normalizePathAndQuery(pathAndQuery);
+        String url = normalizeDicomWebBaseUrl(dicomwebBaseUrl) + normalizePathAndQuery(pathAndQuery);
         HttpHeaders requestHeaders = buildHeaders(username, password);
         requestHeaders.remove(HttpHeaders.CONTENT_TYPE);
         if (acceptHeader != null && !acceptHeader.isBlank()) {
@@ -330,7 +374,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
             String rangeHeader,
             String requestMethod
     ) {
-        String url = normalizeDicomServerBaseUrl(dicomwebBaseUrl) + normalizePathAndQuery(pathAndQuery);
+        String url = normalizeDicomWebBaseUrl(dicomwebBaseUrl) + normalizePathAndQuery(pathAndQuery);
         String resolvedMethod = normalizeDicomWebProxyMethod(requestMethod);
         HttpRequest request = buildDicomWebStreamRequest(
                 url,
@@ -588,25 +632,51 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         return normalizedBaseUrl + "/worklists/" + worklistId;
     }
 
+    private String normalizeWorklistCreateUrl(String worklistUrl) {
+        String normalized = trimToNull(worklistUrl);
+        if (normalized == null) {
+            return resolveDefaultWorklistCreateUrl();
+        }
+        normalized = trimTrailingSlashes(stripFragment(normalized));
+        if (normalized.endsWith("/worklists/create")) {
+            return rewriteServerSideLoopbackBaseUrl(normalized);
+        }
+        if (normalized.endsWith("/worklists")) {
+            return rewriteServerSideLoopbackBaseUrl(normalized + "/create");
+        }
+        return normalizeDicomServerRestBaseUrl(normalized) + "/worklists/create";
+    }
+
     private String normalizeWorklistBaseUrl(String baseUrl) {
-        String normalized = baseUrl == null ? "" : baseUrl.trim();
+        String normalized = trimToNull(baseUrl);
+        if (normalized == null) {
+            return resolveDefaultDicomServerBaseUrl();
+        }
+        normalized = trimTrailingSlashes(stripFragment(normalized));
         if (normalized.endsWith("/worklists/create")) {
             normalized = normalized.substring(0, normalized.length() - "/worklists/create".length());
         } else if (normalized.endsWith("/worklists")) {
             normalized = normalized.substring(0, normalized.length() - "/worklists".length());
         }
-        while (normalized.endsWith("/")) {
-            normalized = normalized.substring(0, normalized.length() - 1);
-        }
-        return normalized.isEmpty() ? resolveDefaultDicomServerBaseUrl() : normalized;
+        return normalizeDicomServerRestBaseUrl(normalized);
     }
 
-    private String normalizeDicomServerBaseUrl(String baseUrl) {
-        String normalized = baseUrl == null ? "" : baseUrl.trim();
-        while (normalized.endsWith("/")) {
-            normalized = normalized.substring(0, normalized.length() - 1);
+    private String normalizeDicomServerRestBaseUrl(String baseUrl) {
+        String normalized = trimToNull(baseUrl);
+        if (normalized == null) {
+            normalized = resolveDefaultDicomServerBaseUrl();
         }
-        return normalized.isEmpty() ? resolveDefaultDicomServerBaseUrl() : normalized;
+        normalized = stripOrthancUiPath(trimTrailingSlashes(stripFragment(normalized)));
+        return rewriteServerSideLoopbackBaseUrl(normalized);
+    }
+
+    private String normalizeDicomWebBaseUrl(String baseUrl) {
+        String normalized = trimToNull(baseUrl);
+        if (normalized == null) {
+            normalized = resolveDefaultDicomServerBaseUrl() + "/dicom-web";
+        }
+        normalized = trimTrailingSlashes(stripFragment(normalized));
+        return rewriteServerSideLoopbackBaseUrl(normalized);
     }
 
     private String resolveDefaultDicomServerBaseUrl() {
@@ -614,11 +684,131 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     }
 
     private String resolveDefaultWorklistCreateUrl() {
-        return resolveDefaultDicomServerBaseUrl() + "/worklists/create";
+        return normalizeDicomServerRestBaseUrl(resolveDefaultDicomServerBaseUrl()) + "/worklists/create";
     }
 
     private String buildFindUrl(String baseUrl) {
-        return normalizeDicomServerBaseUrl(baseUrl) + "/tools/find";
+        return normalizeDicomServerRestBaseUrl(baseUrl) + "/tools/find";
+    }
+
+    private String rewriteServerSideLoopbackBaseUrl(String baseUrl) {
+        if (!loopbackRewriteEnabled || !runningInContainer || trimToNull(loopbackHostOverride) == null) {
+            return baseUrl;
+        }
+        try {
+            URI uri = new URI(baseUrl);
+            String host = uri.getHost();
+            if (!isLoopbackHost(host)) {
+                return baseUrl;
+            }
+            URI rewritten = new URI(
+                    uri.getScheme(),
+                    uri.getUserInfo(),
+                    loopbackHostOverride,
+                    uri.getPort(),
+                    uri.getPath(),
+                    uri.getQuery(),
+                    null
+            );
+            LOGGER.debug("Rewriting DICOM server loopback URL for container access: {} -> {}", baseUrl, rewritten);
+            return trimTrailingSlashes(rewritten.toString());
+        } catch (URISyntaxException | IllegalArgumentException ignored) {
+            return baseUrl;
+        }
+    }
+
+    private static boolean isLoopbackHost(String host) {
+        if (host == null || host.isBlank()) {
+            return false;
+        }
+        String normalized = host.trim().toLowerCase(Locale.ROOT);
+        return "localhost".equals(normalized)
+                || "127.0.0.1".equals(normalized)
+                || "::1".equals(normalized)
+                || "0:0:0:0:0:0:0:1".equals(normalized)
+                || "0.0.0.0".equals(normalized);
+    }
+
+    private static String stripOrthancUiPath(String baseUrl) {
+        try {
+            URI uri = new URI(baseUrl);
+            String path = uri.getPath();
+            if (path == null || path.isBlank()) {
+                return trimTrailingSlashes(baseUrl);
+            }
+            String normalizedPath = trimTrailingSlashes(path);
+            String lowerPath = normalizedPath.toLowerCase(Locale.ROOT);
+            if (!lowerPath.equals("/ui")
+                    && !lowerPath.startsWith("/ui/")
+                    && !lowerPath.equals("/app")
+                    && !lowerPath.startsWith("/app/")) {
+                return trimTrailingSlashes(baseUrl);
+            }
+            URI root = new URI(uri.getScheme(), uri.getUserInfo(), uri.getHost(), uri.getPort(), "", null, null);
+            return trimTrailingSlashes(root.toString());
+        } catch (URISyntaxException | IllegalArgumentException ignored) {
+            String lower = baseUrl.toLowerCase(Locale.ROOT);
+            int uiIndex = lower.indexOf("/ui/");
+            if (uiIndex < 0 && lower.endsWith("/ui")) {
+                uiIndex = lower.length() - "/ui".length();
+            }
+            if (uiIndex > 0) {
+                return trimTrailingSlashes(baseUrl.substring(0, uiIndex));
+            }
+            return trimTrailingSlashes(baseUrl);
+        }
+    }
+
+    private static String stripFragment(String url) {
+        int fragmentIndex = url.indexOf('#');
+        return fragmentIndex >= 0 ? url.substring(0, fragmentIndex) : url;
+    }
+
+    private static String trimTrailingSlashes(String value) {
+        String normalized = value == null ? "" : value.trim();
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            String normalized = trimToNull(value);
+            if (normalized != null) {
+                return normalized;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isRunningInContainer() {
+        try {
+            if (Files.exists(Path.of("/.dockerenv"))) {
+                return true;
+            }
+            try (var lines = Files.lines(Path.of("/proc/1/cgroup"))) {
+                return lines.anyMatch(line -> {
+                    String normalized = line.toLowerCase(Locale.ROOT);
+                    return normalized.contains("docker")
+                            || normalized.contains("kubepods")
+                            || normalized.contains("containerd");
+                });
+            }
+        } catch (IOException | RuntimeException ignored) {
+            return false;
+        }
     }
 
     private static String uploadErrorBodySuffix(String body) {

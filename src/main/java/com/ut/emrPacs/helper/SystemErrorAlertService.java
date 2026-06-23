@@ -118,8 +118,8 @@ public class SystemErrorAlertService {
 
     private void send(String message, HttpServletRequest request) {
         try {
-            telegramHelper.sendTextMessage(clip(message), telegramChatId);
             ErrorReportingAttributes.markErrorTelegramAlerted(request);
+            telegramHelper.sendTextMessage(clip(message), telegramChatId);
         } catch (Exception error) {
             log.warn("Telegram error alert failed: {}", error.getMessage());
         }

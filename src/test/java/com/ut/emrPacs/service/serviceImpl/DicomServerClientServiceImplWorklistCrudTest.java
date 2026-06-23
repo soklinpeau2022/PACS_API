@@ -126,6 +126,51 @@ class DicomServerClientServiceImplWorklistCrudTest {
     }
 
     @Test
+    void serverSideCallsShouldRewriteLoopbackWhenRunningInContainer() {
+        dicomServerClientService = new DicomServerClientServiceImpl(restTemplate, true);
+        server.expect(once(), requestTo("http://host.docker.internal:8042/studies/study-1"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header(HttpHeaders.AUTHORIZATION, basicAuth("dicom_server", "dicom_server")))
+                .andRespond(withSuccess("""
+                        {
+                          "ID": "study-1"
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        var response = dicomServerClientService.getStudyById(
+                "http://localhost:8042",
+                "dicom_server",
+                "dicom_server",
+                "study-1"
+        );
+
+        assertEquals("study-1", response.getId());
+        server.verify();
+    }
+
+    @Test
+    void restCallsShouldNormalizeOrthancUiUrlToApiRoot() {
+        server.expect(once(), requestTo("http://localhost:8042/studies/study-ui"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header(HttpHeaders.AUTHORIZATION, basicAuth("dicom_server", "dicom_server")))
+                .andRespond(withSuccess("""
+                        {
+                          "ID": "study-ui"
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        var response = dicomServerClientService.getStudyById(
+                "http://localhost:8042/ui/app/#/",
+                "dicom_server",
+                "dicom_server",
+                "study-ui"
+        );
+
+        assertEquals("study-ui", response.getId());
+        server.verify();
+    }
+
+    @Test
     void proxyDicomWebShouldReturnDicomJsonAsRawBytes() throws Exception {
         String dicomJson = "[{\"0020000D\":{\"vr\":\"UI\",\"Value\":[\"1.2.3\"]}}]";
         MediaType dicomJsonType = MediaType.parseMediaType("application/dicom+json");

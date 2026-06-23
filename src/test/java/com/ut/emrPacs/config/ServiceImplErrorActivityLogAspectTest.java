@@ -10,6 +10,7 @@ import org.aspectj.lang.reflect.MethodSignature;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
@@ -105,6 +106,39 @@ class ServiceImplErrorActivityLogAspectTest {
         when(joinPoint.proceed()).thenThrow(error);
 
         IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> aspect.logUnhandledServiceErrors(joinPoint));
+
+        assertSame(error, thrown);
+        verify(activityLogService, never()).insert(
+                any(String.class),
+                any(),
+                any(),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                eq(2),
+                any(String.class),
+                any(LocalTime.class),
+                any(LocalTime.class),
+                any(HttpServletRequest.class)
+        );
+    }
+
+    @Test
+    void shouldNotLogHandledDicomServerClientRetryExceptionsAsSystemErrors() throws Throwable {
+        ActivityLogService activityLogService = mock(ActivityLogService.class);
+        ServiceImplErrorActivityLogAspect aspect = new ServiceImplErrorActivityLogAspect(activityLogService);
+        ProceedingJoinPoint joinPoint = mock(ProceedingJoinPoint.class);
+        MethodSignature signature = mock(MethodSignature.class);
+        ResourceAccessException error = new ResourceAccessException("DICOM server is unreachable.");
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/pacsApi/dicom-uploads/chunk/upload-1/complete");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        when(joinPoint.proceed()).thenThrow(error);
+        when(joinPoint.getSignature()).thenReturn(signature);
+        when(signature.getDeclaringType()).thenReturn((Class) com.ut.emrPacs.service.serviceImpl.DicomServerClientServiceImpl.class);
+        when(signature.getName()).thenReturn("uploadInstance");
+
+        ResourceAccessException thrown = assertThrows(ResourceAccessException.class, () -> aspect.logUnhandledServiceErrors(joinPoint));
 
         assertSame(error, thrown);
         verify(activityLogService, never()).insert(

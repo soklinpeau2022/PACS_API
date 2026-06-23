@@ -70,7 +70,10 @@ $tests = "EndpointPentestSmokeTest,SecurityThreatDetectionFilterTest,SecurityRat
 
 Write-Host "Running endpoint/security gate tests..."
 try {
-    ./mvnw -q "-Dtest=$tests" test
+    ./mvnw -q clean "-Dtest=$tests" test
+    if ($LASTEXITCODE -ne 0) {
+        throw "Maven endpoint/security gate failed with exit code $LASTEXITCODE."
+    }
     Send-TelegramAlert -Status "PASSED" -Details "Endpoint+security test gate passed"
     Write-Host "Gate passed."
 } catch {

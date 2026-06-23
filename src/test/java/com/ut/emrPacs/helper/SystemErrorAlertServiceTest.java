@@ -8,6 +8,7 @@ import org.springframework.mock.web.MockHttpServletRequest;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -94,5 +95,45 @@ class SystemErrorAlertServiceTest {
                 ),
                 eq("chat-1")
         );
+    }
+
+    @Test
+    void marksAlertAttemptedEvenWhenTelegramIsRateLimited() {
+        TelegramHelper telegramHelper = mock(TelegramHelper.class);
+        Environment environment = mock(Environment.class);
+        doThrow(new RuntimeException("429 Too Many Requests"))
+                .when(telegramHelper)
+                .sendTextMessage(org.mockito.ArgumentMatchers.anyString(), eq("chat-1"));
+
+        SystemErrorAlertService service = new SystemErrorAlertService(telegramHelper, environment, "chat-1", true);
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/pacsApi/test");
+
+        service.sendActivityErrorAlert(
+                null,
+                "Admin",
+                "/test",
+                "Test Module",
+                "Unexpected error",
+                42L,
+                "boom",
+                1L,
+                "host-1",
+                request
+        );
+        service.sendActivityErrorAlert(
+                null,
+                "Admin",
+                "/test",
+                "Test Module",
+                "Unexpected error",
+                42L,
+                "boom",
+                1L,
+                "host-1",
+                request
+        );
+
+        verify(telegramHelper, times(1)).sendTextMessage(org.mockito.ArgumentMatchers.anyString(), eq("chat-1"));
+        assertTrue(Boolean.TRUE.equals(request.getAttribute(ErrorReportingAttributes.ERROR_TELEGRAM_ALERTED)));
     }
 }

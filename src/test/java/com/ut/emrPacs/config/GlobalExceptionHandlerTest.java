@@ -15,6 +15,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.task.TaskRejectedException;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
@@ -182,6 +183,21 @@ class GlobalExceptionHandlerTest {
                 any(LocalTime.class),
                 any(LocalTime.class),
                 any(HttpServletRequest.class)
+        );
+    }
+
+    @Test
+    void shouldReturnRetryableServiceUnavailableWhenStreamingCapacityIsFull() {
+        ResponseEntity<ResponseMessage<BaseResult>> response = handler.handleAsyncCapacityExceeded(
+                new TaskRejectedException("stream pool full")
+        );
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals(503, response.getBody().getHeader().getStatusCode());
+        assertEquals(
+                "The imaging service is busy. Please retry shortly.",
+                response.getBody().getBody().getMessage()
         );
     }
 

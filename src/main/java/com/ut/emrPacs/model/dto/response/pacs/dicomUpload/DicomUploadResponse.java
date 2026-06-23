@@ -15,7 +15,10 @@ public class DicomUploadResponse {
     private Integer failedFiles = 0;
     private Integer skippedFiles = 0;
     private Integer metadataSyncFailures = 0;
+    private Integer rolledBackFiles = 0;
+    private Integer rollbackFailures = 0;
     private Integer studyCount = 0;
+    private Boolean atomic = true;
     private String status = "IMAGE_RECEIVED";
     private Boolean viewerAvailable = false;
     private List<DicomUploadStudySummary> studies = new ArrayList<>();

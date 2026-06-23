@@ -12,6 +12,7 @@ import org.springframework.context.annotation.Lazy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.core.task.TaskRejectedException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -162,6 +163,16 @@ public class GlobalExceptionHandler {
         // Long-lived SSE requests such as /notification/notification-stream naturally expire and
         // reconnect. Treat that as connection lifecycle noise, not an application failure.
         LOGGER.debug("Async request timed out before completion: {}", exception.getMessage());
+    }
+
+    @ExceptionHandler(TaskRejectedException.class)
+    public ResponseEntity<ResponseMessage<BaseResult>> handleAsyncCapacityExceeded(TaskRejectedException exception) {
+        LOGGER.warn("Async streaming capacity temporarily exhausted: {}", exception.getMessage());
+        return buildError(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+                "The imaging service is busy. Please retry shortly."
+        );
     }
 
     @ExceptionHandler(Exception.class)

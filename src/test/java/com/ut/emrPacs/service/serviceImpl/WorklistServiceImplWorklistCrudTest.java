@@ -50,6 +50,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -79,6 +80,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -242,10 +244,15 @@ class WorklistServiceImplWorklistCrudTest {
         deniedWrongStudy.addHeader("X-Original-Method", "GET");
         deniedWrongStudy.addHeader("X-PACS-DICOMWEB-TOKEN", "viewer-token");
 
-        MockHttpServletRequest deniedPluralMixedStudyQuery = new MockHttpServletRequest("GET", "/pacsApi/worklist/viewer-dicom-web-proxy-authorize");
-        deniedPluralMixedStudyQuery.addHeader("X-Original-URI", "/pacs-dicomweb/studies?StudyInstanceUIDs=1.2.840.113619.102201.1660,1.2.840.113619.102201.9999");
-        deniedPluralMixedStudyQuery.addHeader("X-Original-Method", "GET");
-        deniedPluralMixedStudyQuery.addHeader("X-PACS-DICOMWEB-TOKEN", "viewer-token");
+        MockHttpServletRequest grantedLargePluralStudyQuery = new MockHttpServletRequest("GET", "/pacsApi/worklist/viewer-dicom-web-proxy-authorize");
+        grantedLargePluralStudyQuery.addHeader("X-Original-URI", "/pacs-dicomweb/studies?" + buildLargeStudyInstanceUidQuery("1.2.840.113619.102201.1660"));
+        grantedLargePluralStudyQuery.addHeader("X-Original-Method", "GET");
+        grantedLargePluralStudyQuery.addHeader("X-PACS-DICOMWEB-TOKEN", "viewer-token");
+
+        MockHttpServletRequest deniedPluralWrongStudyQuery = new MockHttpServletRequest("GET", "/pacsApi/worklist/viewer-dicom-web-proxy-authorize");
+        deniedPluralWrongStudyQuery.addHeader("X-Original-URI", "/pacs-dicomweb/studies?StudyInstanceUIDs=1.2.840.113619.102201.9998,1.2.840.113619.102201.9999");
+        deniedPluralWrongStudyQuery.addHeader("X-Original-Method", "GET");
+        deniedPluralWrongStudyQuery.addHeader("X-PACS-DICOMWEB-TOKEN", "viewer-token");
 
         MockHttpServletRequest deniedQueryTokenOnly = new MockHttpServletRequest("GET", "/pacsApi/worklist/viewer-dicom-web-proxy-authorize");
         deniedQueryTokenOnly.addHeader("X-Original-URI", "/pacs-dicomweb/studies/1.2.840.113619.102201.1660/series?token=viewer-token");
@@ -254,9 +261,10 @@ class WorklistServiceImplWorklistCrudTest {
         assertEquals(HttpStatus.NO_CONTENT.value(), WorklistService.authorizeViewerDicomWebProxy(granted).getStatusCode().value());
         assertEquals(HttpStatus.NO_CONTENT.value(), WorklistService.authorizeViewerDicomWebProxy(grantedStudyQuery).getStatusCode().value());
         assertEquals(HttpStatus.NO_CONTENT.value(), WorklistService.authorizeViewerDicomWebProxy(grantedPluralStudyQuery).getStatusCode().value());
+        assertEquals(HttpStatus.NO_CONTENT.value(), WorklistService.authorizeViewerDicomWebProxy(grantedLargePluralStudyQuery).getStatusCode().value());
         assertEquals(HttpStatus.FORBIDDEN.value(), WorklistService.authorizeViewerDicomWebProxy(deniedWideQuery).getStatusCode().value());
         assertEquals(HttpStatus.FORBIDDEN.value(), WorklistService.authorizeViewerDicomWebProxy(deniedWrongStudy).getStatusCode().value());
-        assertEquals(HttpStatus.FORBIDDEN.value(), WorklistService.authorizeViewerDicomWebProxy(deniedPluralMixedStudyQuery).getStatusCode().value());
+        assertEquals(HttpStatus.FORBIDDEN.value(), WorklistService.authorizeViewerDicomWebProxy(deniedPluralWrongStudyQuery).getStatusCode().value());
         assertEquals(HttpStatus.FORBIDDEN.value(), WorklistService.authorizeViewerDicomWebProxy(deniedQueryTokenOnly).getStatusCode().value());
     }
 
@@ -278,9 +286,90 @@ class WorklistServiceImplWorklistCrudTest {
                 "includefield=all",
                 studyInstanceUid
         );
+        String largeMixedQuery = ReflectionTestUtils.invokeMethod(
+                WorklistService,
+                "normalizeViewerDicomwebQuery",
+                "/studies",
+                buildLargeStudyInstanceUidQuery(studyInstanceUid) + "&includefield=all&token=viewer-token",
+                studyInstanceUid
+        );
 
-        assertEquals("StudyInstanceUIDs=1.2.840.113619.102201.1660&includefield=all", pluralQuery);
+        assertEquals("includefield=all&StudyInstanceUID=1.2.840.113619.102201.1660", pluralQuery);
         assertEquals("includefield=all&StudyInstanceUID=1.2.840.113619.102201.1660", appendedQuery);
+        assertEquals("includefield=all&StudyInstanceUID=1.2.840.113619.102201.1660", largeMixedQuery);
+    }
+
+    @Test
+    void proxyViewerDicomWebShouldCacheValidatedStudyRouteAcrossFrameRequests() throws Exception {
+        String studyInstanceUid = "1.2.840.113619.6.539.156313437362698493465891442058800163834";
+        Jwt jwt = Jwt.withTokenValue("viewer-token")
+                .header("alg", "none")
+                .claim("clientId", "pacs-viewer-dicomweb")
+                .claim("scope", "pacs.viewer.dicomweb")
+                .claim("hospitalId", 11L)
+                .claim("studyId", 44L)
+                .claim("studyInstanceUid", studyInstanceUid)
+                .claim("jti", "large-study-viewer-jti")
+                .expiresAt(Instant.now().plusSeconds(1800))
+                .build();
+        when(jwtDecoder.decode("viewer-token")).thenReturn(jwt);
+        when(revokedTokenMapper.countByJti("large-study-viewer-jti")).thenReturn(0L);
+
+        StudyResponse study = new StudyResponse();
+        study.setId(44L);
+        study.setHospitalId(11L);
+        study.setDicomServerId(4L);
+        study.setStudyInstanceUid(studyInstanceUid);
+        HospitalDicomServerResponse targetServer = new HospitalDicomServerResponse();
+        targetServer.setId(4L);
+        targetServer.setBaseUrl("http://localhost:8042");
+        targetServer.setDicomwebBaseUrl("http://localhost:8042/dicom-web");
+        targetServer.setUsername("dicom_server");
+        targetServer.setPassword("dicom_server");
+        when(studyMapper.findById(11L, 44L)).thenReturn(study);
+        when(dicomServerMapper.getDicomServerById(4L, 11L)).thenReturn(List.of(targetServer));
+        when(dicomServerClientService.proxyDicomWebStream(
+                anyString(), anyString(), anyString(), anyString(), any(), any(), anyString()
+        )).thenReturn(ResponseEntity.ok(outputStream -> { }));
+
+        MockHttpServletRequest request = new MockHttpServletRequest(
+                "GET",
+                "/pacsApi/worklist/viewer-dicom-web-proxy/studies/" + studyInstanceUid + "/metadata"
+        );
+        request.addHeader("X-PACS-DICOMWEB-TOKEN", "viewer-token");
+        request.addHeader(HttpHeaders.ACCEPT, "application/dicom+json");
+
+        var first = WorklistService.proxyViewerDicomWeb(request);
+        var second = WorklistService.proxyViewerDicomWeb(request);
+
+        assertEquals(HttpStatus.OK, first.getStatusCode());
+        assertEquals(HttpStatus.OK, second.getStatusCode());
+        verify(studyMapper, times(1)).findById(11L, 44L);
+        verify(dicomServerMapper, times(1)).getDicomServerById(4L, 11L);
+        verify(dicomServerClientService, times(2)).proxyDicomWebStream(
+                eq("http://localhost:8042/dicom-web"),
+                eq("dicom_server"),
+                eq("dicom_server"),
+                anyString(),
+                eq("application/dicom+json"),
+                eq(null),
+                eq("GET")
+        );
+    }
+
+    private static String buildLargeStudyInstanceUidQuery(String boundStudyInstanceUid) {
+        StringBuilder query = new StringBuilder("StudyInstanceUIDs=");
+        for (int index = 0; index < 5000; index++) {
+            if (index > 0) {
+                query.append(',');
+            }
+            if (index == 3700) {
+                query.append(boundStudyInstanceUid);
+            } else {
+                query.append("1.2.840.113619.102201.").append(900000 + index);
+            }
+        }
+        return query.toString();
     }
 
     @Test

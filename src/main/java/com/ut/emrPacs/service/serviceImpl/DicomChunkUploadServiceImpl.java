@@ -11,12 +11,15 @@ import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomChunkUploadInitRe
 import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomChunkUploadProgressResponse;
 import com.ut.emrPacs.service.service.DicomChunkUploadService;
 import com.ut.emrPacs.service.service.DicomUploadProgressListener;
+import jakarta.annotation.PreDestroy;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -25,15 +28,21 @@ import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.BitSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 @Service
 public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
@@ -64,6 +73,11 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
 
     @Value("${pacs.dicom-upload.chunk-session-ttl-minutes:30}")
     private long sessionTtlMinutes;
+
+    @Value("${pacs.dicom-upload.max-concurrent-processing-jobs:1}")
+    private int maxConcurrentProcessingJobs;
+
+    private volatile ExecutorService processingExecutor;
 
     @Override
     public ResponseMessage<BaseResult> init(DicomChunkUploadInitRequest request, HttpServletRequest httpServletRequest) {
@@ -159,6 +173,7 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
     @Override
     public ResponseMessage<BaseResult> complete(String uploadId, HttpServletRequest httpServletRequest) {
         ChunkUploadSession session;
+        SecurityContext workerSecurityContext;
         try {
             session = authorizedSession(uploadId);
             synchronized (session.lock) {
@@ -166,7 +181,7 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
                     return session.finalResponse;
                 }
                 if (session.completing) {
-                    return ResponseMessageUtils.makeResponse(false, messageService.message("Upload is already processing on the DICOM server.", false));
+                    return processingResponse(session);
                 }
                 if (session.receivedChunks.cardinality() != session.totalChunks) {
                     return ResponseMessageUtils.makeResponse(false, messageService.message("Upload is not complete yet.", false));
@@ -177,17 +192,45 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
                 session.completing = true;
                 session.state = STATE_PROCESSING;
                 session.processingPercent = 1;
-                session.stage = "Preparing archive";
-                session.message = "Processing on the DICOM server.";
+                session.stage = "Queued for DICOM server processing";
+                session.message = "Upload accepted. Processing continues on the server.";
                 session.lastTouchedAt = Instant.now();
+                workerSecurityContext = SecurityContextHolder.createEmptyContext();
+                workerSecurityContext.setAuthentication(SecurityContextHolder.getContext().getAuthentication());
             }
         } catch (Exception error) {
             LOGGER.warn("DICOM chunk upload complete failed: {}", error.toString());
             return ResponseMessageUtils.makeResponse(false, messageService.message(clientMessage(error, "Unable to complete chunked upload."), false));
         }
 
+        try {
+            processingExecutor().submit(() -> processCompletedUpload(session, workerSecurityContext));
+        } catch (RejectedExecutionException error) {
+            synchronized (session.lock) {
+                session.completing = false;
+                session.state = STATE_READY;
+                session.processingPercent = 0;
+                session.stage = "Ready for server processing";
+                session.message = "The processing queue is full. Please retry.";
+                session.lastTouchedAt = Instant.now();
+            }
+            LOGGER.warn("DICOM chunk upload processing queue rejected {}: {}", session.uploadId, error.toString());
+            return ResponseMessageUtils.makeResponse(false, messageService.message(
+                    "The DICOM processing queue is busy. Please retry in a moment.", false));
+        }
+        return processingResponse(session);
+    }
+
+    private void processCompletedUpload(ChunkUploadSession session, SecurityContext workerSecurityContext) {
+        SecurityContext previousContext = SecurityContextHolder.getContext();
+        SecurityContextHolder.setContext(workerSecurityContext);
         ResponseMessage<BaseResult> response;
         try {
+            synchronized (session.lock) {
+                session.stage = "Preparing archive";
+                session.message = "Processing on the DICOM server.";
+                session.lastTouchedAt = Instant.now();
+            }
             DicomUploadProgressListener progressListener = (percent, processedItems, totalItems, stage) -> {
                 synchronized (session.lock) {
                     if (!session.completing) {
@@ -205,7 +248,7 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
                     session.dicomServerKey,
                     session.tempPath,
                     session.totalSize,
-                    httpServletRequest,
+                    null,
                     progressListener
             );
         } catch (Exception error) {
@@ -213,6 +256,7 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
             response = ResponseMessageUtils.makeResponse(false, messageService.message(clientMessage(error, "Unable to process chunked upload."), false));
         } finally {
             deleteQuietly(session.tempPath);
+            SecurityContextHolder.setContext(previousContext);
         }
         synchronized (session.lock) {
             session.completing = false;
@@ -226,7 +270,6 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
                     : "DICOM server processing did not complete successfully.";
             session.lastTouchedAt = Instant.now();
         }
-        return response;
     }
 
     @Override
@@ -264,6 +307,38 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
                 deleteQuietly(session.tempPath);
             }
         });
+        cleanupOrphanChunkFiles(cutoff);
+    }
+
+    private void cleanupOrphanChunkFiles(Instant cutoff) {
+        try {
+            Path chunksDir = dicomUploadService.resolveUploadTempDir().resolve("chunks").normalize();
+            if (!Files.isDirectory(chunksDir)) {
+                return;
+            }
+            Set<Path> activePaths = sessions.values().stream()
+                    .map(session -> session.tempPath.toAbsolutePath().normalize())
+                    .collect(Collectors.toSet());
+            try (var files = Files.list(chunksDir)) {
+                files.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(".part"))
+                        .filter(path -> !activePaths.contains(path.toAbsolutePath().normalize()))
+                        .filter(path -> isOlderThan(path, cutoff))
+                        .forEach(DicomChunkUploadServiceImpl::deleteQuietly);
+            }
+        } catch (IOException error) {
+            LOGGER.warn("Unable to clean orphaned DICOM chunk files: {}", error.toString());
+        }
+    }
+
+    private static boolean isOlderThan(Path path, Instant cutoff) {
+        try {
+            FileTime lastModified = Files.getLastModifiedTime(path);
+            return lastModified.toInstant().isBefore(cutoff);
+        } catch (IOException error) {
+            LOGGER.warn("Unable to inspect DICOM chunk file {}: {}", path, error.toString());
+            return false;
+        }
     }
 
     private void validateInitRequest(DicomChunkUploadInitRequest request) {
@@ -385,6 +460,41 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
 
     private Duration sessionTtl() {
         return Duration.ofMinutes(sessionTtlMinutes > 0L ? sessionTtlMinutes : 30L);
+    }
+
+    private ExecutorService processingExecutor() {
+        ExecutorService executor = processingExecutor;
+        if (executor != null && !executor.isShutdown()) {
+            return executor;
+        }
+        synchronized (this) {
+            executor = processingExecutor;
+            if (executor == null || executor.isShutdown()) {
+                int workers = Math.max(1, Math.min(8, maxConcurrentProcessingJobs));
+                processingExecutor = Executors.newFixedThreadPool(
+                        workers,
+                        Thread.ofVirtual().name("dicom-upload-job-", 0).factory()
+                );
+            }
+            return processingExecutor;
+        }
+    }
+
+    @PreDestroy
+    void shutdownProcessingExecutor() {
+        ExecutorService executor = processingExecutor;
+        if (executor != null) {
+            executor.shutdownNow();
+        }
+    }
+
+    private ResponseMessage<BaseResult> processingResponse(ChunkUploadSession session) {
+        synchronized (session.lock) {
+            return ResponseMessageUtils.makeResponse(
+                    true,
+                    messageService.message(session.message, List.of(progress(session, null)), true)
+            );
+        }
     }
 
     private long configuredMaxUploadBytes() {

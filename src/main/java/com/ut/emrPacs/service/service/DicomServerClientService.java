@@ -20,6 +20,8 @@ public interface DicomServerClientService {
 
     DicomServerInstanceUploadResponse uploadInstance(String baseUrl, String username, String password, Resource dicomResource, long contentLength);
 
+    void deleteInstanceById(String baseUrl, String username, String password, String instanceId);
+
     DicomServerWorklistResponse getWorklistById(String worklistId);
 
     DicomServerWorklistResponse getWorklistById(String baseUrl, String username, String password, String worklistId);

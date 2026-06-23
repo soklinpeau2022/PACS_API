@@ -61,7 +61,7 @@ public class TelegramHelper {
                 log.error("Failed to send Telegram message. Status: {} Response: {}", response.getStatusCode(), response.getBody());
             }
         } catch (Exception e) {
-            log.error("Exception occurred while sending Telegram text message", e);
+            log.warn("Telegram message send failed: {}", summarizeError(e));
         }
     }
 
@@ -76,13 +76,33 @@ public class TelegramHelper {
             HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(htmlForm, headers);
             return restTemplate.postForEntity(url, requestEntity, String.class, apiToken);
         } catch (Exception htmlError) {
-            log.warn("Telegram HTML send failed. Retrying as plain text. Error: {}", htmlError.toString());
+            log.warn("Telegram HTML send failed. Retrying as plain text. Error: {}", summarizeError(htmlError));
             MultiValueMap<String, String> plainForm = new LinkedMultiValueMap<>();
             plainForm.add("chat_id", chatId);
             plainForm.add("text", stripHtml(message != null ? message : ""));
             HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(plainForm, headers);
             return restTemplate.postForEntity(url, requestEntity, String.class, apiToken);
         }
+    }
+
+    private static String summarizeError(Exception error) {
+        if (error == null) {
+            return "unknown";
+        }
+        String message = error.getMessage();
+        if (message == null || message.isBlank()) {
+            return error.getClass().getSimpleName();
+        }
+        return error.getClass().getSimpleName() + ": " + redactSensitiveTelegramData(message);
+    }
+
+    private static String redactSensitiveTelegramData(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        return value
+                .replaceAll("(?i)bot[^/\\s\"']+/sendMessage", "bot<redacted>/sendMessage")
+                .replaceAll("(?i)(token=)[^&\\s\"']+", "$1<redacted>");
     }
 
     private String stripHtml(String value) {

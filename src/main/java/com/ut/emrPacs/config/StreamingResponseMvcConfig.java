@@ -32,7 +32,9 @@ public class StreamingResponseMvcConfig implements WebMvcConfigurer {
         executor.setCorePoolSize(safeCorePoolSize);
         executor.setMaxPoolSize(safeMaxPoolSize);
         executor.setQueueCapacity(Math.max(0, queueCapacity));
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        // Never run a long DICOM stream on Tomcat's request thread when this pool is full. Doing so
+        // races the servlet response lifecycle under large-study bursts and can corrupt headers.
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
         executor.initialize();
         return executor;
     }

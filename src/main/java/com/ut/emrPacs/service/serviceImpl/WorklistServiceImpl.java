@@ -1,6 +1,8 @@
 package com.ut.emrPacs.service.serviceImpl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.ut.emrPacs.authentication.session.UserAuthSession;
 import com.ut.emrPacs.authentication.principal.CurrentUserPrincipal;
 import com.ut.emrPacs.authentication.util.JwtTokenService;
@@ -115,13 +117,13 @@ import org.slf4j.LoggerFactory;
 
 import java.net.UnknownHostException;
 import java.time.Instant;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
@@ -137,7 +139,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
 @Service
 public class WorklistServiceImpl implements WorklistService {
@@ -147,6 +148,7 @@ public class WorklistServiceImpl implements WorklistService {
     private static final String HTTP_METHOD_GET = "GET";
     private static final String BASIC_AUTH_PREFIX = "Basic ";
     private static final String PARAM_TOKEN = "token";
+    private static final Set<String> VIEWER_TOKEN_QUERY_NAMES = Set.of(PARAM_TOKEN, "viewerToken", "dicomwebToken");
     /** JSON fields of the UDAYA_DICOM_SERVER auth-callback contract. */
     private static final String AUTH_FIELD_TOKEN_VALUE_KEBAB = "token-value";
     private static final String AUTH_FIELD_TOKEN_VALUE = "tokenValue";
@@ -162,6 +164,8 @@ public class WorklistServiceImpl implements WorklistService {
     private static final String DEFAULT_VIEWER_STATE_TYPE = "OHIF_VIEWER_STATE";
     private static final String RESULT_STATUS_FINAL = "FINAL";
     private static final String LEGACY_RESULT_STATUS_COMPLETED = "COMPLETED";
+    private static final Duration VIEWER_PROXY_TARGET_CACHE_TTL = Duration.ofMinutes(2);
+    private static final long VIEWER_PROXY_TARGET_CACHE_MAX_ENTRIES = 20_000L;
 
     @Autowired
     private WorklistMapper WorklistMapper;
@@ -206,6 +210,10 @@ public class WorklistServiceImpl implements WorklistService {
     private long viewerDicomwebTokenMs;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final Cache<String, ViewerDicomwebProxyTarget> viewerProxyTargetCache = Caffeine.newBuilder()
+            .maximumSize(VIEWER_PROXY_TARGET_CACHE_MAX_ENTRIES)
+            .expireAfterWrite(VIEWER_PROXY_TARGET_CACHE_TTL)
+            .build();
 
     @Override
     public ResponseMessage<BaseResult> list(WorklistFilter filter, HttpServletRequest httpServletRequest) throws UnknownHostException {
@@ -1623,46 +1631,15 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         }
 
         try {
-            WorklistDetailRow Worklist = WorklistMapper.findWorklistById(hospitalId, worklistId);
-            if (Worklist == null) {
-                return ResponseEntity.notFound().build();
-            }
-
-            HospitalDicomServerResponse targetServer = resolveTargetDicomServer(Worklist, null);
-            if (targetServer == null) {
-                return ResponseEntity.notFound().build();
-            }
-
-            String dicomServerStudyId = resolveDicomServerStudyIdForViewer(Worklist, targetServer);
-            if (!hasText(dicomServerStudyId)) {
-                return ResponseEntity.notFound().build();
-            }
-
-            DicomServerStudyResponse studyResponse = getDicomServerStudy(dicomServerStudyId, targetServer);
-            if (studyResponse == null) {
-                return ResponseEntity.notFound().build();
-            }
-            if (!hasAvailableStudyInstances(dicomServerStudyId, studyResponse, targetServer)) {
-                return ResponseEntity.status(409).build();
-            }
-
-            String resolvedStudyInstanceUid = firstNonBlank(
-                    resolveWorklistStudyInstanceUid(Worklist),
-                    readDicomTag(studyResponse, DicomTagConstants.STUDY_INSTANCE_UID)
+            ViewerDicomwebProxyTarget proxyTarget = viewerProxyTargetCache.get(
+                    viewerProxyTargetCacheKey(claims),
+                    ignored -> resolveWorklistViewerProxyTarget(claims, hospitalId, worklistId)
             );
-            if (!claims.studyInstanceUid().equals(resolvedStudyInstanceUid)) {
-                return ResponseEntity.status(403).build();
-            }
-
-            String dicomwebBaseUrl = resolveInternalDicomwebBaseUrl(targetServer);
-            if (!hasText(dicomwebBaseUrl)) {
-                return ResponseEntity.status(502).build();
-            }
 
             return dicomServerClientService.proxyDicomWebStream(
-                    dicomwebBaseUrl,
-                    targetServer.getUsername(),
-                    targetServer.getPassword(),
+                    proxyTarget.dicomwebBaseUrl(),
+                    proxyTarget.username(),
+                    proxyTarget.password(),
                     pathAndQuery,
                     httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.ACCEPT),
                     httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.RANGE),
@@ -1677,6 +1654,8 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         } catch (IllegalArgumentException error) {
             LOGGER.warn("Viewer DICOMweb request rejected for worklistId={}: {}", worklistId, error.getMessage());
             return ResponseEntity.badRequest().build();
+        } catch (ViewerProxyTargetException error) {
+            return ResponseEntity.status(error.status()).build();
         } catch (HttpClientErrorException error) {
             return ResponseEntity.status(error.getStatusCode()).build();
         } catch (Exception error) {
@@ -1697,28 +1676,15 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         }
 
         try {
-            StudyResponse study = studyMapper.findById(hospitalId, studyId);
-            if (study == null) {
-                return ResponseEntity.notFound().build();
-            }
-            if (!claims.studyInstanceUid().equals(study.getStudyInstanceUid())) {
-                return ResponseEntity.status(403).build();
-            }
-
-            HospitalDicomServerResponse targetServer = resolveStudyDicomServer(study, hospitalId);
-            if (targetServer == null) {
-                return ResponseEntity.notFound().build();
-            }
-
-            String dicomwebBaseUrl = resolveInternalDicomwebBaseUrl(targetServer);
-            if (!hasText(dicomwebBaseUrl)) {
-                return ResponseEntity.status(502).build();
-            }
+            ViewerDicomwebProxyTarget proxyTarget = viewerProxyTargetCache.get(
+                    viewerProxyTargetCacheKey(claims),
+                    ignored -> resolveStudyViewerProxyTarget(claims, hospitalId, studyId)
+            );
 
             return dicomServerClientService.proxyDicomWebStream(
-                    dicomwebBaseUrl,
-                    targetServer.getUsername(),
-                    targetServer.getPassword(),
+                    proxyTarget.dicomwebBaseUrl(),
+                    proxyTarget.username(),
+                    proxyTarget.password(),
                     pathAndQuery,
                     httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.ACCEPT),
                     httpServletRequest == null ? null : httpServletRequest.getHeader(HttpHeaders.RANGE),
@@ -1733,12 +1699,94 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         } catch (IllegalArgumentException error) {
             LOGGER.warn("Viewer DICOMweb request rejected for studyId={}: {}", studyId, error.getMessage());
             return ResponseEntity.badRequest().build();
+        } catch (ViewerProxyTargetException error) {
+            return ResponseEntity.status(error.status()).build();
         } catch (HttpClientErrorException error) {
             return ResponseEntity.status(error.getStatusCode()).build();
         } catch (Exception error) {
             LOGGER.error("Viewer DICOMweb proxy failed for studyId={} error={}", studyId, error.toString(), error);
             return ResponseEntity.status(502).build();
         }
+    }
+
+    private ViewerDicomwebProxyTarget resolveWorklistViewerProxyTarget(
+            ViewerDicomwebTokenClaims claims,
+            Long hospitalId,
+            Long worklistId
+    ) {
+        WorklistDetailRow worklist = WorklistMapper.findWorklistById(hospitalId, worklistId);
+        if (worklist == null) {
+            throw new ViewerProxyTargetException(HttpStatus.NOT_FOUND);
+        }
+
+        HospitalDicomServerResponse targetServer = resolveTargetDicomServer(worklist, null);
+        if (targetServer == null) {
+            throw new ViewerProxyTargetException(HttpStatus.NOT_FOUND);
+        }
+
+        String dicomServerStudyId = resolveDicomServerStudyIdForViewer(worklist, targetServer);
+        if (!hasText(dicomServerStudyId)) {
+            throw new ViewerProxyTargetException(HttpStatus.NOT_FOUND);
+        }
+
+        DicomServerStudyResponse studyResponse = getDicomServerStudy(dicomServerStudyId, targetServer);
+        if (studyResponse == null) {
+            throw new ViewerProxyTargetException(HttpStatus.NOT_FOUND);
+        }
+        if (!hasAvailableStudyInstances(dicomServerStudyId, studyResponse, targetServer)) {
+            throw new ViewerProxyTargetException(HttpStatus.CONFLICT);
+        }
+
+        String resolvedStudyInstanceUid = firstNonBlank(
+                resolveWorklistStudyInstanceUid(worklist),
+                readDicomTag(studyResponse, DicomTagConstants.STUDY_INSTANCE_UID)
+        );
+        if (!claims.studyInstanceUid().equals(resolvedStudyInstanceUid)) {
+            throw new ViewerProxyTargetException(HttpStatus.FORBIDDEN);
+        }
+        return buildViewerProxyTarget(targetServer);
+    }
+
+    private ViewerDicomwebProxyTarget resolveStudyViewerProxyTarget(
+            ViewerDicomwebTokenClaims claims,
+            Long hospitalId,
+            Long studyId
+    ) {
+        StudyResponse study = studyMapper.findById(hospitalId, studyId);
+        if (study == null) {
+            throw new ViewerProxyTargetException(HttpStatus.NOT_FOUND);
+        }
+        if (!claims.studyInstanceUid().equals(study.getStudyInstanceUid())) {
+            throw new ViewerProxyTargetException(HttpStatus.FORBIDDEN);
+        }
+
+        HospitalDicomServerResponse targetServer = resolveStudyDicomServer(study, hospitalId);
+        if (targetServer == null) {
+            throw new ViewerProxyTargetException(HttpStatus.NOT_FOUND);
+        }
+        return buildViewerProxyTarget(targetServer);
+    }
+
+    private ViewerDicomwebProxyTarget buildViewerProxyTarget(HospitalDicomServerResponse targetServer) {
+        String dicomwebBaseUrl = resolveInternalDicomwebBaseUrl(targetServer);
+        if (!hasText(dicomwebBaseUrl)) {
+            throw new ViewerProxyTargetException(HttpStatus.BAD_GATEWAY);
+        }
+        return new ViewerDicomwebProxyTarget(
+                dicomwebBaseUrl,
+                targetServer.getUsername(),
+                targetServer.getPassword()
+        );
+    }
+
+    private static String viewerProxyTargetCacheKey(ViewerDicomwebTokenClaims claims) {
+        String routeType = claims.worklistId() != null ? "worklist" : "study";
+        Long routeId = claims.worklistId() != null ? claims.worklistId() : claims.studyId();
+        return routeType + "|"
+                + firstNonBlank(claims.jti(), "missing-jti") + "|"
+                + claims.hospitalId() + "|"
+                + routeId + "|"
+                + claims.studyInstanceUid();
     }
 
     @Override
@@ -3189,45 +3237,120 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
     }
 
     private String normalizeViewerDicomwebQuery(String path, String rawQuery, String studyInstanceUid) {
-        String safeQuery = stripViewerTokenQueryParameters(rawQuery);
         if (!"/studies".equals(path)) {
-            return safeQuery;
+            return stripViewerTokenQueryParameters(rawQuery);
         }
         String studyParam = "StudyInstanceUID=" + URLEncoder.encode(studyInstanceUid, StandardCharsets.UTF_8);
-        if (!hasText(safeQuery)) {
-            return studyParam;
+        ViewerStudyQueryScan queryScan = scanViewerStudyQuery(rawQuery, studyInstanceUid);
+        if (!queryScan.foundStudyParam()) {
+            return appendQueryParam(queryScan.safeNonStudyQuery(), studyParam);
         }
-
-        String[] params = safeQuery.split("&");
-        boolean foundStudyParam = false;
-        for (String param : params) {
-            String[] parts = param.split("=", 2);
-            String name = decodePathSegment(parts[0]);
-            if (isStudyInstanceUidQueryName(name)) {
-                foundStudyParam = true;
-                String value = parts.length > 1 ? decodePathSegment(parts[1]) : "";
-                if (!studyQueryValueOnlyContainsBoundStudy(value, studyInstanceUid)) {
-                    throw new SecurityException("Requested study query does not match the viewer token.");
-                }
-            }
+        if (!queryScan.containsBoundStudy()) {
+            throw new SecurityException("Requested study query does not match the viewer token.");
         }
-        return foundStudyParam ? safeQuery : safeQuery + "&" + studyParam;
+        return appendQueryParam(queryScan.safeNonStudyQuery(), studyParam);
     }
 
     private String stripViewerTokenQueryParameters(String rawQuery) {
         if (!hasText(rawQuery)) {
             return rawQuery;
         }
-        return Arrays.stream(rawQuery.split("&"))
-                .filter(param -> {
-                    if (!hasText(param)) {
-                        return false;
-                    }
-                    String[] parts = param.split("=", 2);
-                    String name = decodePathSegment(parts[0]).trim();
-                    return !Set.of(PARAM_TOKEN, "viewerToken", "dicomwebToken").contains(name);
-                })
-                .collect(Collectors.joining("&"));
+        StringBuilder kept = new StringBuilder(rawQuery.length());
+        scanRawQueryParameters(rawQuery, param -> {
+            if (!hasText(param)) {
+                return;
+            }
+            String name = decodeQueryParameterName(param).trim();
+            if (!isViewerTokenQueryName(name)) {
+                appendQueryParam(kept, param);
+            }
+        });
+        return kept.toString();
+    }
+
+    private static ViewerStudyQueryScan scanViewerStudyQuery(String rawQuery, String studyInstanceUid) {
+        StringBuilder safeNonStudyQuery = new StringBuilder();
+        boolean[] foundStudyParam = {false};
+        boolean[] containsBoundStudy = {false};
+        scanRawQueryParameters(rawQuery, param -> {
+            if (!hasText(param)) {
+                return;
+            }
+            String name = decodeQueryParameterName(param).trim();
+            if (isViewerTokenQueryName(name)) {
+                return;
+            }
+            if (isStudyInstanceUidQueryName(name)) {
+                foundStudyParam[0] = true;
+                String value = decodeQueryParameterValue(param);
+                if (studyQueryContainsBoundStudy(value, studyInstanceUid)) {
+                    containsBoundStudy[0] = true;
+                }
+                return;
+            }
+            appendQueryParam(safeNonStudyQuery, param);
+        });
+        return new ViewerStudyQueryScan(
+                safeNonStudyQuery.toString(),
+                foundStudyParam[0],
+                containsBoundStudy[0]
+        );
+    }
+
+    private static void scanRawQueryParameters(String rawQuery, java.util.function.Consumer<String> consumer) {
+        if (!hasText(rawQuery) || consumer == null) {
+            return;
+        }
+        int start = 0;
+        int length = rawQuery.length();
+        while (start <= length) {
+            int end = rawQuery.indexOf('&', start);
+            if (end < 0) {
+                end = length;
+            }
+            consumer.accept(rawQuery.substring(start, end));
+            if (end == length) {
+                break;
+            }
+            start = end + 1;
+        }
+    }
+
+    private static String decodeQueryParameterName(String param) {
+        int separator = param == null ? -1 : param.indexOf('=');
+        return decodePathSegment(separator >= 0 ? param.substring(0, separator) : param);
+    }
+
+    private static String decodeQueryParameterValue(String param) {
+        if (param == null) {
+            return "";
+        }
+        int separator = param.indexOf('=');
+        return separator >= 0 ? decodePathSegment(param.substring(separator + 1)) : "";
+    }
+
+    private static void appendQueryParam(StringBuilder builder, String param) {
+        if (builder == null || !hasText(param)) {
+            return;
+        }
+        if (builder.length() > 0) {
+            builder.append('&');
+        }
+        builder.append(param);
+    }
+
+    private static String appendQueryParam(String query, String param) {
+        if (!hasText(query)) {
+            return hasText(param) ? param : "";
+        }
+        if (!hasText(param)) {
+            return query;
+        }
+        return query + "&" + param;
+    }
+
+    private static boolean isViewerTokenQueryName(String name) {
+        return VIEWER_TOKEN_QUERY_NAMES.contains(name);
     }
 
     private void validateViewerDicomwebProxyRequest(String originalUri, String method, String studyInstanceUid) {
@@ -3262,44 +3385,43 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         if (!hasText(rawQuery) || !hasText(studyInstanceUid)) {
             return false;
         }
-        boolean matchedStudyFilter = false;
-        for (String param : rawQuery.split("&")) {
-            if (!hasText(param)) {
-                continue;
-            }
-            String[] parts = param.split("=", 2);
-            String name = decodePathSegment(parts[0]);
-            if (!isStudyInstanceUidQueryName(name)) {
-                continue;
-            }
-            String value = parts.length > 1 ? decodePathSegment(parts[1]) : "";
-            if (!studyQueryValueOnlyContainsBoundStudy(value, studyInstanceUid)) {
-                throw new SecurityException("Requested study query does not match the viewer token.");
-            }
-            matchedStudyFilter = true;
+        ViewerStudyQueryScan queryScan = scanViewerStudyQuery(rawQuery, studyInstanceUid);
+        if (queryScan.foundStudyParam() && !queryScan.containsBoundStudy()) {
+            throw new SecurityException("Requested study query does not match the viewer token.");
         }
-        return matchedStudyFilter;
+        return queryScan.containsBoundStudy();
     }
 
     private static boolean isStudyInstanceUidQueryName(String name) {
         return DicomTagConstants.STUDY_INSTANCE_UID.equals(name) || "StudyInstanceUIDs".equals(name);
     }
 
-    private static boolean studyQueryValueOnlyContainsBoundStudy(String value, String studyInstanceUid) {
+    private static boolean studyQueryContainsBoundStudy(String value, String studyInstanceUid) {
         if (!hasText(value) || !hasText(studyInstanceUid)) {
             return false;
         }
-        boolean foundValue = false;
-        for (String token : value.split("[,\\\\]")) {
-            if (!hasText(token)) {
-                continue;
+        int start = 0;
+        int length = value.length();
+        while (start <= length) {
+            int comma = value.indexOf(',', start);
+            int backslash = value.indexOf('\\', start);
+            int end;
+            if (comma < 0) {
+                end = backslash < 0 ? length : backslash;
+            } else if (backslash < 0) {
+                end = comma;
+            } else {
+                end = Math.min(comma, backslash);
             }
-            foundValue = true;
-            if (!studyInstanceUid.equals(token.trim())) {
-                return false;
+            if (studyInstanceUid.equals(value.substring(start, end).trim())) {
+                return true;
             }
+            if (end == length) {
+                break;
+            }
+            start = end + 1;
         }
-        return foundValue;
+        return false;
     }
 
     private static String decodePathSegment(String value) {
@@ -3393,6 +3515,33 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             String studyInstanceUid,
             String jti,
             Instant expiresAt
+    ) {
+    }
+
+    private record ViewerDicomwebProxyTarget(
+            String dicomwebBaseUrl,
+            String username,
+            String password
+    ) {
+    }
+
+    private static final class ViewerProxyTargetException extends RuntimeException {
+        private final HttpStatus status;
+
+        private ViewerProxyTargetException(HttpStatus status) {
+            super(status == null ? "Viewer DICOMweb target is unavailable" : status.toString());
+            this.status = status == null ? HttpStatus.BAD_GATEWAY : status;
+        }
+
+        private HttpStatus status() {
+            return status;
+        }
+    }
+
+    private record ViewerStudyQueryScan(
+            String safeNonStudyQuery,
+            boolean foundStudyParam,
+            boolean containsBoundStudy
     ) {
     }
 

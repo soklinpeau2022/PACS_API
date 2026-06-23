@@ -142,14 +142,14 @@ class DicomUploadServiceImplTest {
 
     @Test
     void configuredInstanceUploadParallelismAllowsFastBoundedForwarding() {
-        ReflectionTestUtils.setField(service, "instanceUploadParallelism", 200);
-        assertEquals(Integer.valueOf(200), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
+        ReflectionTestUtils.setField(service, "instanceUploadParallelism", 50);
+        assertEquals(Integer.valueOf(50), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
 
         ReflectionTestUtils.setField(service, "instanceUploadParallelism", 999);
-        assertEquals(Integer.valueOf(400), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
+        assertEquals(Integer.valueOf(64), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
 
         ReflectionTestUtils.setField(service, "instanceUploadParallelism", 0);
-        assertEquals(Integer.valueOf(400), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
+        assertEquals(Integer.valueOf(24), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
     }
 
     @Test
@@ -193,7 +193,7 @@ class DicomUploadServiceImplTest {
     }
 
     @Test
-    void acceptedDicomFileReportsMetadataSyncFailureWithoutMislabelingInstanceAsFailed() throws Exception {
+    void acceptedDicomFileRollsBackWhenMetadataSynchronizationFails() throws Exception {
         HospitalDicomServerResponse server = server();
         when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server));
         when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
@@ -213,14 +213,23 @@ class DicomUploadServiceImplTest {
                 new MockMultipartFile("files", "one.dcm", "application/dicom", new byte[] {1, 2, 3, 4})
         ), null, new MockHttpServletRequest());
 
-        assertTrue(response.getHeader().getResult());
+        assertFalse(response.getHeader().getResult());
         DicomUploadResponse body = (DicomUploadResponse) response.getBody().getData().get(0);
-        assertEquals(1, body.getAcceptedFiles());
+        assertEquals(0, body.getAcceptedFiles());
         assertEquals(0, body.getFailedFiles());
         assertEquals(1, body.getMetadataSyncFailures());
+        assertEquals(1, body.getRolledBackFiles());
+        assertEquals(0, body.getRollbackFailures());
+        assertEquals("ROLLED_BACK", body.getStatus());
         assertNotNull(body.getErrors());
         assertTrue(body.getErrors().get(0).contains("instance accepted"));
         assertTrue(body.getErrors().get(0).contains("study was not saved"));
+        verify(dicomServerClientService).deleteInstanceById(
+                "http://dicom.local",
+                "u",
+                "p",
+                "orthanc-instance-1"
+        );
         verifyNoInteractions(worklistMapper);
     }
 
@@ -334,6 +343,88 @@ class DicomUploadServiceImplTest {
     }
 
     @Test
+    void partialZipFailureRollsBackEveryNewlyAcceptedInstance() throws Exception {
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        AtomicInteger uploadNumber = new AtomicInteger();
+        when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
+                .thenAnswer(invocation -> {
+                    if (uploadNumber.incrementAndGet() == 1) {
+                        return uploadResponse("orthanc-instance-new", "Success");
+                    }
+                    throw new IllegalStateException("DICOM server upload failed with HTTP 422.");
+                });
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("accepted.dcm", new byte[] {1, 2, 3, 4});
+        entries.put("failed.dcm", new byte[] {5, 6, 7, 8});
+        MockMultipartFile zip = new MockMultipartFile(
+                "zipFile",
+                "partial.zip",
+                "application/zip",
+                zipBytes(entries)
+        );
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(
+                new DicomUploadRequest(),
+                null,
+                zip,
+                new MockHttpServletRequest()
+        );
+
+        assertFalse(response.getHeader().getResult());
+        DicomUploadResponse body = (DicomUploadResponse) response.getBody().getData().get(0);
+        assertEquals(0, body.getAcceptedFiles());
+        assertEquals(1, body.getFailedFiles());
+        assertEquals(1, body.getRolledBackFiles());
+        assertEquals(0, body.getRollbackFailures());
+        assertEquals("ROLLED_BACK", body.getStatus());
+        verify(dicomServerClientService).deleteInstanceById(
+                "http://dicom.local",
+                "u",
+                "p",
+                "orthanc-instance-new"
+        );
+        verifyNoInteractions(studyMapper);
+    }
+
+    @Test
+    void rollbackPreservesInstancesThatOrthancReportedAsAlreadyStored() throws Exception {
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        AtomicInteger uploadNumber = new AtomicInteger();
+        when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
+                .thenAnswer(invocation -> {
+                    if (uploadNumber.incrementAndGet() == 1) {
+                        return uploadResponse("orthanc-instance-existing", "AlreadyStored");
+                    }
+                    throw new IllegalStateException("DICOM server upload failed with HTTP 422.");
+                });
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("existing.dcm", new byte[] {1, 2, 3, 4});
+        entries.put("failed.dcm", new byte[] {5, 6, 7, 8});
+        MockMultipartFile zip = new MockMultipartFile(
+                "zipFile",
+                "existing-and-failed.zip",
+                "application/zip",
+                zipBytes(entries)
+        );
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(
+                new DicomUploadRequest(),
+                null,
+                zip,
+                new MockHttpServletRequest()
+        );
+
+        assertFalse(response.getHeader().getResult());
+        DicomUploadResponse body = (DicomUploadResponse) response.getBody().getData().get(0);
+        assertEquals(0, body.getAcceptedFiles());
+        assertEquals(1, body.getFailedFiles());
+        assertEquals(0, body.getRolledBackFiles());
+        assertEquals("ROLLED_BACK", body.getStatus());
+        verify(dicomServerClientService, times(0)).deleteInstanceById(any(), any(), any(), any());
+        verifyNoInteractions(studyMapper);
+    }
+
+    @Test
     void dicomDirAndKnownPackageMetadataAreSkippedInsteadOfReportedAsFailedInstances() throws Exception {
         when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
         MockMultipartFile zip = new MockMultipartFile(
@@ -354,10 +445,8 @@ class DicomUploadServiceImplTest {
     }
 
     @Test
-    void badFormatZipEntryRejectedByDicomServerIsSkippedInsteadOfReportedAsFailedInstance() throws Exception {
+    void nonDcmZipEntryIsSkippedWithoutForwardingToDicomServer() throws Exception {
         when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
-        when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
-                .thenThrow(new IllegalStateException("DICOM server upload failed with HTTP 400: Bad file format: Cannot parse an invalid DICOM file."));
         MockMultipartFile zip = new MockMultipartFile(
                 "zipFile",
                 "bad-sidecar.zip",
@@ -372,7 +461,48 @@ class DicomUploadServiceImplTest {
         assertEquals(0, body.getAcceptedFiles());
         assertEquals(0, body.getFailedFiles());
         assertEquals(1, body.getSkippedFiles());
-        assertTrue(body.getErrors().isEmpty());
+        verifyNoInteractions(dicomServerClientService);
+    }
+
+    @Test
+    void nonDcmMultipartFileIsSkippedWithoutForwardingToDicomServer() throws Exception {
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(new DicomUploadRequest(), List.of(
+                new MockMultipartFile("files", "one.dicom", "application/dicom", new byte[] {1, 2, 3, 4}),
+                new MockMultipartFile("files", "two.txt", "text/plain", new byte[] {1, 2, 3, 4})
+        ), null, new MockHttpServletRequest());
+
+        assertFalse(response.getHeader().getResult());
+        DicomUploadResponse body = (DicomUploadResponse) response.getBody().getData().get(0);
+        assertEquals(0, body.getAcceptedFiles());
+        assertEquals(0, body.getFailedFiles());
+        assertEquals(2, body.getSkippedFiles());
+        assertTrue(body.getErrors().stream().anyMatch(error -> error.contains("only .dcm files are allowed")));
+        verifyNoInteractions(dicomServerClientService);
+    }
+
+    @Test
+    void firstFailedDicomStopsSchedulingLaterArchiveEntries() throws Exception {
+        ReflectionTestUtils.setField(service, "instanceUploadParallelism", 1);
+        when(dicomServerMapper.listActiveDicomServersByHospital(11L)).thenReturn(List.of(server()));
+        when(dicomServerClientService.uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L)))
+                .thenThrow(new IllegalStateException("DICOM server upload failed with HTTP 422."));
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("failed-first.dcm", new byte[] {1, 2, 3, 4});
+        entries.put("must-not-upload.dcm", new byte[] {5, 6, 7, 8});
+        entries.put("also-must-not-upload.dcm", new byte[] {9, 10, 11, 12});
+
+        ResponseMessage<BaseResult> response = service.uploadDicom(
+                new DicomUploadRequest(),
+                null,
+                new MockMultipartFile("zipFile", "stop-on-failure.zip", "application/zip", zipBytes(entries)),
+                new MockHttpServletRequest()
+        );
+
+        assertFalse(response.isSuccess());
+        verify(dicomServerClientService, times(1))
+                .uploadInstance(eq("http://dicom.local"), eq("u"), eq("p"), any(), eq(4L));
     }
 
     @Test
@@ -548,10 +678,16 @@ class DicomUploadServiceImplTest {
     }
 
     private static DicomServerInstanceUploadResponse uploadResponse() {
+        return uploadResponse("orthanc-instance-1", "Success");
+    }
+
+    private static DicomServerInstanceUploadResponse uploadResponse(String instanceId, String status) {
         DicomServerInstanceUploadResponse response = new DicomServerInstanceUploadResponse();
+        response.setId(instanceId);
         response.setParentPatient("orthanc-patient-1");
         response.setParentStudy("orthanc-study-1");
         response.setParentSeries("series-1");
+        response.setStatus(status);
         return response;
     }
 
