@@ -10,9 +10,12 @@
     <logger name="com.ut.emrPacs.authentication.util.RefreshTokenCryptoService" level="ERROR"/>
     <logger name="com.ut.emrPacs.service.serviceImpl.AuthServiceImpl" level="ERROR"/>
     <logger name="com.ut.emrPacs.authentication.util.CookieUtils" level="ERROR"/>
-    <logger name="com.ut.emrPacs.config.GlobalExceptionHandler" level="ERROR"/>
+    <!-- Negative-path tests intentionally trigger these paths; keep successful deploy gates quiet. -->
+    <logger name="com.ut.emrPacs.config.GlobalExceptionHandler" level="OFF"/>
+    <logger name="com.ut.emrPacs.helper.SystemErrorAlertService" level="OFF"/>
+    <logger name="com.ut.emrPacs.service.serviceImpl.DicomUploadServiceImpl" level="OFF"/>
 
-    <root level="WARN">
+    <root level="ERROR">
         <appender-ref ref="CONSOLE"/>
     </root>
 </configuration>

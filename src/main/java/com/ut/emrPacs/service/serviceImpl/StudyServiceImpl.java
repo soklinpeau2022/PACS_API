@@ -373,15 +373,16 @@ public class StudyServiceImpl implements StudyService {
             return null;
         }
         String serverBaseUrl = normalizePublicBaseUrl(server.getDicomServerUiBaseUrl());
-        if (hasText(serverBaseUrl)) {
+        if (isPublicBrowserUrl(serverBaseUrl)) {
             return serverBaseUrl;
         }
-        return normalizePublicBaseUrl(resolveDicomServerBaseUrl(server));
+        String derivedBaseUrl = normalizePublicBaseUrl(resolveDicomServerBaseUrl(server));
+        return isPublicBrowserUrl(derivedBaseUrl) ? derivedBaseUrl : null;
     }
 
     private String resolvePublicDicomwebBaseUrl(HospitalDicomServerResponse server) {
         String configuredDicomwebBaseUrl = normalizePublicBaseUrl(server == null ? null : server.getDicomwebBaseUrl());
-        if (hasText(configuredDicomwebBaseUrl)) {
+        if (isPublicBrowserUrl(configuredDicomwebBaseUrl)) {
             return configuredDicomwebBaseUrl;
         }
         String uiBaseUrl = resolvePublicDicomServerUiBaseUrl(server);
@@ -498,6 +499,24 @@ public class StudyServiceImpl implements StudyService {
             return null;
         }
         return value.trim().replaceAll("/+$", "");
+    }
+
+    private boolean isPublicBrowserUrl(String value) {
+        String normalized = normalizePublicBaseUrl(value);
+        if (!hasText(normalized)) {
+            return false;
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(normalized);
+            String host = uri.getHost();
+            if (!hasText(host)) {
+                return false;
+            }
+            String lowerHost = host.toLowerCase(Locale.ROOT);
+            return !lowerHost.contains("_");
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private static String firstNonBlank(String... values) {

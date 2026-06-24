@@ -103,6 +103,7 @@ public class PacsResultServiceImpl implements PacsResultService {
     private static final int MAX_VIEWER_STATE_CHUNKS = 128;
     private static final int MAX_VIEWER_STATE_CHUNK_UPLOAD_ID_LENGTH = 128;
     private static final long VIEWER_STATE_CHUNK_TTL_MS = 10L * 60L * 1000L;
+    private static final int MAX_PATH_SEGMENT_LENGTH = 80;
 
     @Autowired
     private PacsResultMapper pacsResultMapper;
@@ -614,6 +615,51 @@ public class PacsResultServiceImpl implements PacsResultService {
         }
 
         Long hospitalId = firstNonNull(safeRequest.getHospitalId(), access.claims().hospitalId());
+        return hospitalLogoResponse(hospitalId);
+    }
+
+    /**
+     * Public, pre-authentication hospital-logo reader for the patient result access gate.
+     *
+     * <p>The gate page is shown BEFORE the patient is authorized (no viewer token yet), so this
+     * cannot go through {@code authorizeContextRequest} (which requires viewer-access claims).
+     * Instead it relies on the trusted proxy API key that the viewer's nginx injects on this
+     * {@code /pacs-result-api/} route, plus full link-scope validation (hospital + worklist/study
+     * keys must resolve). Only the hospital branding logo is returned — never any PHI — and the
+     * route is rate-limited (see SecurityRateLimitFilter).</p>
+     */
+    @Override
+    public ResponseEntity<Resource> readPublicViewerHospitalLogo(
+            PacsResultContextRequest request,
+            HttpServletRequest httpServletRequest
+    ) {
+        // Trusted-proxy gate: the static server API key is injected by nginx, never by the browser.
+        if (!hasServerResultAuth(httpServletRequest, null)) {
+            return ResponseEntity.status(401).build();
+        }
+        PacsResultContextRequest safeRequest = request == null ? new PacsResultContextRequest() : request;
+        if (!hasText(safeRequest.getHospitalKey())
+                || (!hasText(safeRequest.getWorklistKey()) && !hasText(safeRequest.getStudyKey()))) {
+            return ResponseEntity.notFound().build();
+        }
+        try {
+            // Resolves + validates the public keys (throws if a supplied key does not resolve).
+            resolveContextPublicKeys(safeRequest);
+        } catch (RuntimeException scopeError) {
+            return ResponseEntity.notFound().build();
+        }
+        Long hospitalId = safeRequest.getHospitalId();
+        // A valid hospital plus at least one resolvable worklist/study link — so this is a real
+        // scoped link, not a bare hospital-id enumeration.
+        if (hospitalId == null || hospitalId <= 0
+                || (positiveOrNull(safeRequest.getWorklistId()) == null
+                && positiveOrNull(safeRequest.getStudyId()) == null)) {
+            return ResponseEntity.notFound().build();
+        }
+        return hospitalLogoResponse(hospitalId);
+    }
+
+    private ResponseEntity<Resource> hospitalLogoResponse(Long hospitalId) {
         if (hospitalId == null || hospitalId <= 0) {
             return ResponseEntity.notFound().build();
         }
@@ -2546,14 +2592,14 @@ public class PacsResultServiceImpl implements PacsResultService {
             return;
         }
         String hospitalSegment = resolveHospitalSegment(hospitalId);
-        String modalityCode = resolveModalityCode(modalityId);
+        String modalityFolderName = resolveModalityFolderName(modalityId);
         int sortOrder = pacsResultMapper.nextImageSortOrder(resultId);
         List<StoredResultImage> storedImages = new ArrayList<>();
         for (MultipartFile image : images) {
             if (image == null || image.isEmpty()) {
                 continue;
             }
-            storedImages.add(storeOneImage(hospitalSegment, modalityCode, resultId, image));
+            storedImages.add(storeOneImage(hospitalSegment, modalityFolderName, resultId, image));
         }
         for (StoredResultImage image : storedImages) {
             pacsResultMapper.insertImage(
@@ -2569,7 +2615,7 @@ public class PacsResultServiceImpl implements PacsResultService {
         }
     }
 
-    private StoredResultImage storeOneImage(String hospitalSegment, String modalityCode, Long resultId, MultipartFile file) throws IOException {
+    private StoredResultImage storeOneImage(String hospitalSegment, String modalityFolderName, Long resultId, MultipartFile file) throws IOException {
         if (file.getSize() > maxImageBytes) {
             throw new IllegalArgumentException("Image file is too large.");
         }
@@ -2582,7 +2628,7 @@ public class PacsResultServiceImpl implements PacsResultService {
 
         String fileName = buildStoredFileName(resultId, originalFilename, detectedType.extension());
         String safeHospitalSegment = safePathSegment(hospitalSegment, "HOSPITAL");
-        String safeModalitySegment = safePathSegment(modalityCode, "MODALITY");
+        String safeModalitySegment = safePathSegment(modalityFolderName, "MODALITY");
         Path directory = resolveUploadDirectory()
                 .resolve(safeHospitalSegment)
                 .resolve(safeModalitySegment)
@@ -2614,21 +2660,21 @@ public class PacsResultServiceImpl implements PacsResultService {
             return "HOSPITAL_" + hospitalId;
         }
         HospitalResponseDetail hospital = hospitals.get(0);
-        return firstNonBlank(
-                hospital.getAbbr(),
+        String hospitalFolderName = buildHospitalFolderName(
                 hospital.getCode(),
-                hospital.getHospitalName(),
-                "HOSPITAL_" + hospitalId
+                hospital.getAbbr(),
+                hospital.getHospitalName()
         );
+        return firstNonBlank(hospitalFolderName, "HOSPITAL_" + hospitalId);
     }
 
-    private String resolveModalityCode(Long modalityId) {
+    private String resolveModalityFolderName(Long modalityId) {
         List<ModalityResponse> modalities = modalityMapper.getModalityById(modalityId);
         if (modalities == null || modalities.isEmpty()) {
             return "MODALITY";
         }
         ModalityResponse modality = modalities.get(0);
-        return firstNonBlank(modality.getAbbr(), modality.getName(), "MODALITY");
+        return buildModalityFolderName(modality.getAbbr(), modality.getName());
     }
 
     private Path resolveUploadDirectory() {
@@ -2820,11 +2866,63 @@ public class PacsResultServiceImpl implements PacsResultService {
     }
 
     private static String safePathSegment(String value, String fallback) {
-        String safeFallback = firstNonBlank(fallback, "SEGMENT").toUpperCase(Locale.ROOT)
-                .replaceAll("[^A-Z0-9_-]", "_");
-        String segment = firstNonBlank(value, safeFallback).toUpperCase(Locale.ROOT)
-                .replaceAll("[^A-Z0-9_-]", "_");
+        String safeFallback = sanitizePathSegment(firstNonBlank(fallback, "SEGMENT"));
+        String segment = sanitizePathSegment(firstNonBlank(value, safeFallback));
         return segment.isBlank() ? safeFallback : segment;
+    }
+
+    private static String buildHospitalFolderName(String hospitalCode, String hospitalAbbr, String hospitalName) {
+        String safeCode = sanitizePathSegment(hospitalCode);
+        String safeAbbr = sanitizePathSegment(hospitalAbbr);
+        String safeName = sanitizePathSegment(hospitalName);
+        if (!safeAbbr.isEmpty() && !safeName.isEmpty()) {
+            return safeAbbr + "_" + safeName;
+        }
+        if (!safeCode.isEmpty() && !safeName.isEmpty()) {
+            return safeCode + "_" + safeName;
+        }
+        if (!safeAbbr.isEmpty()) {
+            return safeAbbr;
+        }
+        if (!safeCode.isEmpty()) {
+            return safeCode;
+        }
+        if (!safeName.isEmpty()) {
+            return safeName;
+        }
+        return "HOSPITAL";
+    }
+
+    private static String buildModalityFolderName(String modalityAbbr, String modalityName) {
+        String safeAbbr = sanitizePathSegment(modalityAbbr);
+        String safeName = sanitizePathSegment(modalityName);
+        if (!safeName.isEmpty()) {
+            return firstNonBlank(safeAbbr, "OT") + "_" + safeName;
+        }
+        return firstNonBlank(safeAbbr, "MODALITY");
+    }
+
+    private static String sanitizePathSegment(String value) {
+        if (value == null) {
+            return "";
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return "";
+        }
+
+        String sanitized = trimmed.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]+", "_");
+        sanitized = sanitized.replaceAll("\\s+", "_");
+        sanitized = sanitized.replaceAll("_+", "_");
+        sanitized = sanitized.replaceAll("^[._]+", "");
+        sanitized = sanitized.replaceAll("[._]+$", "");
+        if (sanitized.equals(".") || sanitized.equals("..")) {
+            return "";
+        }
+        if (sanitized.length() > MAX_PATH_SEGMENT_LENGTH) {
+            sanitized = sanitized.substring(0, MAX_PATH_SEGMENT_LENGTH);
+        }
+        return sanitized.toUpperCase(Locale.ROOT);
     }
 
     private static DetectedImageType detectImageType(byte[] bytes) {

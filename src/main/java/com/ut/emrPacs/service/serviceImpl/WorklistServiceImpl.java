@@ -2611,10 +2611,11 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             return null;
         }
         String serverBaseUrl = normalizePublicBaseUrl(server.getDicomServerUiBaseUrl());
-        if (hasText(serverBaseUrl)) {
+        if (isPublicBrowserUrl(serverBaseUrl)) {
             return serverBaseUrl;
         }
-        return normalizePublicBaseUrl(resolveDicomServerBaseUrl(server));
+        String derivedBaseUrl = normalizePublicBaseUrl(resolveDicomServerBaseUrl(server));
+        return isPublicBrowserUrl(derivedBaseUrl) ? derivedBaseUrl : null;
     }
 
     private String resolvePublicViewerBaseUrl(HospitalDicomServerResponse server) {
@@ -2702,7 +2703,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 && hasText(configuredDicomwebBaseUrl)
                 && configuredDicomwebBaseUrl.startsWith(internalServerBaseUrl + "/");
 
-        if (hasText(configuredDicomwebBaseUrl) && !configuredLooksLikeViewerRoute && !configuredLooksLikeInternalRoute) {
+        if (isPublicBrowserUrl(configuredDicomwebBaseUrl) && !configuredLooksLikeViewerRoute && !configuredLooksLikeInternalRoute) {
             return configuredDicomwebBaseUrl;
         }
         String resolvedDicomServerUiBaseUrl = resolvePublicDicomServerUiBaseUrl(server);
@@ -2710,7 +2711,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             return appendPublicPath(resolvedDicomServerUiBaseUrl, DEFAULT_DICOMWEB_PATH);
         }
 
-        if (hasText(configuredDicomwebBaseUrl) && !configuredLooksLikeViewerRoute) {
+        if (isPublicBrowserUrl(configuredDicomwebBaseUrl) && !configuredLooksLikeViewerRoute) {
             return configuredDicomwebBaseUrl;
         }
 
@@ -3553,6 +3554,24 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             return null;
         }
         return value.trim().replaceAll("/+$", "");
+    }
+
+    private boolean isPublicBrowserUrl(String value) {
+        String normalized = normalizePublicBaseUrl(value);
+        if (!hasText(normalized)) {
+            return false;
+        }
+        try {
+            URI uri = URI.create(normalized);
+            String host = uri.getHost();
+            if (!hasText(host)) {
+                return false;
+            }
+            String lowerHost = host.toLowerCase(Locale.ROOT);
+            return !lowerHost.contains("_");
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private String appendPublicPath(String baseUrl, String path) {

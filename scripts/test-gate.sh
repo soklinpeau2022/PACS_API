@@ -99,7 +99,7 @@ send_telegram_alert() {
 TESTS="EndpointPentestSmokeTest,SecurityThreatDetectionFilterTest,SecurityRateLimitFilterTest,GlobalRequestSizeLimitFilterTest,DicomUploadServiceImplTest,AuthServiceRefreshTokenTest,UserMapperXmlHardeningTest,RefreshTokenCryptoServiceTest,EndpointContractCoverageTest,ApiConstantsCoverageTest,MigrationSafetyPolicyTest,GlobalExceptionHandlerTest,SystemErrorAlertServiceTest,SecurityIncidentReporterTest,MyBatisSqlInjectionGuardInterceptorTest,ModulePermissionFilterTest,ActiveHospitalFilterTest,RevokedTokenFilterTest,RequestPayloadGuardTest,SqlSanitizerHelperTest"
 
 echo "Running endpoint/security gate tests..."
-if ./mvnw -q "-Dtest=${TESTS}" test; then
+if ./mvnw -q clean "-Dtest=${TESTS}" test; then
   send_telegram_alert "PASSED" "Endpoint+security test gate passed"
   echo "Gate passed."
 else

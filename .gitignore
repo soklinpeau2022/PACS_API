@@ -62,6 +62,8 @@ src/main/resources/key/*
 .model_remove*.txt
 udaya_dicom_server-*.zip
 udaya_dicom_server-*/worklists/*.wl
+dicom-server-images/
+**/images/dicom_server_base.tar
 runtime-image/
 runtime-dicom-upload-temp/
 tools/.cache/

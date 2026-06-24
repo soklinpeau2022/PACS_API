@@ -50,6 +50,31 @@ class DicomServerHealthServiceImplTest {
         assertSnapshot(third, "OFFLINE", false, 2, firstCheck.plusSeconds(2));
     }
 
+    @Test
+    void rewriteLoopbackHealthUrlForContainerProbe() {
+        String rewritten = ReflectionTestUtils.invokeMethod(
+                DicomServerHealthServiceImpl.class,
+                "rewriteLoopbackUrl",
+                "http://127.0.0.1:8042/system",
+                "host.docker.internal"
+        );
+
+        assertEquals("http://host.docker.internal:8042/system", rewritten);
+    }
+
+    @Test
+    void rewriteLoopbackHealthUrlKeepsNonLoopbackHost() {
+        String original = "http://10.10.10.20:8042/system";
+        String rewritten = ReflectionTestUtils.invokeMethod(
+                DicomServerHealthServiceImpl.class,
+                "rewriteLoopbackUrl",
+                original,
+                "host.docker.internal"
+        );
+
+        assertEquals(original, rewritten);
+    }
+
     private DicomServerHealthServiceImpl serviceWithOfflinePolicy(int threshold, long graceMs) {
         DicomServerHealthServiceImpl service = new DicomServerHealthServiceImpl(dicomServerMapper, jdbcTemplate);
         ReflectionTestUtils.setField(service, "offlineFailureThreshold", threshold);

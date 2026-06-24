@@ -89,6 +89,65 @@ config_value() {
   env_value "$key"
 }
 
+docker_cmd() {
+  MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker "$@"
+}
+
+primary_ipv4() {
+  local ip
+  if command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
+    if [[ -n "$ip" && "$ip" != 127.* && "$ip" != 169.254.* ]]; then
+      printf '%s' "$ip"
+      return
+    fi
+  fi
+  if command -v hostname >/dev/null 2>&1; then
+    ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | awk '!/^127\./ && !/^169\.254\./ && NF { print; exit }')"
+    if [[ -n "$ip" ]]; then
+      printf '%s' "$ip"
+      return
+    fi
+  fi
+  printf '127.0.0.1'
+}
+
+resolve_bind_host() {
+  local value="${1:-}"
+  value="$(printf '%s' "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  local lower
+  lower="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "$value" || "$lower" == "auto" ]]; then
+    if [[ "$TARGET" == "local" ]]; then
+      printf '127.0.0.1'
+    else
+      primary_ipv4
+    fi
+    return
+  fi
+  case "$lower" in
+    0.0.0.0|\*|::|\[::\])
+      if [[ "$TARGET" == "local" ]]; then
+        printf '127.0.0.1'
+      else
+        primary_ipv4
+      fi
+      ;;
+    *)
+      printf '%s' "$value"
+      ;;
+  esac
+}
+
+health_host_for_bind() {
+  local value="${1:-127.0.0.1}"
+  if [[ "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" == "localhost" ]]; then
+    printf '127.0.0.1'
+  else
+    printf '%s' "$value"
+  fi
+}
+
 telegram_config_value() {
   local key value
   for key in "$@"; do
@@ -421,6 +480,9 @@ if [[ -z "$candidate_port" ]]; then
     candidate_port="9080"
   fi
 fi
+api_bind_host="$(env_value "${TARGET^^}_API_BIND_HOST")"
+api_bind_host="${api_bind_host:-$(env_value API_BIND_HOST)}"
+api_bind_host="$(resolve_bind_host "$api_bind_host")"
 redis_container_key="${TARGET^^}_REDIS_CONTAINER_NAME"
 redis_password_key="${TARGET^^}_REDIS_PASSWORD"
 redis_host_port_key="${TARGET^^}_REDIS_HOST_PORT"
@@ -441,7 +503,7 @@ redis_image="$(env_value_or_default REDIS_IMAGE redis:7-alpine)"
 redis_port="$(env_value_or_default REDIS_PORT 6379)"
 
 compose() {
-  docker compose --env-file "$ENV_FILE" --profile "$TARGET" -f docker-compose.yml "$@"
+  docker_cmd compose --env-file "$ENV_FILE" --profile "$TARGET" -f docker-compose.yml "$@"
 }
 
 endpoint_gate() {
@@ -481,7 +543,13 @@ api_base_url() {
   local value
   value="$(target_env_value API_AUTH_URL API_AUTH_URL)"
   if [[ -z "$value" ]]; then
-    value="http://127.0.0.1:${health_port}/pacsApi"
+    local base_host
+    if [[ "$TARGET" == "local" ]]; then
+      base_host="127.0.0.1"
+    else
+      base_host="$(health_host_for_bind "$api_bind_host")"
+    fi
+    value="http://${base_host}:${health_port}/pacsApi"
   fi
   printf '%s' "${value%/}"
 }
@@ -545,7 +613,7 @@ database_container_preflight() {
   else
     port="5432"
   fi
-  if docker run --rm \
+  if docker_cmd run --rm \
     --network "$redis_network_name" \
     --entrypoint bash \
     "$image_name" \
@@ -574,14 +642,14 @@ resolve_host_path() {
 }
 
 container_exists() {
-  docker container inspect "$1" >/dev/null 2>&1
+  docker_cmd container inspect "$1" >/dev/null 2>&1
 }
 
 remove_container_if_exists() {
   local name="$1"
   local attempt
   if container_exists "$name"; then
-    docker rm -f "$name" >/dev/null
+    docker_cmd rm -f "$name" >/dev/null
     for ((attempt = 1; attempt <= 30; attempt++)); do
       if ! container_exists "$name"; then
         return 0
@@ -642,15 +710,15 @@ ensure_redis_env_values() {
 ensure_docker_network() {
   local name="$1"
   local output status
-  if ! docker network inspect "$name" >/dev/null 2>&1; then
+  if ! docker_cmd network inspect "$name" >/dev/null 2>&1; then
     set +e
-    output="$(docker network create "$name" 2>&1)"
+    output="$(docker_cmd network create "$name" 2>&1)"
     status=$?
     set -e
     if [[ "$status" -eq 0 ]]; then
       return 0
     fi
-    if [[ "$output" == *"already exists"* ]] && docker network inspect "$name" >/dev/null 2>&1; then
+    if [[ "$output" == *"already exists"* ]] && docker_cmd network inspect "$name" >/dev/null 2>&1; then
       return 0
     fi
     printf '%s\n' "$output" >&2
@@ -664,7 +732,7 @@ redis_health() {
   local password attempt
   password="$(env_value "$redis_password_key")"
   for ((attempt = 1; attempt <= attempts; attempt++)); do
-    if docker exec "$redis_container_name" redis-cli --no-auth-warning -a "$password" ping 2>/dev/null | grep -q PONG; then
+    if docker_cmd exec "$redis_container_name" redis-cli --no-auth-warning -a "$password" ping 2>/dev/null | grep -q PONG; then
       return 0
     fi
     sleep "$delay"
@@ -683,7 +751,7 @@ ensure_redis_container() {
   password="$(env_value "$redis_password_key")"
   maxmemory="$(env_value_or_default REDIS_MAXMEMORY 512mb)"
   maxmemory_policy="$(env_value_or_default REDIS_MAXMEMORY_POLICY allkeys-lru)"
-  docker run -d \
+  docker_cmd run -d \
     --name "$redis_container_name" \
     --network "$redis_network_name" \
     -p "127.0.0.1:${redis_host_port}:6379" \
@@ -718,6 +786,8 @@ start_api_container() {
   local key_path
   local image_path
   local dicom_upload_mount
+  local base_image_archive_host_path
+  local base_image_archive_container_path
   local port_spec
 
   remove_container_if_exists "$name"
@@ -733,8 +803,8 @@ start_api_container() {
     local compose_project upload_volume
     compose_project="$(env_value_or_default API_COMPOSE_PROJECT_NAME udaya_pacs_api)"
     upload_volume="${compose_project}_udaya_pacs_local_dicom_upload_temp"
-    docker volume create "$upload_volume" >/dev/null
-    docker run --rm --user 0 \
+    docker_cmd volume create "$upload_volume" >/dev/null
+    docker_cmd run --rm --user 0 \
       -v "${upload_volume}:/var/ut-dicom-upload-temp" \
       --entrypoint sh \
       "$image_override" \
@@ -752,10 +822,12 @@ start_api_container() {
   fi
   ensure_docker_network "$redis_network_name"
   if [[ "$public_bind" == "true" ]]; then
-    port_spec="${host_port}:8080"
+    port_spec="${api_bind_host}:${host_port}:8080"
   else
     port_spec="127.0.0.1:${host_port}:8080"
   fi
+  base_image_archive_host_path="$(resolve_host_path "$(env_value PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_HOST_PATH)" "./dicom-server-images/dicom_server_base.tar")"
+  base_image_archive_container_path="$(env_value_or_default PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_CONTAINER_PATH /app/dicom-server-images/dicom_server_base.tar)"
 
   local env_pairs=(
     "SPRING_PROFILES_ACTIVE=$TARGET"
@@ -793,6 +865,9 @@ start_api_container() {
     "PACS_RESULT_API_KEY=$(env_value PACS_RESULT_API_KEY)"
     "PACS_RESULT_UPLOAD_ROOT=$(env_value_or_default PACS_RESULT_UPLOAD_ROOT /var/ut-image)"
     "PACS_RESULT_MAX_IMAGE_BYTES=$(env_value_or_default PACS_RESULT_MAX_IMAGE_BYTES 10485760)"
+    "PACS_DICOM_SERVER_PACKAGE_INCLUDE_BASE_IMAGE=$(env_value_or_default PACS_DICOM_SERVER_PACKAGE_INCLUDE_BASE_IMAGE false)"
+    "PACS_DICOM_SERVER_PACKAGE_BASE_IMAGE_ARCHIVE_PATH=$(env_value_or_default PACS_DICOM_SERVER_PACKAGE_BASE_IMAGE_ARCHIVE_PATH "$base_image_archive_container_path")"
+    "PACS_DICOM_SERVER_PACKAGE_MAX_EMBEDDED_BASE_IMAGE_BYTES=$(env_value_or_default PACS_DICOM_SERVER_PACKAGE_MAX_EMBEDDED_BASE_IMAGE_BYTES 67108864)"
     "SPRING_MAIL_USERNAME=$(target_env_value SPRING_MAIL_USERNAME)"
     "SPRING_MAIL_PASSWORD=$(target_env_value SPRING_MAIL_PASSWORD)"
     "API_AUTH_URL=$(target_env_value API_AUTH_URL API_AUTH_URL)"
@@ -810,6 +885,14 @@ start_api_container() {
   )
 
   local args=(run -d --name "$name" -p "$port_spec" --restart "$restart_policy" --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --network "$redis_network_name" --tmpfs /tmp:size=64m,mode=1777 -v "${key_path}:/app/config/key:ro" -v "${image_path}:/var/ut-image" -v "$dicom_upload_mount")
+  if [[ -f "$base_image_archive_host_path" ]]; then
+    args+=(-v "${base_image_archive_host_path}:${base_image_archive_container_path}:ro")
+  fi
+  local local_api_docker_ip
+  local_api_docker_ip="$(env_value LOCAL_API_DOCKER_IP)"
+  if [[ "$TARGET" == "local" && "$public_bind" == "true" && -n "$local_api_docker_ip" ]]; then
+    args+=(--ip "$local_api_docker_ip")
+  fi
   local pair
   for pair in "${env_pairs[@]}"; do
     if [[ "$pair" != *= ]]; then
@@ -817,7 +900,7 @@ start_api_container() {
     fi
   done
   args+=("$image_override")
-  docker "${args[@]}" >/dev/null
+  docker_cmd "${args[@]}" >/dev/null
 }
 
 api_health() {
@@ -857,10 +940,10 @@ show_container_failure() {
   local name="$1"
   local logs
   echo "Container diagnostics: $name" >&2
-  docker ps -a --filter "name=^/${name}$" \
+  docker_cmd ps -a --filter "name=^/${name}$" \
     --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' >&2 || true
   echo "Last 200 container log lines:" >&2
-  logs="$(docker logs --tail 200 "$name" 2>&1 || true)"
+  logs="$(docker_cmd logs --tail 200 "$name" 2>&1 || true)"
   printf '%s\n' "$logs" | sanitize_text >&2 || true
   if [[ "$logs" == *"password authentication failed for user"* ]]; then
     cat >&2 <<'EOF'
@@ -910,7 +993,7 @@ case "$ACTION" in
     remove_container_if_exists "$redis_container_name"
     while IFS= read -r rollback_name; do
       [[ -n "$rollback_name" ]] && remove_container_if_exists "$rollback_name"
-    done < <(docker ps -a --format '{{.Names}}' | grep "^${service_name}_rollback_" || true)
+    done < <(docker_cmd ps -a --format '{{.Names}}' | grep "^${service_name}_rollback_" || true)
     ;;
   restart)
     "$0" "$TARGET" down
@@ -947,8 +1030,8 @@ case "$ACTION" in
     had_live=false
     if container_exists "$service_name"; then
       had_live=true
-      docker stop "$service_name" >/dev/null 2>&1 || true
-      docker rename "$service_name" "$backup_name"
+      docker_cmd stop "$service_name" >/dev/null 2>&1 || true
+      docker_cmd rename "$service_name" "$backup_name"
     fi
 
     if start_api_container "$service_name" "$health_port" "unless-stopped" "true" "$image_name" && public_api_health 60 1; then
@@ -964,8 +1047,8 @@ case "$ACTION" in
     echo "Promotion failed. Attempting rollback to previous API container." >&2
     remove_container_if_exists "$service_name"
     if [[ "$had_live" == "true" ]]; then
-      docker rename "$backup_name" "$service_name"
-      docker start "$service_name" >/dev/null
+      docker_cmd rename "$backup_name" "$service_name"
+      docker_cmd start "$service_name" >/dev/null
       public_api_health 30 1
     fi
     remove_container_if_exists "$tmp_name"
@@ -974,7 +1057,7 @@ case "$ACTION" in
     exit 1
     ;;
   logs)
-    docker logs -f --tail 200 "$service_name"
+    docker_cmd logs -f --tail 200 "$service_name"
     ;;
   ps)
     compose ps

@@ -11,6 +11,9 @@ import com.ut.emrPacs.model.dto.request.pacs.dicom.HospitalModalityServerRouteLi
 import com.ut.emrPacs.model.dto.request.pacs.dicom.HospitalModalityServerRouteRequestUpdate;
 import com.ut.emrPacs.model.dto.request.pacs.dicom.HospitalModalityServerRouteSaveRequest;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.net.UnknownHostException;
 
@@ -54,4 +57,8 @@ public interface DicomServerService {
     ResponseMessage<BaseResult> deleteRouting(Long id, HttpServletRequest httpServletRequest) throws UnknownHostException;
 
     ResponseMessage<BaseResult> buildRoutingDicomServerConfig(Long id, HttpServletRequest httpServletRequest) throws UnknownHostException;
+
+    ResponseEntity<StreamingResponseBody> downloadRoutingDicomServerConfigZip(Long id, HttpServletRequest httpServletRequest) throws UnknownHostException;
+
+    ResponseEntity<Resource> downloadDicomServerBaseImage(HttpServletRequest httpServletRequest) throws UnknownHostException;
 }

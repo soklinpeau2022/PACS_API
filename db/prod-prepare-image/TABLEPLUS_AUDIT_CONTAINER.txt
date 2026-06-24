@@ -1,0 +1,48 @@
+UDAYA PACS TablePlus audit database
+
+Image:
+  udaya_pacs_prod_prepare_db_audit:latest
+  Current local image id: a5718d9c1e8e
+
+Container:
+  pacs-db-prod-audit
+
+Connection:
+  Host: 127.0.0.1
+  Port: 15433
+  Database: emr_pacs_db
+  User: pacs_tableplus_audit
+  Password: PacsAudit_2026_ReadOnly
+
+Notes:
+  - This container is initialized from the cleaned prod-prepare export.
+  - Export bundled into the image:
+    PACS_API/db/exports/emr_pacs_db_prod_baseline_udaya_clean_twostep_20260624_140355.sql
+  - Official cleanup SQL used for this baseline:
+    PACS_API/db/scripts/01_prod_truncate_clean_core.sql
+    PACS_API/db/scripts/02_prod_seed_udaya_hospital.sql
+  - The TablePlus user is read-only.
+  - The live local DB container pacs-db is not used by this audit container.
+  - Postgres data is stored in Docker volume pacs_db_prod_audit_data.
+  - The cleaned audit DB keeps 11 primary modalities:
+    CR, CT, DR, DX, MG, MR, OT, PT, US, XA, XC.
+  - The cleaned audit DB keeps one fresh hospital:
+    id=1, code=UDAYA, name=UDAYA Hospital.
+  - The cleaned audit DB keeps one admin user and six core active roles.
+  - DICOM routing is freshly seeded:
+    one UDAYA DICOM Server, one routing config, 11 machines, 11 routes.
+  - Runtime patient/study/worklist/result/token/log tables are truncated.
+  - Generated month/year partition children were removed for the new-prod
+    baseline. Each partitioned parent keeps only its default partition.
+
+Admin container user, if you need to recreate or inspect internally:
+  POSTGRES_USER=pacs_audit_admin
+  POSTGRES_DB=emr_pacs_db
+
+Rebuild image:
+  docker build -t udaya_pacs_prod_prepare_db_audit:latest -f PACS_API/db/prod-prepare-image/Dockerfile --build-arg INIT_SQL=exports/emr_pacs_db_prod_baseline_udaya_clean_twostep_20260624_140355.sql PACS_API/db
+
+Recreate audit container:
+  docker rm -f pacs-db-prod-audit
+  docker volume rm pacs_db_prod_audit_data
+  docker run -d --name pacs-db-prod-audit -e POSTGRES_DB=emr_pacs_db -e POSTGRES_USER=pacs_audit_admin -e POSTGRES_PASSWORD=<admin-password> -e PACS_TABLEPLUS_AUDIT_PASSWORD=PacsAudit_2026_ReadOnly -e PGDATA=/var/lib/postgresql/data/pgdata -e TZ=Asia/Phnom_Penh -v pacs_db_prod_audit_data:/var/lib/postgresql/data -p 127.0.0.1:15433:5432 udaya_pacs_prod_prepare_db_audit:latest

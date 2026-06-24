@@ -237,6 +237,7 @@ public final class ApiConstants {
         public static final String VIEWER_STATE_SAVE_CHUNK_COMPLETE_PATH = "/pacs-result-viewer-state-save-chunk-complete";
         public static final String VIEWER_STATE_DELETE_PATH = "/pacs-result-viewer-state-delete";
         public static final String PUBLIC_VIEWER_AUTHORIZE_PATH = "/public-viewer-authorize";
+        public static final String PUBLIC_VIEWER_HOSPITAL_LOGO_PATH = "/public-viewer-hospital-logo";
 
         private PacsResultApi() {
         }
@@ -362,6 +363,8 @@ public final class ApiConstants {
         public static final String UPDATE_PATH = "/dicom-routing-update";
         public static final String DELETE_PATH = "/dicom-routing-delete/{id}";
         public static final String BUILD_CONFIG_PATH = "/dicom-routing-build-config/{id}";
+        public static final String BUILD_CONFIG_DOWNLOAD_PATH = "/dicom-routing-build-config-download/{id}";
+        public static final String BASE_IMAGE_DOWNLOAD_PATH = "/dicom-routing-base-image-download";
 
         private DicomRouting() {
         }

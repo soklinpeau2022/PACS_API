@@ -16,10 +16,13 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -27,6 +30,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -50,6 +54,7 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
     private static final int DEFAULT_OFFLINE_FAILURE_THRESHOLD = 3;
     private static final int MAX_OFFLINE_FAILURE_THRESHOLD = 20;
     private static final long DEFAULT_OFFLINE_GRACE_MS = 180_000L;
+    private static final String DEFAULT_LOOPBACK_HOST_OVERRIDE = "host.docker.internal";
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault());
 
     private final DicomServerMapper dicomServerMapper;
@@ -68,6 +73,12 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
 
     @Value("${dicom.server.health.offline-grace-ms:180000}")
     private long offlineGraceMs;
+
+    @Value("${pacs.dicom-server.client.rewrite-loopback-in-container:true}")
+    private boolean loopbackRewriteEnabled;
+
+    @Value("${pacs.dicom-server.client.loopback-host-override:host.docker.internal}")
+    private String loopbackHostOverride;
 
     public DicomServerHealthServiceImpl(DicomServerMapper dicomServerMapper, JdbcTemplate jdbcTemplate) {
         this.dicomServerMapper = dicomServerMapper;
@@ -104,6 +115,7 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
         if (rows == null || rows.isEmpty()) {
             return;
         }
+        refreshMissingOrStaleSnapshots(rows, loadSettings());
         for (HospitalDicomServerResponse row : rows) {
             applySnapshot(row);
         }
@@ -111,7 +123,9 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
 
     @Override
     public List<DicomServerHealthResponse> listHealth(Long hospitalId) {
-        return safeActiveServers(hospitalId).stream()
+        List<HospitalDicomServerResponse> servers = safeActiveServers(hospitalId);
+        refreshMissingOrStaleSnapshots(servers, loadSettings());
+        return servers.stream()
                 .map(this::toHealthResponse)
                 .toList();
     }
@@ -193,11 +207,34 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
         snapshots.put(server.getId(), next);
     }
 
+    private void refreshMissingOrStaleSnapshots(
+            List<HospitalDicomServerResponse> servers,
+            HealthProbeSettings settings
+    ) {
+        if (servers == null || servers.isEmpty() || settings == null || !settings.enabled()) {
+            return;
+        }
+        Instant now = Instant.now();
+        Duration maxAge = Duration.ofSeconds(settings.pollIntervalSeconds());
+        servers.parallelStream()
+                .filter(server -> server != null && server.getId() != null)
+                .filter(server -> shouldRefreshSnapshot(server.getId(), now, maxAge))
+                .forEach(this::probeAndStore);
+    }
+
+    private boolean shouldRefreshSnapshot(Long serverId, Instant now, Duration maxAge) {
+        HealthSnapshot snapshot = snapshots.get(serverId);
+        return snapshot == null
+                || snapshot.checkedAt() == null
+                || !snapshot.checkedAt().plus(maxAge).isAfter(now);
+    }
+
     private HealthSnapshot probe(HospitalDicomServerResponse server, HealthSnapshot previous) {
         Instant checkedAt = Instant.now();
         long started = System.nanoTime();
         try {
             String healthUrl = buildHealthUrl(server);
+            healthUrl = rewriteHealthLoopbackUrlIfNeeded(healthUrl);
             HttpRequest.Builder builder = HttpRequest.newBuilder()
                     .uri(URI.create(healthUrl))
                     .timeout(Duration.ofMillis(Math.max(300L, timeoutMs)))
@@ -445,6 +482,71 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
             return normalized + "/system";
         }
         return normalized;
+    }
+
+    private String rewriteHealthLoopbackUrlIfNeeded(String healthUrl) {
+        if (!loopbackRewriteEnabled || !isRunningInContainer()) {
+            return healthUrl;
+        }
+        String overrideHost = trimToNull(loopbackHostOverride);
+        if (overrideHost == null) {
+            overrideHost = DEFAULT_LOOPBACK_HOST_OVERRIDE;
+        }
+        return rewriteLoopbackUrl(healthUrl, overrideHost);
+    }
+
+    private static String rewriteLoopbackUrl(String value, String overrideHost) {
+        if (trimToNull(value) == null || trimToNull(overrideHost) == null) {
+            return value;
+        }
+        try {
+            URI uri = new URI(value);
+            if (!isLoopbackHost(uri.getHost())) {
+                return value;
+            }
+            URI rewritten = new URI(
+                    uri.getScheme(),
+                    uri.getUserInfo(),
+                    overrideHost.trim(),
+                    uri.getPort(),
+                    uri.getPath(),
+                    uri.getQuery(),
+                    null
+            );
+            return rewritten.toString();
+        } catch (URISyntaxException | IllegalArgumentException ignored) {
+            return value;
+        }
+    }
+
+    private static boolean isLoopbackHost(String host) {
+        if (host == null || host.isBlank()) {
+            return false;
+        }
+        String normalized = host.trim().toLowerCase(Locale.ROOT);
+        return "localhost".equals(normalized)
+                || "127.0.0.1".equals(normalized)
+                || "::1".equals(normalized)
+                || "0:0:0:0:0:0:0:1".equals(normalized)
+                || "0.0.0.0".equals(normalized);
+    }
+
+    private static boolean isRunningInContainer() {
+        try {
+            if (Files.exists(Path.of("/.dockerenv"))) {
+                return true;
+            }
+            try (var lines = Files.lines(Path.of("/proc/1/cgroup"))) {
+                return lines.anyMatch(line -> {
+                    String normalized = line.toLowerCase(Locale.ROOT);
+                    return normalized.contains("docker")
+                            || normalized.contains("kubepods")
+                            || normalized.contains("containerd");
+                });
+            }
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private static Long offlineSeconds(HealthSnapshot snapshot) {

@@ -89,6 +89,58 @@ function Test-MissingOrPlaceholderValue {
     return $normalized -match '^(change|change_me|change_me_.*|replace_with_.*|<.*>)$'
 }
 
+function Get-PrimaryIPv4Address {
+    try {
+        $candidate = Get-NetIPConfiguration -ErrorAction Stop |
+            Where-Object { $_.IPv4DefaultGateway -and $_.IPv4Address } |
+            ForEach-Object { $_.IPv4Address.IPAddress } |
+            Where-Object {
+                $_ -and
+                $_ -notmatch '^127\.' -and
+                $_ -notmatch '^169\.254\.'
+            } |
+            Select-Object -First 1
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) { return $candidate }
+    } catch {
+        # Get-NetIPConfiguration is not available in every shell.
+    }
+
+    try {
+        $candidate = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+            Where-Object {
+                $_.IPAddress -and
+                $_.IPAddress -notmatch '^127\.' -and
+                $_.IPAddress -notmatch '^169\.254\.'
+            } |
+            Select-Object -First 1 -ExpandProperty IPAddress
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) { return $candidate }
+    } catch {
+        # Fall back to loopback when no routable host IP can be detected.
+    }
+
+    return "127.0.0.1"
+}
+
+function Resolve-BindHost {
+    param([string]$Value)
+    $normalized = if ($null -eq $Value) { "" } else { $Value.Trim() }
+    if ([string]::IsNullOrWhiteSpace($normalized) -or $normalized -match '^(?i:auto)$') {
+        if ($Target -eq "local") { return "127.0.0.1" }
+        return Get-PrimaryIPv4Address
+    }
+    if ($normalized -in @("0.0.0.0", "*", "::", "[::]")) {
+        if ($Target -eq "local") { return "127.0.0.1" }
+        return Get-PrimaryIPv4Address
+    }
+    return $normalized
+}
+
+function Get-HealthHost {
+    param([string]$BindHost)
+    if ($BindHost -match '^(?i:localhost)$') { return "127.0.0.1" }
+    return $BindHost
+}
+
 switch ($Target) {
     "local" {
         $envFile = if (Test-Path ".env.local") { ".env.local" } else { ".env" }
@@ -120,7 +172,8 @@ $port = Get-EnvValue -FilePath $envFile -Key $portKey
 if ([string]::IsNullOrWhiteSpace($port)) { $port = $defaultPort }
 $imageName = Get-EnvValue -FilePath $envFile -Key "APP_IMAGE"
 if ([string]::IsNullOrWhiteSpace($imageName)) { $imageName = "udaya_pacs_${Target}_api:latest" }
-$candidatePort = Get-EnvValue -FilePath $envFile -Key "$($Target.ToUpperInvariant())_API_CANDIDATE_PORT"
+$targetUpper = $Target.ToUpperInvariant()
+$candidatePort = Get-EnvValue -FilePath $envFile -Key "${targetUpper}_API_CANDIDATE_PORT"
 if ([string]::IsNullOrWhiteSpace($candidatePort)) { $candidatePort = Get-EnvValue -FilePath $envFile -Key "API_CANDIDATE_PORT" }
 if ([string]::IsNullOrWhiteSpace($candidatePort)) {
     $parsedPort = 0
@@ -130,8 +183,10 @@ if ([string]::IsNullOrWhiteSpace($candidatePort)) {
         $candidatePort = "9080"
     }
 }
+$bindHost = Get-EnvValue -FilePath $envFile -Key "${targetUpper}_API_BIND_HOST"
+if ([string]::IsNullOrWhiteSpace($bindHost)) { $bindHost = Get-EnvValue -FilePath $envFile -Key "API_BIND_HOST" }
+$bindHost = Resolve-BindHost -Value $bindHost
 
-$targetUpper = $Target.ToUpperInvariant()
 $redisContainerKey = "${targetUpper}_REDIS_CONTAINER_NAME"
 $redisPasswordKey = "${targetUpper}_REDIS_PASSWORD"
 $redisHostPortKey = "${targetUpper}_REDIS_HOST_PORT"
@@ -331,7 +386,8 @@ function Get-TargetEnvValue {
 function Get-ApiBaseUrl {
     $value = Get-TargetEnvValue -Suffix "API_AUTH_URL" -FallbackKey "API_AUTH_URL"
     if ([string]::IsNullOrWhiteSpace($value)) {
-        $value = "http://127.0.0.1:$port/pacsApi"
+        $baseHost = if ($Target -eq "local") { "127.0.0.1" } else { Get-HealthHost -BindHost $bindHost }
+        $value = "http://${baseHost}:${port}/pacsApi"
     }
     return $value.TrimEnd("/")
 }
@@ -602,6 +658,8 @@ function Start-ApiContainer {
     }
     Ensure-DockerNetwork -Name $redisNetworkName
 
+    $baseImageArchiveHostPath = Resolve-HostPath -PathValue (Get-EnvValue -FilePath $envFile -Key "PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_HOST_PATH") -DefaultValue "./dicom-server-images/dicom_server_base.tar"
+    $baseImageArchiveContainerPath = Get-EnvValueOrDefault -FilePath $envFile -Key "PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_CONTAINER_PATH" -DefaultValue "/app/dicom-server-images/dicom_server_base.tar"
     $restartPolicy = if ($RestartUnlessStopped) { "unless-stopped" } else { "no" }
     $redisKeyPrefixDefault = "udaya_pacs_${Target}"
     $envPairs = @(
@@ -645,6 +703,9 @@ function Start-ApiContainer {
         "PACS_RESULT_API_KEY=$(Get-EnvValue -FilePath $envFile -Key 'PACS_RESULT_API_KEY')",
         "PACS_RESULT_UPLOAD_ROOT=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_RESULT_UPLOAD_ROOT' -DefaultValue '/var/ut-image')",
         "PACS_RESULT_MAX_IMAGE_BYTES=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_RESULT_MAX_IMAGE_BYTES' -DefaultValue '10485760')",
+        "PACS_DICOM_SERVER_PACKAGE_INCLUDE_BASE_IMAGE=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_SERVER_PACKAGE_INCLUDE_BASE_IMAGE' -DefaultValue 'false')",
+        "PACS_DICOM_SERVER_PACKAGE_BASE_IMAGE_ARCHIVE_PATH=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_SERVER_PACKAGE_BASE_IMAGE_ARCHIVE_PATH' -DefaultValue $baseImageArchiveContainerPath)",
+        "PACS_DICOM_SERVER_PACKAGE_MAX_EMBEDDED_BASE_IMAGE_BYTES=$(Get-EnvValueOrDefault -FilePath $envFile -Key 'PACS_DICOM_SERVER_PACKAGE_MAX_EMBEDDED_BASE_IMAGE_BYTES' -DefaultValue '67108864')",
         "SPRING_MAIL_USERNAME=$(Get-TargetEnvValue -Suffix 'SPRING_MAIL_USERNAME')",
         "SPRING_MAIL_PASSWORD=$(Get-TargetEnvValue -Suffix 'SPRING_MAIL_PASSWORD')",
         "API_AUTH_URL=$(Get-TargetEnvValue -Suffix 'API_AUTH_URL' -FallbackKey 'API_AUTH_URL')",
@@ -658,10 +719,13 @@ function Start-ApiContainer {
         "TZ=$(Get-EnvValue -FilePath $envFile -Key 'TZ')"
     )
 
+    $livePortBinding = "${bindHost}:${HostPort}:8080"
+    $portBinding = if ($PublicBind) { $livePortBinding } else { "127.0.0.1:${HostPort}:8080" }
+
     $args = @(
         "run", "-d",
         "--name", $Name,
-        "-p", $(if ($PublicBind) { "${HostPort}:8080" } else { "127.0.0.1:${HostPort}:8080" }),
+        "-p", $portBinding,
         "--restart", $restartPolicy,
         "--init",
         "--read-only",
@@ -673,6 +737,13 @@ function Start-ApiContainer {
         "-v", "${imagePath}:/var/ut-image",
         "-v", $dicomUploadMount
     )
+    if (Test-Path -LiteralPath $baseImageArchiveHostPath) {
+        $args += @("-v", "${baseImageArchiveHostPath}:${baseImageArchiveContainerPath}:ro")
+    }
+    $localApiDockerIp = Get-EnvValue -FilePath $envFile -Key "LOCAL_API_DOCKER_IP"
+    if ($Target -eq "local" -and $PublicBind -and -not [string]::IsNullOrWhiteSpace($localApiDockerIp)) {
+        $args += @("--ip", $localApiDockerIp)
+    }
     foreach ($pair in $envPairs) {
         $idx = $pair.IndexOf("=")
         if ($idx -gt 0 -and $pair.Substring($idx + 1).Length -gt 0) {

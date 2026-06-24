@@ -177,6 +177,18 @@ public class PacsResultApiController {
         return pacsResultService.readBrowserHospitalLogo(request, httpServletRequest);
     }
 
+    @PostMapping(ApiConstants.PacsResultApi.PUBLIC_VIEWER_HOSPITAL_LOGO_PATH)
+    @Operation(
+            summary = "Read hospital logo for the public patient result gate",
+            description = "Public, pre-authentication endpoint: returns the hospital branding logo for a scoped public viewer link (hospital + worklist/study keys). Returns no PHI; rate-limited."
+    )
+    public ResponseEntity<Resource> readPublicViewerHospitalLogo(
+            @Valid @RequestBody PacsResultContextRequest request,
+            HttpServletRequest httpServletRequest
+    ) {
+        return pacsResultService.readPublicViewerHospitalLogo(request, httpServletRequest);
+    }
+
     @PostMapping(ApiConstants.PacsResultApi.TEMPLATE_LIST_PATH)
     @Operation(summary = "List PACS result templates from browser viewer")
     public ResponseMessage<BaseResult> listResultTemplates(

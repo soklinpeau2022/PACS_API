@@ -79,6 +79,8 @@ public interface PacsResultService {
 
     ResponseEntity<Resource> readBrowserHospitalLogo(PacsResultContextRequest request, HttpServletRequest httpServletRequest);
 
+    ResponseEntity<Resource> readPublicViewerHospitalLogo(PacsResultContextRequest request, HttpServletRequest httpServletRequest);
+
     ResponseMessage<BaseResult> listTemplates(PacsResultTemplateListRequest request,
                                               HttpServletRequest httpServletRequest) throws UnknownHostException;
 

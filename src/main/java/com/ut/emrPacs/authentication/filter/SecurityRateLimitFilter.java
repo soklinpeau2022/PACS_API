@@ -43,6 +43,8 @@ public class SecurityRateLimitFilter extends OncePerRequestFilter {
     );
     private static final String PUBLIC_VIEWER_ENDPOINT =
             ApiConstants.PacsResultApi.BASE_PATH + ApiConstants.PacsResultApi.PUBLIC_VIEWER_AUTHORIZE_PATH;
+    private static final String PUBLIC_VIEWER_LOGO_ENDPOINT =
+            ApiConstants.PacsResultApi.BASE_PATH + ApiConstants.PacsResultApi.PUBLIC_VIEWER_HOSPITAL_LOGO_PATH;
 
     @Value("${app.security.rate-limit.enabled:true}")
     private boolean enabled;
@@ -64,6 +66,14 @@ public class SecurityRateLimitFilter extends OncePerRequestFilter {
 
     @Value("${app.security.rate-limit.public-viewer-max-requests:5}")
     private int publicViewerMaxRequests;
+
+    // Hospital-logo branding fetch (one per gate load): far more lenient than the phone-verify
+    // authorize so a page reload is never blocked, while still capping enumeration/DoS.
+    @Value("${app.security.rate-limit.public-viewer-logo-window-seconds:60}")
+    private int publicViewerLogoWindowSeconds;
+
+    @Value("${app.security.rate-limit.public-viewer-logo-max-requests:30}")
+    private int publicViewerLogoMaxRequests;
 
     // Initialised in @PostConstruct once @Value fields are injected.
     private Cache<String, SlidingWindowCounter> counters;
@@ -106,7 +116,9 @@ public class SecurityRateLimitFilter extends OncePerRequestFilter {
             clientIp = "unknown";
         }
 
-        if (!normalizedPath.startsWith("/auth/") && !PUBLIC_VIEWER_ENDPOINT.equals(normalizedPath)) {
+        if (!normalizedPath.startsWith("/auth/")
+                && !PUBLIC_VIEWER_ENDPOINT.equals(normalizedPath)
+                && !PUBLIC_VIEWER_LOGO_ENDPOINT.equals(normalizedPath)) {
             filterChain.doFilter(request, response);
             return;
         }
@@ -166,6 +178,9 @@ public class SecurityRateLimitFilter extends OncePerRequestFilter {
     private LimitRule resolveLimitRule(String path) {
         if (PUBLIC_VIEWER_ENDPOINT.equals(path)) {
             return new LimitRule("public-viewer", publicViewerWindowSeconds, publicViewerMaxRequests);
+        }
+        if (PUBLIC_VIEWER_LOGO_ENDPOINT.equals(path)) {
+            return new LimitRule("public-viewer-logo", publicViewerLogoWindowSeconds, publicViewerLogoMaxRequests);
         }
         if (LOGIN_ENDPOINTS.contains(path)) {
             return new LimitRule("login", loginWindowSeconds, loginMaxRequests);

@@ -16,17 +16,25 @@ import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.zip.ZipInputStream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -138,6 +146,63 @@ class DicomServerServiceImplDicomServerConfigTest {
     }
 
     @Test
+    void dicomServerDockerfileShouldBuildFromLocalBaseWithoutFrontendSyntaxPull() {
+        DicomServerServiceImpl service = new DicomServerServiceImpl();
+
+        String dockerfile = ReflectionTestUtils.invokeMethod(service, "buildDicomServerDockerfileContent");
+
+        assertTrue(dockerfile.startsWith("FROM dicom_server_base:latest"));
+        assertFalse(dockerfile.contains("# syntax=docker/dockerfile"));
+        assertFalse(dockerfile.contains("orthancteam/orthanc"));
+    }
+
+    @Test
+    void dicomServerDeployScriptShouldUseOfflineBaseImageArchiveByDefault() {
+        DicomServerServiceImpl service = new DicomServerServiceImpl();
+
+        String deployScript = ReflectionTestUtils.invokeMethod(service, "buildDicomServerDeployScriptContent");
+
+        assertTrue(deployScript.contains("images/dicom_server_base.tar"));
+        assertTrue(deployScript.contains("docker load -i"));
+        assertTrue(deployScript.contains("UDAYA_DICOM_SERVER_ALLOW_PULL"));
+        assertTrue(deployScript.contains("docker compose build --pull=false"));
+        assertTrue(deployScript.contains("docker compose up -d --force-recreate --no-build"));
+        assertFalse(deployScript.contains("docker compose up -d --build --force-recreate"));
+        assertTrue(deployScript.contains("docker pull \"${UPSTREAM_IMAGE}\""));
+        assertTrue(deployScript.contains("if [[ \"${ALLOW_PULL,,}\" == \"true\" ]]"));
+    }
+
+    @Test
+    void dicomServerCacheBaseImageScriptShouldPreferExistingLocalImage() {
+        DicomServerServiceImpl service = new DicomServerServiceImpl();
+
+        String cacheScript = ReflectionTestUtils.invokeMethod(service, "buildDicomServerCacheBaseImageScriptContent");
+
+        assertTrue(cacheScript.contains("Archive already exists: ${IMAGE_ARCHIVE}"));
+        assertTrue(cacheScript.contains("docker image inspect \"${BASE_IMAGE}\""));
+        assertTrue(cacheScript.contains("Using existing local ${BASE_IMAGE}."));
+        assertTrue(cacheScript.contains("docker pull \"${UPSTREAM_IMAGE}\""));
+        assertTrue(cacheScript.contains("docker save -o \"${IMAGE_ARCHIVE}\" \"${BASE_IMAGE}\""));
+    }
+
+    @Test
+    void dicomServerDockerComposeShouldNeverPullServiceImage() {
+        DicomServerServiceImpl service = new DicomServerServiceImpl();
+        DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
+        response.setProjectName("dicom_server_ksfh");
+        Map<String, Object> config = new LinkedHashMap<>();
+        config.put("AuthenticationEnabled", true);
+        config.put("RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")));
+        response.setConfig(config);
+
+        String compose = ReflectionTestUtils.invokeMethod(service, "buildDicomServerDockerComposeContent", response);
+
+        assertTrue(compose.contains("pull_policy: never"));
+        assertTrue(compose.contains("pull: false"));
+        assertTrue(compose.contains("container_name: ${UDAYA_DICOM_SERVER_CONTAINER_NAME:-dicom_server_ksfh}"));
+    }
+
+    @Test
     void dicomServerUrlsShouldDeriveFromHostPortAndDicomwebPath() {
         DicomServerServiceImpl service = new DicomServerServiceImpl();
         HospitalDicomServerRequestUpdate request = new HospitalDicomServerRequestUpdate();
@@ -237,6 +302,198 @@ class DicomServerServiceImplDicomServerConfigTest {
             verify(dicomServerMapper).markRoutingConfigPackageBuilt(10L, 1L, 7L);
         } finally {
             SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test
+    void dicomServerProjectZipShouldContainOfflineImageWorkflow() {
+        DicomServerServiceImpl service = new DicomServerServiceImpl();
+        DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
+        response.setProjectName("dicom_server_ksfh");
+        response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=http://192.168.192.4:8080/pacsApi\n");
+        response.setConfig(new LinkedHashMap<>(Map.of(
+                "AuthenticationEnabled", true,
+                "RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")),
+                "HttpPort", 8042
+        )));
+        response.setHospitalName("KSFH Hospital");
+        response.setDicomServerName("UDAYA_DICOM_SERVER KSFH");
+        response.setDicomServerId(4L);
+        response.setCallbackClientId("dicom_server_ksfh_callback");
+        response.setCallbackScriptContent("-- callback script");
+
+        String base64 = ReflectionTestUtils.invokeMethod(service, "buildDicomServerProjectZipBase64", response);
+        Map<String, String> files = unzipTextFiles(base64);
+
+        assertTrue(files.containsKey("dicom_server_ksfh/images/README.md"));
+        assertTrue(files.containsKey("dicom_server_ksfh/scripts/cache-base-image.sh"));
+        assertTrue(files.containsKey("dicom_server_ksfh/scripts/deploy.sh"));
+        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("pull_policy: never"));
+        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("pull: false"));
+        assertTrue(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("images/dicom_server_base.tar"));
+        assertTrue(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("docker compose build --pull=false"));
+        assertFalse(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("docker compose up -d --build --force-recreate"));
+        assertTrue(files.get("dicom_server_ksfh/Dockerfile").startsWith("FROM dicom_server_base:latest"));
+        assertFalse(files.get("dicom_server_ksfh/Dockerfile").contains("# syntax=docker/dockerfile"));
+    }
+
+    @Test
+    void dicomServerProjectZipShouldOptionallyIncludeOfflineBaseImageArchive() throws Exception {
+        Path archive = Files.createTempFile("dicom-server-base", ".tar");
+        Files.writeString(archive, "local-image-archive", java.nio.charset.StandardCharsets.UTF_8);
+        try {
+            DicomServerServiceImpl service = new DicomServerServiceImpl();
+            ReflectionTestUtils.setField(service, "includeDicomServerBaseImageInPackage", true);
+            ReflectionTestUtils.setField(service, "dicomServerBaseImageArchivePath", archive.toString());
+            DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
+            response.setProjectName("dicom_server_ksfh");
+            response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=http://192.168.192.4:8080/pacsApi\n");
+            response.setConfig(new LinkedHashMap<>(Map.of(
+                    "AuthenticationEnabled", true,
+                    "RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")),
+                    "HttpPort", 8042
+            )));
+            response.setHospitalName("KSFH Hospital");
+            response.setDicomServerName("UDAYA_DICOM_SERVER KSFH");
+            response.setDicomServerId(4L);
+            response.setCallbackClientId("dicom_server_ksfh_callback");
+            response.setCallbackScriptContent("-- callback script");
+
+            String base64 = ReflectionTestUtils.invokeMethod(service, "buildDicomServerProjectZipBase64", response);
+            Map<String, byte[]> files = unzipFiles(base64);
+
+            assertArrayEquals(
+                    "local-image-archive".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    files.get("dicom_server_ksfh/images/dicom_server_base.tar")
+            );
+        } finally {
+            Files.deleteIfExists(archive);
+        }
+    }
+
+    @Test
+    void dicomServerProjectZipShouldSkipLargeOfflineBaseImageArchive() throws Exception {
+        Path archive = Files.createTempFile("dicom-server-base-large", ".tar");
+        Files.writeString(archive, "too-large-for-json-response", java.nio.charset.StandardCharsets.UTF_8);
+        try {
+            DicomServerServiceImpl service = new DicomServerServiceImpl();
+            ReflectionTestUtils.setField(service, "includeDicomServerBaseImageInPackage", true);
+            ReflectionTestUtils.setField(service, "dicomServerBaseImageArchivePath", archive.toString());
+            ReflectionTestUtils.setField(service, "maxEmbeddedDicomServerBaseImageBytes", 4L);
+            DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
+            response.setProjectName("dicom_server_ksfh");
+            response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=http://192.168.192.4:8080/pacsApi\n");
+            response.setConfig(new LinkedHashMap<>(Map.of(
+                    "AuthenticationEnabled", true,
+                    "RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")),
+                    "HttpPort", 8042
+            )));
+            response.setHospitalName("KSFH Hospital");
+            response.setDicomServerName("UDAYA_DICOM_SERVER KSFH");
+            response.setDicomServerId(4L);
+            response.setCallbackClientId("dicom_server_ksfh_callback");
+            response.setCallbackScriptContent("-- callback script");
+
+            String base64 = ReflectionTestUtils.invokeMethod(service, "buildDicomServerProjectZipBase64", response);
+            Map<String, byte[]> files = unzipFiles(base64);
+
+            assertFalse(files.containsKey("dicom_server_ksfh/images/dicom_server_base.tar"));
+        } finally {
+            Files.deleteIfExists(archive);
+        }
+    }
+
+    @Test
+    void downloadDicomServerBaseImageShouldStreamConfiguredArchive() throws Exception {
+        Path archive = Files.createTempFile("dicom-server-base-download", ".tar");
+        byte[] archiveBytes = "offline-docker-image".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Files.write(archive, archiveBytes);
+        try {
+            DicomServerServiceImpl service = new DicomServerServiceImpl();
+            ReflectionTestUtils.setField(service, "dicomServerBaseImageArchivePath", archive.toString());
+            ReflectionTestUtils.setField(service, "activityLogService", mock(ActivityLogService.class));
+
+            ResponseEntity<Resource> response = service.downloadDicomServerBaseImage(mock(HttpServletRequest.class));
+
+            assertEquals(200, response.getStatusCode().value());
+            assertEquals((long) archiveBytes.length, response.getHeaders().getContentLength());
+            assertEquals("attachment; filename=\"dicom_server_base.tar\"", response.getHeaders().getFirst("Content-Disposition"));
+            assertNotNull(response.getBody());
+            assertArrayEquals(archiveBytes, response.getBody().getInputStream().readAllBytes());
+        } finally {
+            Files.deleteIfExists(archive);
+        }
+    }
+
+    @Test
+    void streamedDicomServerProjectZipShouldIncludeOfflineBaseImageArchive() throws Exception {
+        Path archive = Files.createTempFile("dicom-server-base-stream", ".tar");
+        Files.writeString(archive, "streamed-local-image", java.nio.charset.StandardCharsets.UTF_8);
+        try {
+            DicomServerServiceImpl service = new DicomServerServiceImpl();
+            DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
+            response.setProjectName("dicom_server_ksfh");
+            response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=http://192.168.192.4:8080/pacsApi\n");
+            response.setConfig(new LinkedHashMap<>(Map.of(
+                    "AuthenticationEnabled", true,
+                    "RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")),
+                    "HttpPort", 8042
+            )));
+            response.setHospitalName("KSFH Hospital");
+            response.setDicomServerName("UDAYA_DICOM_SERVER KSFH");
+            response.setDicomServerId(4L);
+            response.setCallbackClientId("dicom_server_ksfh_callback");
+            response.setCallbackScriptContent("-- callback script");
+
+            java.io.ByteArrayOutputStream outputStream = new java.io.ByteArrayOutputStream();
+            ReflectionTestUtils.invokeMethod(
+                    service,
+                    "writeDicomServerProjectZip",
+                    List.of(response),
+                    outputStream,
+                    archive
+            );
+            Map<String, byte[]> files = unzipBytes(outputStream.toByteArray());
+
+            assertArrayEquals(
+                    "streamed-local-image".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    files.get("dicom_server_ksfh/images/dicom_server_base.tar")
+            );
+        } finally {
+            Files.deleteIfExists(archive);
+        }
+    }
+
+    private static Map<String, String> unzipTextFiles(String base64) {
+        Map<String, byte[]> zipFiles = unzipFiles(base64);
+        Map<String, String> files = new LinkedHashMap<>();
+        Set<String> binarySuffixes = Set.of(".tar", ".gz", ".png", ".jpg", ".jpeg");
+        zipFiles.forEach((name, bytes) -> {
+            if (binarySuffixes.stream().noneMatch(name::endsWith)) {
+                files.put(name, new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
+            }
+        });
+        return files;
+    }
+
+    private static Map<String, byte[]> unzipFiles(String base64) {
+        return unzipBytes(java.util.Base64.getDecoder().decode(base64));
+    }
+
+    private static Map<String, byte[]> unzipBytes(byte[] zipBytes) {
+        Map<String, byte[]> files = new LinkedHashMap<>();
+        try (ZipInputStream zip = new ZipInputStream(new java.io.ByteArrayInputStream(zipBytes))) {
+            java.util.zip.ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if (entry.isDirectory()) {
+                    continue;
+                }
+                String name = entry.getName();
+                files.put(name, zip.readAllBytes());
+            }
+            return files;
+        } catch (java.io.IOException error) {
+            throw new AssertionError("Unable to inspect generated zip", error);
         }
     }
 

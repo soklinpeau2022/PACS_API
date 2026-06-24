@@ -459,7 +459,7 @@ class PacsResultServiceImplAccessTest {
         var response = service.uploadImages(uploadRequest, List.of(image), request);
 
         assertTrue(response.isSuccess());
-        Path expectedFolder = uploadRoot.resolve("KSFH").resolve("CT");
+        Path expectedFolder = uploadRoot.resolve("KSFH_KSFH_HOSPITAL").resolve("CT_COMPUTED_TOMOGRAPHY");
         assertTrue(Files.isDirectory(expectedFolder));
 
         ArgumentCaptor<String> pathCaptor = ArgumentCaptor.forClass(String.class);
@@ -473,7 +473,7 @@ class PacsResultServiceImplAccessTest {
                 anyLong(),
                 eq(0)
         );
-        assertTrue(pathCaptor.getValue().replace('\\', '/').contains("/KSFH/CT/"));
+        assertTrue(pathCaptor.getValue().replace('\\', '/').contains("/KSFH_KSFH_HOSPITAL/CT_COMPUTED_TOMOGRAPHY/"));
         assertEquals(1L, Files.list(expectedFolder).count());
     }
 

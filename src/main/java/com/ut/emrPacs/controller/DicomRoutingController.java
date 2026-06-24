@@ -16,12 +16,16 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.net.UnknownHostException;
 
@@ -88,5 +92,23 @@ public class DicomRoutingController {
             return ResponseMessageUtils.makeResponse(false, 401, "Unauthorized", "You must be logged in.");
         }
         return dicomServerService.buildRoutingDicomServerConfig(publicEntityKeyResolver.resolveFromPath(Entity.DICOM_ROUTING_CONFIG, id, "DICOM route"), httpServletRequest);
+    }
+
+    @GetMapping(ApiConstants.DicomRouting.BUILD_CONFIG_DOWNLOAD_PATH)
+    @Operation(summary = "Download DicomServer project zip", description = "Stream the ready DicomServer deployment package with the offline Docker image inside the zip. Endpoint -> GET /dicom-routing/dicom-routing-build-config-download/{id}")
+    public ResponseEntity<StreamingResponseBody> downloadConfigZip(@PathVariable String id, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        if (UserAuthSession.getCurrentUser() == null) {
+            return ResponseEntity.status(401).build();
+        }
+        return dicomServerService.downloadRoutingDicomServerConfigZip(publicEntityKeyResolver.resolveFromPath(Entity.DICOM_ROUTING_CONFIG, id, "DICOM route"), httpServletRequest);
+    }
+
+    @GetMapping(ApiConstants.DicomRouting.BASE_IMAGE_DOWNLOAD_PATH)
+    @Operation(summary = "Download DicomServer offline base image", description = "Download the API-server cached dicom_server_base Docker image archive. Endpoint -> GET /dicom-routing/dicom-routing-base-image-download")
+    public ResponseEntity<Resource> downloadBaseImage(HttpServletRequest httpServletRequest) throws UnknownHostException {
+        if (UserAuthSession.getCurrentUser() == null) {
+            return ResponseEntity.status(401).build();
+        }
+        return dicomServerService.downloadDicomServerBaseImage(httpServletRequest);
     }
 }
