@@ -6,6 +6,7 @@ import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
 import com.ut.emrPacs.mapper.pacs.PacsResultMapper;
 import com.ut.emrPacs.mapper.pacs.StudyMapper;
 import com.ut.emrPacs.model.base.MessageService;
+import com.ut.emrPacs.model.dto.request.pacs.study.StudyStatusUpdateRequest;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
 import com.ut.emrPacs.model.dto.response.pacs.result.PacsResultResponse;
 import com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse;
@@ -26,6 +27,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -234,5 +236,77 @@ class StudyServiceImplViewerAccessTest {
         assertEquals(Boolean.FALSE, viewerInfo.getCanEditViewerState());
         assertTrue(viewerInfo.getViewerUrl().contains("canEditResult=0"));
         assertTrue(viewerInfo.getViewerUrl().contains("canEditViewerState=0"));
+    }
+
+    @Test
+    void adminCanReopenCompletedStudyFromStudyList() throws Exception {
+        StudyServiceImpl service = new StudyServiceImpl();
+        ReflectionTestUtils.setField(service, "studyMapper", studyMapper);
+        ReflectionTestUtils.setField(service, "pacsResultMapper", pacsResultMapper);
+        ReflectionTestUtils.setField(service, "messageService", new MessageService());
+        ReflectionTestUtils.setField(service, "activityLogService", activityLogService);
+
+        var auth = new UsernamePasswordAuthenticationToken(
+                "admin",
+                "n/a",
+                List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))
+        );
+        auth.setDetails(new CurrentUserPrincipal(99L, "admin", 11L, "HSP001", "pacs-web", "jti", 1L));
+        SecurityContextHolder.getContext().setAuthentication(auth);
+
+        StudyResponse study = new StudyResponse();
+        study.setId(22L);
+        study.setPublicKey("study-public-key");
+        study.setHospitalId(11L);
+        study.setModalityId(3L);
+        study.setStudyInstanceUid("1.2.3");
+        study.setStatus("COMPLETED");
+
+        PacsResultResponse result = new PacsResultResponse();
+        result.setId(88L);
+        result.setHospitalId(11L);
+        result.setStudyId(22L);
+        result.setModalityId(3L);
+        result.setCompleted(Boolean.TRUE);
+        result.setStatus("FINAL");
+
+        when(studyMapper.findById(11L, 22L)).thenReturn(study);
+        when(studyMapper.updateStatusById(11L, 22L, 1)).thenReturn(1);
+        when(pacsResultMapper.findByStudyId(11L, 3L, 22L)).thenReturn(result);
+
+        StudyStatusUpdateRequest request = new StudyStatusUpdateRequest();
+        request.setStatus("IMAGE_RECEIVED");
+
+        var response = service.updateStatus(22L, request, null);
+
+        assertTrue(response.isSuccess());
+        verify(studyMapper).updateStatusById(11L, 22L, 1);
+        verify(pacsResultMapper).updateResultStatusById(88L, "IMAGE_RECEIVED", false);
+    }
+
+    @Test
+    void nonAdminCannotUpdateStudyStatus() throws Exception {
+        StudyServiceImpl service = new StudyServiceImpl();
+        ReflectionTestUtils.setField(service, "studyMapper", studyMapper);
+        ReflectionTestUtils.setField(service, "pacsResultMapper", pacsResultMapper);
+        ReflectionTestUtils.setField(service, "messageService", new MessageService());
+        ReflectionTestUtils.setField(service, "activityLogService", activityLogService);
+
+        var auth = new UsernamePasswordAuthenticationToken(
+                "doctor",
+                "n/a",
+                List.of(new SimpleGrantedAuthority("ROLE_DOCTOR"))
+        );
+        auth.setDetails(new CurrentUserPrincipal(99L, "doctor", 11L, "HSP001", "pacs-web", "jti", 1L));
+        SecurityContextHolder.getContext().setAuthentication(auth);
+
+        StudyStatusUpdateRequest request = new StudyStatusUpdateRequest();
+        request.setStatus("IMAGE_RECEIVED");
+
+        var response = service.updateStatus(22L, request, null);
+
+        assertEquals(403, response.getHeader().getStatusCode());
+        verify(studyMapper, never()).updateStatusById(11L, 22L, 1);
+        verify(pacsResultMapper, never()).updateResultStatusById(88L, "IMAGE_RECEIVED", false);
     }
 }

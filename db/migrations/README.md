@@ -12,8 +12,8 @@ bash scripts/stack.sh local db-migrate --build
 
 or:
 
-```powershell
-.\scripts\stack.ps1 -Target local -Action db-migrate -Build
+```bash
+bash ./scripts/stack.sh local db-migrate --build
 ```
 
 The command creates a Docker backup first, deploys the API so Flyway applies

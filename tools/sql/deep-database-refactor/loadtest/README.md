@@ -3,7 +3,7 @@
 Use only a disposable PostgreSQL database whose name contains `load`, `perf`,
 `bench`, or `migration_test`.
 
-```powershell
+```bash
 psql -v row_count=50000 -v patient_count=10000 -v worklist_count=50000 -v result_count=10000 -v log_count=100000 -v event_count=100000 -f prepare_scale_lab.sql
 psql -f benchmark_scale_queries.sql
 psql -f final_acceptance_queries.sql
@@ -11,7 +11,7 @@ psql -f final_acceptance_queries.sql
 
 Stage 2:
 
-```powershell
+```bash
 psql -v row_count=1000000 -v patient_count=100000 -v worklist_count=1000000 -v result_count=500000 -v log_count=5000000 -v event_count=5000000 -f prepare_scale_lab.sql
 psql -f benchmark_scale_queries.sql
 psql -f final_acceptance_queries.sql

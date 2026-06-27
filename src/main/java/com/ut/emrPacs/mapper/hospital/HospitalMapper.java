@@ -21,6 +21,8 @@ public interface HospitalMapper {
      */
     List<HospitalResponse> listHospital(HospitalListFilter filter);
 
+    Long countHospitalList(HospitalListFilter filter);
+
     /**
      * MyBatis statement id: {@code getOne}.
      */

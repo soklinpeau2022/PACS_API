@@ -156,7 +156,7 @@
           AND p.is_active = 1
           AND LOWER(BTRIM(COALESCE(p.first_name, ''))) = LOWER(BTRIM(COALESCE(#{firstName}, '')))
           AND LOWER(BTRIM(COALESCE(p.last_name, ''))) = LOWER(BTRIM(COALESCE(#{lastName}, '')))
-          AND p.date_of_birth = #{dateOfBirth}
+          AND p.date_of_birth IS NOT DISTINCT FROM #{dateOfBirth}
           AND UPPER(BTRIM(COALESCE(p.gender, ''))) = UPPER(BTRIM(COALESCE(#{gender}, '')))
         ORDER BY p.id DESC
         LIMIT 1

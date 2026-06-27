@@ -1,6 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+UDAYA PACS database admin helper
+
+Usage:
+  bash ./scripts/db-admin.sh <action> <target> [--build|--no-build] [--db-container NAME] [--backup-dir PATH]
+
+Actions:
+  backup                 Create a pg_dump custom-format backup.
+  migrate                Backup first, then run API stack deploy with migrations.
+  validate               Run DB validation SQL.
+  refresh-cache          Refresh PACS week cache, then validate DB.
+  partition-maintenance  Run partition maintenance, then validate DB.
+  explain                Run performance explain SQL.
+
+Targets:
+  local | qa | prod
+
+Options:
+  --build              Build image when migrate calls stack deploy.
+  --no-build           Use existing image when migrate calls stack deploy.
+  --db-container NAME  Override PostgreSQL Docker container.
+  --backup-dir PATH    Override backup output folder.
+
+Examples:
+  bash ./scripts/db-admin.sh backup local
+  bash ./scripts/db-admin.sh migrate qa --no-build
+  bash ./scripts/db-admin.sh validate prod --db-container udaya_pacs_prod_db
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
 ACTION="${1:-}"
 TARGET="${2:-local}"
 shift $(( $# >= 1 ? 1 : 0 ))
@@ -13,11 +49,12 @@ BACKUP_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help) usage; exit 0 ;;
     --build) BUILD=true ;;
     --no-build) NO_BUILD=true ;;
     --db-container) shift; DB_CONTAINER="${1:-}" ;;
     --backup-dir) shift; BACKUP_DIR="${1:-}" ;;
-    *) echo "Unknown option: $1" >&2; exit 1 ;;
+    *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
   esac
   shift
 done
@@ -25,13 +62,14 @@ done
 case "$ACTION" in
   backup|migrate|validate|refresh-cache|partition-maintenance|explain) ;;
   *)
-    echo "Usage: bash scripts/db-admin.sh <backup|migrate|validate|refresh-cache|partition-maintenance|explain> <local|qa|prod> [--build|--no-build] [--db-container NAME] [--backup-dir PATH]" >&2
+    usage >&2
     exit 1
     ;;
 esac
 
 if [[ "$TARGET" != "local" && "$TARGET" != "qa" && "$TARGET" != "prod" ]]; then
   echo "Target must be local, qa, or prod." >&2
+  usage >&2
   exit 1
 fi
 

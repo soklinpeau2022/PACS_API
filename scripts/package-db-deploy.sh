@@ -1,6 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Build UDAYA PACS PostgreSQL deploy bundle
+
+Usage:
+  bash ./scripts/package-db-deploy.sh [--target <local|qa|prod>] [--with-image|--no-image] [--no-data] [--source-container <name>] [--source-database <db>] [--source-user <user>]
+
+What it creates:
+  dist/udaya_pacs_<target>_db.zip
+
+Options:
+  --target <target>          Target env. Default: qa.
+  --with-image               Include postgres:18 image tar. Default.
+  --no-image                 Do not include postgres image tar.
+  --no-data                  Do not export local DB data into init/pacs-db.dump.
+  --source-container <name>  Source DB container for data export.
+  --source-database <db>     Source DB name for data export.
+  --source-user <user>       Source DB user for data export.
+
+Examples:
+  bash ./scripts/package-db-deploy.sh --target qa --no-data
+  bash ./scripts/package-db-deploy.sh --target prod --no-data --no-image
+  bash ./scripts/package-db-deploy.sh --target local
+EOF
+}
+
 WITH_IMAGE=true
 NO_DATA=false
 TARGET="qa"
@@ -10,6 +36,10 @@ SOURCE_USER=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
     --with-image)
       WITH_IMAGE=true
       shift
@@ -39,7 +69,8 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     *)
-      echo "Usage: bash scripts/package-db-deploy.sh [--target <local|qa|prod>] [--with-image|--no-image] [--no-data] [--source-container <name>] [--source-database <db>] [--source-user <user>]"
+      echo "Unknown option: $1"
+      usage
       exit 1
       ;;
   esac
@@ -47,6 +78,7 @@ done
 
 if [[ "$TARGET" != "local" && "$TARGET" != "qa" && "$TARGET" != "prod" ]]; then
   echo "Invalid target: $TARGET (use local|qa|prod)"
+  usage
   exit 1
 fi
 
@@ -149,13 +181,15 @@ apply_target_database_env() {
     return 0
   fi
 
-  local url username password
+  local url username password bind_address
   url="$(dotenv_value "$env_path" "${target_upper}_SPRING_DATASOURCE_URL")"
   username="$(dotenv_value "$env_path" "${target_upper}_SPRING_DATASOURCE_USERNAME")"
   password="$(dotenv_value "$env_path" "${target_upper}_SPRING_DATASOURCE_PASSWORD")"
+  bind_address="$(dotenv_value "$env_path" "${target_upper}_DB_BIND_ADDRESS")"
 
   if [[ "$url" =~ ^jdbc:postgresql://([^/:?]+)(:([0-9]+))?/([^?]+) ]]; then
-    set_env_value "$file" PACS_DB_BIND_ADDRESS "${BASH_REMATCH[1]}"
+    [[ -z "$bind_address" ]] && bind_address="${BASH_REMATCH[1]}"
+    set_env_value "$file" PACS_DB_BIND_ADDRESS "$bind_address"
     set_env_value "$file" PACS_DB_PORT "${BASH_REMATCH[3]:-5432}"
     set_env_value "$file" PACS_DB_NAME "${BASH_REMATCH[4]}"
   fi
@@ -174,15 +208,30 @@ create_zip() {
     return
   fi
 
-  if command -v powershell.exe >/dev/null 2>&1; then
-    local bundle_win zip_win
-    bundle_win="$(cygpath -w "$source_parent/$bundle_name")"
-    zip_win="$(cygpath -w "$zip_path")"
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "\$ProgressPreference='SilentlyContinue'; Compress-Archive -Path '${bundle_win}\\*' -DestinationPath '${zip_win}' -Force"
+  local python_bin=""
+  if command -v python3 >/dev/null 2>&1; then
+    python_bin="python3"
+  elif command -v python >/dev/null 2>&1; then
+    python_bin="python"
+  fi
+  if [[ -n "$python_bin" ]]; then
+    "$python_bin" - "$source_parent" "$bundle_name" "$zip_path" <<'PY'
+import os
+import sys
+import zipfile
+
+source_parent, bundle_name, zip_path = sys.argv[1:4]
+bundle_root = os.path.join(source_parent, bundle_name)
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for root, _, files in os.walk(bundle_root):
+        for file_name in files:
+            full_path = os.path.join(root, file_name)
+            archive.write(full_path, os.path.relpath(full_path, source_parent))
+PY
     return
   fi
 
-  echo "zip command is required to create $zip_path" >&2
+  echo "zip command or Python is required to create $zip_path." >&2
   exit 1
 }
 
@@ -275,34 +324,6 @@ echo "DB import completed."
 EOF
 perl -0pi -e "s|__DB_CONTAINER_NAME__|$BUNDLE_NAME|g" "$BUNDLE_DIR/scripts/import-db.sh"
 
-cat > "$BUNDLE_DIR/scripts/import-db.ps1" <<'EOF'
-Param(
-    [string]$ContainerName = "__DB_CONTAINER_NAME__",
-    [string]$DbName = "emr_pacs_db",
-    [string]$DbUser = "pacs_app_local_rw",
-    [string]$DumpPath = ".\init\pacs-db.dump"
-)
-
-$ErrorActionPreference = "Stop"
-
-if (-not (Test-Path $DumpPath)) {
-    throw "Dump file not found: $DumpPath"
-}
-
-docker cp $DumpPath "$ContainerName`:/tmp/pacs-db.dump"
-docker exec $ContainerName pg_restore `
-    --username $DbUser `
-    --dbname $DbName `
-    --clean `
-    --if-exists `
-    --no-owner `
-    --no-acl `
-    /tmp/pacs-db.dump
-docker exec $ContainerName rm -f /tmp/pacs-db.dump | Out-Null
-Write-Host "DB import completed."
-EOF
-perl -0pi -e "s|__DB_CONTAINER_NAME__|$BUNDLE_NAME|g" "$BUNDLE_DIR/scripts/import-db.ps1"
-
 cat > "$BUNDLE_DIR/scripts/reset-db.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -319,24 +340,6 @@ echo "Resetting DB container and volume. Existing DB data will be removed."
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down -v --remove-orphans
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
 echo "DB reset completed."
-EOF
-
-cat > "$BUNDLE_DIR/scripts/reset-db.ps1" <<'EOF'
-Param(
-    [string]$EnvFile = ".\.env.db",
-    [string]$ComposeFile = ".\docker-compose.yml"
-)
-
-$ErrorActionPreference = "Stop"
-
-if (-not (Test-Path $EnvFile)) {
-    throw "Env file not found: $EnvFile"
-}
-
-Write-Host "Resetting DB container and volume. Existing DB data will be removed."
-docker compose -f $ComposeFile --env-file $EnvFile down -v --remove-orphans
-docker compose -f $ComposeFile --env-file $EnvFile up -d
-Write-Host "DB reset completed."
 EOF
 
 cat > "$BUNDLE_DIR/scripts/sync-db-credentials.sh" <<'EOF'
@@ -419,92 +422,6 @@ echo "DB credentials OK for $DB_USER on $DB_NAME."
 EOF
 perl -0pi -e "s|__DB_CONTAINER_NAME__|$BUNDLE_NAME|g" "$BUNDLE_DIR/scripts/sync-db-credentials.sh"
 
-cat > "$BUNDLE_DIR/scripts/sync-db-credentials.ps1" <<'EOF'
-Param(
-    [string]$EnvFile = ".\.env.db"
-)
-
-$ErrorActionPreference = "Stop"
-
-function Get-EnvValue {
-    param([string]$Path, [string]$Key)
-    if (-not (Test-Path $Path)) { return "" }
-    foreach ($line in Get-Content $Path) {
-        if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) { continue }
-        $idx = $line.IndexOf("=")
-        if ($idx -le 0) { continue }
-        if ($line.Substring(0, $idx).Trim() -eq $Key) {
-            return $line.Substring($idx + 1).Trim()
-        }
-    }
-    return ""
-}
-
-function ConvertTo-SqlLiteral {
-    param([string]$Value)
-    return "'" + ($Value -replace "'", "''") + "'"
-}
-
-if (-not (Test-Path $EnvFile)) {
-    throw "Env file not found: $EnvFile"
-}
-
-$containerName = Get-EnvValue -Path $EnvFile -Key "PACS_DB_CONTAINER_NAME"
-$dbName = Get-EnvValue -Path $EnvFile -Key "PACS_DB_NAME"
-$dbUser = Get-EnvValue -Path $EnvFile -Key "PACS_DB_USER"
-$dbPassword = Get-EnvValue -Path $EnvFile -Key "PACS_DB_PASSWORD"
-if ([string]::IsNullOrWhiteSpace($containerName)) { $containerName = "__DB_CONTAINER_NAME__" }
-if ([string]::IsNullOrWhiteSpace($dbName) -or [string]::IsNullOrWhiteSpace($dbUser) -or [string]::IsNullOrWhiteSpace($dbPassword)) {
-    throw "PACS_DB_NAME, PACS_DB_USER, and PACS_DB_PASSWORD are required in $EnvFile"
-}
-
-$adminUser = ""
-foreach ($candidate in @($dbUser, "postgres")) {
-    docker exec $containerName psql -U $candidate -d postgres -v ON_ERROR_STOP=1 -c "select 1" *> $null
-    if ($LASTEXITCODE -eq 0) {
-        $adminUser = $candidate
-        break
-    }
-}
-if ([string]::IsNullOrWhiteSpace($adminUser)) {
-    throw "Cannot connect to PostgreSQL inside $containerName. Make sure the DB container is running."
-}
-
-$dbLiteral = ConvertTo-SqlLiteral $dbName
-$userLiteral = ConvertTo-SqlLiteral $dbUser
-$passwordLiteral = ConvertTo-SqlLiteral $dbPassword
-$sql = @"
-DO `$`$
-DECLARE
-  role_name text := $userLiteral;
-  role_password text := $passwordLiteral;
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
-    EXECUTE format('ALTER ROLE %I WITH LOGIN SUPERUSER PASSWORD %L', role_name, role_password);
-  ELSE
-    EXECUTE format('CREATE ROLE %I WITH LOGIN SUPERUSER PASSWORD %L', role_name, role_password);
-  END IF;
-END
-`$`$;
-SELECT format('CREATE DATABASE %I OWNER %I', $dbLiteral, $userLiteral)
-WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = $dbLiteral)
-\gexec
-"@
-
-$sql | docker exec -i $containerName psql -U $adminUser -d postgres -v ON_ERROR_STOP=1
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to sync DB credentials."
-}
-
-docker exec -e "PGPASSWORD=$dbPassword" $containerName psql -h 127.0.0.1 -U $dbUser -d $dbName -v ON_ERROR_STOP=1 -c "select 1" *> $null
-if ($LASTEXITCODE -ne 0) {
-    throw "DB credential sync finished, but password login still failed."
-}
-
-Write-Host "DB credentials OK for $dbUser on $dbName."
-EOF
-perl -0pi -e "s|__DB_CONTAINER_NAME__|$BUNDLE_NAME|g" "$BUNDLE_DIR/scripts/sync-db-credentials.ps1"
-
 cat > "$BUNDLE_DIR/scripts/deploy-db.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -527,12 +444,58 @@ if [[ -f "./postgres-18.tar" ]]; then
   docker load -i ./postgres-18.tar
 fi
 
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
-
 env_value() {
   local key="$1"
   awk -F= -v wanted="$key" '$1 == wanted { sub(/^[^=]*=/, ""); sub(/\r$/, ""); print; exit }' "$ENV_FILE"
 }
+
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  local tmp_file
+  tmp_file="$(mktemp)"
+  awk -v k="$key" -v v="$value" '
+    BEGIN { updated = 0 }
+    $0 ~ "^" k "=" {
+      print k "=" v
+      updated = 1
+      next
+    }
+    { print }
+    END {
+      if (updated == 0) {
+        print k "=" v
+      }
+    }
+  ' "$ENV_FILE" > "$tmp_file"
+  mv "$tmp_file" "$ENV_FILE"
+}
+
+primary_ipv4() {
+  local ip
+  if command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
+    if [[ -n "$ip" && "$ip" != 127.* && "$ip" != 169.254.* ]]; then
+      printf '%s' "$ip"
+      return
+    fi
+  fi
+  if command -v hostname >/dev/null 2>&1; then
+    ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | awk '!/^127\./ && !/^169\.254\./ && NF { print; exit }')"
+    if [[ -n "$ip" ]]; then
+      printf '%s' "$ip"
+      return
+    fi
+  fi
+  printf '127.0.0.1'
+}
+
+db_bind_address="$(env_value PACS_DB_BIND_ADDRESS | tr '[:upper:]' '[:lower:]')"
+if [[ "$db_bind_address" == "auto" || "$db_bind_address" == "primary" || "$db_bind_address" == "primary-ip" ]]; then
+  set_env_value PACS_DB_BIND_ADDRESS "$(primary_ipv4)"
+fi
+
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
 
 CONTAINER_NAME="$(env_value PACS_DB_CONTAINER_NAME)"
 CONTAINER_NAME="${CONTAINER_NAME:-__DB_CONTAINER_NAME__}"
@@ -554,59 +517,6 @@ docker ps --filter "name=$CONTAINER_NAME"
 echo "DB deploy completed: $CONTAINER_NAME"
 EOF
 perl -0pi -e "s|__DB_CONTAINER_NAME__|$BUNDLE_NAME|g" "$BUNDLE_DIR/scripts/deploy-db.sh"
-
-cat > "$BUNDLE_DIR/scripts/deploy-db.ps1" <<'EOF'
-Param(
-    [string]$EnvFile = ".\.env.db",
-    [string]$ComposeFile = ".\docker-compose.yml"
-)
-
-$ErrorActionPreference = "Stop"
-
-function Get-EnvValue {
-    param([string]$Path, [string]$Key)
-    if (-not (Test-Path $Path)) { return "" }
-    foreach ($line in Get-Content $Path) {
-        if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) { continue }
-        $idx = $line.IndexOf("=")
-        if ($idx -le 0) { continue }
-        if ($line.Substring(0, $idx).Trim() -eq $Key) {
-            return $line.Substring($idx + 1).Trim()
-        }
-    }
-    return ""
-}
-
-if (-not (Test-Path $EnvFile)) {
-    throw "Env file not found: $EnvFile"
-}
-if (-not (Test-Path $ComposeFile)) {
-    throw "Compose file not found: $ComposeFile"
-}
-if (Test-Path ".\postgres-18.tar") {
-    docker load -i .\postgres-18.tar
-}
-
-docker compose -f $ComposeFile --env-file $EnvFile up -d
-
-$containerName = Get-EnvValue -Path $EnvFile -Key "PACS_DB_CONTAINER_NAME"
-if ([string]::IsNullOrWhiteSpace($containerName)) { $containerName = "__DB_CONTAINER_NAME__" }
-
-for ($attempt = 1; $attempt -le 60; $attempt++) {
-    docker exec $containerName pg_isready *> $null
-    if ($LASTEXITCODE -eq 0) { break }
-    Start-Sleep -Seconds 1
-    if ($attempt -eq 60) {
-        docker logs --tail=120 $containerName
-        throw "DB did not become ready: $containerName"
-    }
-}
-
-powershell -ExecutionPolicy Bypass -File .\scripts\sync-db-credentials.ps1 -EnvFile $EnvFile
-docker ps --filter "name=$containerName"
-Write-Host "DB deploy completed: $containerName"
-EOF
-perl -0pi -e "s|__DB_CONTAINER_NAME__|$BUNDLE_NAME|g" "$BUNDLE_DIR/scripts/deploy-db.ps1"
 
 if [[ "$WITH_IMAGE" == "true" ]]; then
   echo "Pulling $POSTGRES_IMAGE..."

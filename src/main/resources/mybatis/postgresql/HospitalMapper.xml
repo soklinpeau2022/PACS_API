@@ -61,6 +61,19 @@
         <if test="page != null and rowsPerPage != null">LIMIT #{rowsPerPage} OFFSET #{page}</if>
     </select>
 
+    <select id="countHospitalList" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM hospitals h
+        WHERE h.is_active = 1
+        <if test="searchText != null and searchText != ''">
+            AND (
+                h.name ILIKE '%' || #{searchText} || '%'
+                OR h.code ILIKE '%' || #{searchText} || '%'
+                OR COALESCE(h.abbr, '') ILIKE '%' || #{searchText} || '%'
+            )
+        </if>
+    </select>
+
     <select id="getHospitalById" resultMap="HospitalResponseDetail">
         SELECT 
             h.id AS id,

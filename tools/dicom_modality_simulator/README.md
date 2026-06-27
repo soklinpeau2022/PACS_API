@@ -29,31 +29,32 @@ For convenience, a shallow clone of `pynetdicom` is stored locally at:
 
 ## Install
 
-From `D:\Soklin\PACS_System\PACS_API\tools\dicom_modality_simulator`
+From `PACS_API/tools/dicom_modality_simulator`
 
-```powershell
+```bash
 python -m venv .venv
-.\.venv\Scripts\pip install -r requirements.txt
+. .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ## Run
 
-```powershell
-$env:SIM_API_BASE_URL="http://UDAYA_PACS_API_SERVER_IP:8080/pacsApi"
-$env:SIM_DICOM_SERVER_USERNAME="<dicom-server-user>"
-$env:SIM_DICOM_SERVER_PASSWORD="<dicom-server-password>"
-$env:SIM_USERNAME="<api-user>"
-$env:SIM_PASSWORD="<api-password>"
-$env:SIM_MODALITY_REGISTRATION_HOST="MODALITY_SIMULATOR_IP"
-.\run_local_simulator.ps1
+```bash
+export SIM_API_BASE_URL="http://utpac.lan:8080/pacsApi"
+export SIM_DICOM_SERVER_USERNAME="<dicom-server-user>"
+export SIM_DICOM_SERVER_PASSWORD="<dicom-server-password>"
+export SIM_USERNAME="<api-user>"
+export SIM_PASSWORD="<api-password>"
+export SIM_MODALITY_REGISTRATION_HOST="MODALITY_SIMULATOR_IP"
+bash ./run_local_simulator.sh
 ```
 
 Run with a downloaded public DICOM sample as the source image data:
 
-```powershell
-$env:SIM_SOURCE_DICOM_URL="https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm"
-$env:SIM_MODALITY_CODE="CT"
-.\run_local_simulator.ps1
+```bash
+export SIM_SOURCE_DICOM_URL="https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm"
+export SIM_MODALITY_CODE="CT"
+bash ./run_local_simulator.sh
 ```
 
 Required split-server configuration:

@@ -6,6 +6,7 @@ import com.ut.emrPacs.helper.security.PublicEntityKeyResolver.Entity;
 import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.filter.StudyListFilter;
+import com.ut.emrPacs.model.dto.request.pacs.study.StudyStatusUpdateRequest;
 import com.ut.emrPacs.service.service.StudyService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -39,6 +40,17 @@ public class StudyController {
     @Operation(summary = "Find study by ID", description = "Module -> Study. Endpoint -> POST /study/study-find/{id}")
     public ResponseMessage<BaseResult> find(@PathVariable String id, HttpServletRequest httpServletRequest) throws UnknownHostException {
         return studyService.findById(publicEntityKeyResolver.resolveFromPath(Entity.STUDY, id, "Study"), httpServletRequest);
+    }
+
+    @PostMapping(ApiConstants.Study.STATUS_UPDATE_PATH)
+    @Operation(summary = "Update study status", description = "Module -> Study. Endpoint -> POST /study/study-status-update/{id}. Admin-only workflow for reopening/completing a study.")
+    public ResponseMessage<BaseResult> updateStatus(
+            @PathVariable String id,
+            @Valid @RequestBody StudyStatusUpdateRequest request,
+            HttpServletRequest httpServletRequest
+    ) throws UnknownHostException {
+        Long resolvedStudyId = publicEntityKeyResolver.resolveFromPath(Entity.STUDY, id, "Study");
+        return studyService.updateStatus(resolvedStudyId, request, httpServletRequest);
     }
 
     @GetMapping(ApiConstants.Study.VIEWER_INFO_PATH)

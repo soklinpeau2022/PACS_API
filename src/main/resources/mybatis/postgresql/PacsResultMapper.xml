@@ -161,6 +161,16 @@
         </choose>
     </update>
 
+    <update id="updateResultStatusById">
+        UPDATE pacs_results
+        SET
+            status = #{status},
+            completed = COALESCE(#{completed}, FALSE),
+            modified_at = NOW()
+        WHERE id = #{resultId}
+          AND is_active = 1
+    </update>
+
     <select id="findById" resultMap="PacsResultResponse">
         SELECT
             <include refid="RESULT_COLUMNS"/>

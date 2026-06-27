@@ -104,11 +104,14 @@ public class DicomServerServiceImpl implements DicomServerService {
             "/usr/share/dicom_server/plugins\n/usr/local/share/dicom_server/plugins";
     private static final String DEFAULT_DICOMWEB_PATH = "/dicom-web";
     private static final String DICOM_SERVER_UPSTREAM_DOCKER_IMAGE = "orthancteam/orthanc:latest";
-    private static final String DEFAULT_CALLBACK_API_BASE_URL = "http://localhost:8080/pacsApi";
     private static final String CALLBACK_RECEIVED_STUDY_PATH = "/worklist/worklist-received-study";
     private static final String CALLBACK_TOKEN_PATH = "/auth/auth-client-credentials";
     private static final String CALLBACK_SCRIPT_FILE_NAME = "notify-emr.lua";
     private static final String DICOM_SERVER_CONFIG_CONTAINER_PATH = "/etc/dicom_server/config.json";
+    private static final String DICOM_SERVER_RUNTIME_CONFIG_HOST_PATH = "./runtime/config/dicom_server.json";
+    private static final String ENV_PLACEHOLDER_HTTP_USERNAME = "${UDAYA_DICOM_SERVER_HTTP_USERNAME}";
+    private static final String ENV_PLACEHOLDER_HTTP_PASSWORD = "${UDAYA_DICOM_SERVER_HTTP_PASSWORD}";
+    private static final String ENV_PLACEHOLDER_CALLBACK_API_BASE_URL = "${UDAYA_PACS_API_AUTH_CALLBACK}";
     private static final String DICOM_SERVER_SCRIPT_CONTAINER_DIRECTORY = "/etc/dicom_server/scripts";
     private static final String DICOM_SERVER_BRAND_CONTAINER_DIRECTORY = "/usr/share/dicom_server/brand";
     private static final String DICOM_SERVER_BRAND_LOGO_FILE_NAME = "udaya-logo.svg";
@@ -150,9 +153,6 @@ public class DicomServerServiceImpl implements DicomServerService {
     private PasswordEncoder passwordEncoder;
     @Autowired
     private PublicEntityKeyResolver publicEntityKeyResolver;
-
-    @Value("${api.authUrl:}")
-    private String apiAuthUrl;
 
     @Value("${pacs.dicom-server.package.include-base-image:false}")
     private boolean includeDicomServerBaseImageInPackage;
@@ -988,9 +988,11 @@ public class DicomServerServiceImpl implements DicomServerService {
         LocalTime startDuration = LocalTime.now();
         try {
             DicomServerPackageBuild packageBuild = buildRoutingDicomServerPackage(id);
-            Path baseImageArchivePath = requireReadableDicomServerBaseImageArchivePath();
             lockRoutingConfigPackageBuilt(packageBuild.routeConfig());
 
+            Path baseImageArchivePath = includeDicomServerBaseImageInPackage
+                    ? requireReadableDicomServerBaseImageArchivePath()
+                    : null;
             String zipFileName = buildDicomServerPackageDownloadFileName(packageBuild);
             StreamingResponseBody body = outputStream -> writeDicomServerProjectZip(packageBuild.responses(), outputStream, baseImageArchivePath);
             LocalTime endDuration = LocalTime.now();
@@ -1003,13 +1005,17 @@ public class DicomServerServiceImpl implements DicomServerService {
             LocalTime endDuration = LocalTime.now();
             Long errorLine = (validationError.getStackTrace() != null && validationError.getStackTrace().length > 0) ? (long) validationError.getStackTrace()[0].getLineNumber() : null;
             activityLogService.insert(ApiConstants.DicomRouting.BASE_PATH + ApiConstants.DicomRouting.BUILD_CONFIG_DOWNLOAD_PATH, errorLine, validationError.toString(), "DicomRouting", "DICOM Routing (Download Config)", "View", 2, "Error", startDuration, endDuration, httpServletRequest);
-            return ResponseEntity.badRequest().build();
+            return ResponseEntity.badRequest()
+                    .contentType(MediaType.TEXT_PLAIN)
+                    .body(textResponseBody(validationError.getMessage()));
         } catch (Exception error) {
             LocalTime endDuration = LocalTime.now();
             Long errorLine = (error.getStackTrace() != null && error.getStackTrace().length > 0) ? (long) error.getStackTrace()[0].getLineNumber() : null;
             activityLogService.insert(ApiConstants.DicomRouting.BASE_PATH + ApiConstants.DicomRouting.BUILD_CONFIG_DOWNLOAD_PATH, errorLine, error.toString(), "DicomRouting", "DICOM Routing (Download Config)", "View", 2, "Error", startDuration, endDuration, httpServletRequest);
             LOGGER.error("Unable to stream UDAYA_DICOM_SERVER deployment package.", error);
-            return ResponseEntity.internalServerError().build();
+            return ResponseEntity.internalServerError()
+                    .contentType(MediaType.TEXT_PLAIN)
+                    .body(textResponseBody("Unable to stream UDAYA_DICOM_SERVER deployment package."));
         }
     }
 
@@ -1085,11 +1091,20 @@ public class DicomServerServiceImpl implements DicomServerService {
     }
 
     private void lockRoutingConfigPackageBuilt(HospitalDicomRoutingConfigResponse routeConfig) {
-        Long userId = userService.getUserAuth().getId();
-        Integer lockedRows = dicomServerMapper.markRoutingConfigPackageBuilt(routeConfig.getId(), routeConfig.getHospitalId(), userId);
-        if (lockedRows == null || lockedRows <= 0) {
-            throw new IllegalStateException("Unable to lock hospital deployment identity for this routing configuration.");
+        try {
+            Long userId = userService.getUserAuth().getId();
+            Integer lockedRows = dicomServerMapper.markRoutingConfigPackageBuilt(routeConfig.getId(), routeConfig.getHospitalId(), userId);
+            if (lockedRows == null || lockedRows <= 0) {
+                LOGGER.warn("Unable to mark DICOM routing config #{} as package-built; continuing package generation.", routeConfig.getId());
+            }
+        } catch (Exception error) {
+            LOGGER.warn("Unable to mark DICOM routing config #{} as package-built; continuing package generation.", routeConfig == null ? null : routeConfig.getId(), error);
         }
+    }
+
+    private static StreamingResponseBody textResponseBody(String message) {
+        String text = defaultString(message, "Request failed.");
+        return outputStream -> outputStream.write((text + "\n").getBytes(StandardCharsets.UTF_8));
     }
 
     private String buildDicomServerPackageDownloadFileName(DicomServerPackageBuild packageBuild) {
@@ -1327,13 +1342,13 @@ public class DicomServerServiceImpl implements DicomServerService {
         try {
             uri = new URI(valueWithScheme);
         } catch (URISyntaxException error) {
-            throw new IllegalArgumentException(label + " must be valid. Example: http://192.168.8.12:8042/system");
+            throw new IllegalArgumentException(label + " must be valid. Example: http://dicom-ct.example.lan:8042/system");
         }
 
         String scheme = uri.getScheme();
         String host = uri.getHost();
         if (!hasText(scheme) || !hasText(host)) {
-            throw new IllegalArgumentException(label + " must include protocol and host. Example: http://192.168.8.12:8042/system");
+            throw new IllegalArgumentException(label + " must include protocol and host. Example: http://dicom-ct.example.lan:8042/system");
         }
         if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
             throw new IllegalArgumentException(label + " must use http or https.");
@@ -1950,9 +1965,6 @@ public class DicomServerServiceImpl implements DicomServerService {
             String projectName
     ) {
         String callbackApiBaseUrl = resolveCallbackApiBaseUrl(serverRoute);
-        String networkAlias = trimToNull(projectName) == null
-                ? buildDicomServerProjectName(null, serverRoute, true)
-                : projectName.replace('-', '_');
         return String.join("\n",
                 "# Generated for DICOM Server #" + serverRoute.getDicomServerId() + ". Keep this file private.",
                 "# Building config again rotates this server-specific callback secret and PACS Result proxy API key.",
@@ -1961,14 +1973,14 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "UDAYA_DICOM_SERVER_BIND_HOST=" + resolveDicomServerBindHost(serverRoute),
                 "UDAYA_DICOM_SERVER_HTTP_PORT=" + resolveDicomServerHttpPublishPort(serverRoute),
                 "UDAYA_DICOM_SERVER_DICOM_PORT=" + resolveDicomServerDicomPublishPort(serverRoute),
-                "UDAYA_DICOM_SERVER_NETWORK_ALIAS=" + escapeEnvironmentValue(networkAlias),
-                "UDAYA_PACS_API_NETWORK_NAME=udaya_pacs_local_network",
                 "UDAYA_DICOM_SERVER_HTTP_USERNAME=" + escapeEnvironmentValue(requireDicomServerHttpUsername(serverRoute)),
                 "UDAYA_DICOM_SERVER_HTTP_PASSWORD=" + escapeEnvironmentValue(requireDicomServerHttpPassword(serverRoute)),
                 "",
                 "PACS_RESULT_API_KEY=" + pacsResultApiKey,
                 "PACS_RESULT_API_KEY_HEADER=X-PACS-RESULT-API-KEY",
                 "",
+                "# From DICOM Server Management -> PACS API callback base URL.",
+                "# Use the PACS API IP or domain reachable from this hospital install.",
                 "UDAYA_PACS_API_AUTH_CALLBACK=" + callbackApiBaseUrl,
                 "UDAYA_DICOM_SERVER_CALLBACK_ENABLED=true",
                 "UDAYA_DICOM_SERVER_CALLBACK_URL=" + callbackApiBaseUrl + CALLBACK_RECEIVED_STUDY_PATH,
@@ -2054,10 +2066,11 @@ public class DicomServerServiceImpl implements DicomServerService {
         addZipDirectory(zip, root + "scripts/");
         addZipDirectory(zip, root + "worklists/");
         addZipFile(zip, root + ".env", response.getEnvironmentContent());
+        addZipFile(zip, root + ".gitignore", buildDicomServerGitignoreContent());
         addZipFile(zip, root + "Dockerfile", buildDicomServerDockerfileContent());
         addZipFile(zip, root + "docker-compose.yml", buildDicomServerDockerComposeContent(response));
         addZipFile(zip, root + "README.md", buildDicomServerProjectReadme(response));
-        addZipFile(zip, root + "config/dicom_server.json", OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(response.getConfig()));
+        addZipFile(zip, root + "config/dicom_server.json", buildDicomServerRuntimeConfigTemplate(response.getConfig()));
         addZipFile(zip, root + "brand/" + DICOM_SERVER_BRAND_LOGO_FILE_NAME, buildDicomServerBrandLogoContent());
         addZipFile(zip, root + "brand/" + DICOM_SERVER_BRAND_CSS_FILE_NAME, buildDicomServerBrandCssContent());
         addZipFile(zip, root + "images/README.md", buildDicomServerImageCacheReadmeContent());
@@ -2069,33 +2082,10 @@ public class DicomServerServiceImpl implements DicomServerService {
     }
 
     private void addDicomServerBaseImageArchive(ZipOutputStream zip, String name, Path requiredArchivePath) throws IOException {
-        if (requiredArchivePath != null) {
-            addZipFile(zip, name, requiredArchivePath);
+        if (requiredArchivePath == null) {
             return;
         }
-        if (!includeDicomServerBaseImageInPackage) {
-            return;
-        }
-        Path archivePath = resolveDicomServerBaseImageArchivePath();
-        if (archivePath == null) {
-            LOGGER.warn("DICOM server package base image inclusion is enabled but no archive path is configured.");
-            return;
-        }
-        if (!Files.isRegularFile(archivePath) || !Files.isReadable(archivePath)) {
-            LOGGER.warn("DICOM server package base image archive is not readable: {}", archivePath);
-            return;
-        }
-        long archiveSize = Files.size(archivePath);
-        if (maxEmbeddedDicomServerBaseImageBytes > 0 && archiveSize > maxEmbeddedDicomServerBaseImageBytes) {
-            LOGGER.warn(
-                    "Skipping DICOM server base image archive embed because {} bytes exceeds the configured limit of {} bytes: {}",
-                    archiveSize,
-                    maxEmbeddedDicomServerBaseImageBytes,
-                    archivePath
-            );
-            return;
-        }
-        addZipFile(zip, name, archivePath);
+        addZipFile(zip, name, requiredArchivePath);
     }
 
     private void addZipFile(ZipOutputStream zip, String name, Path filePath) throws IOException {
@@ -2114,6 +2104,14 @@ public class DicomServerServiceImpl implements DicomServerService {
         }
         if (!Files.isRegularFile(archivePath) || !Files.isReadable(archivePath)) {
             throw new IllegalStateException("DICOM server base image archive is not readable.");
+        }
+        try {
+            long archiveSize = Files.size(archivePath);
+            if (maxEmbeddedDicomServerBaseImageBytes > 0 && archiveSize > maxEmbeddedDicomServerBaseImageBytes) {
+                throw new IllegalStateException("DICOM server base image archive is larger than the configured embed limit.");
+            }
+        } catch (IOException error) {
+            throw new IllegalStateException("Unable to inspect DICOM server base image archive.", error);
         }
         return archivePath;
     }
@@ -2135,6 +2133,40 @@ public class DicomServerServiceImpl implements DicomServerService {
         byte[] bytes = defaultString(content, "").getBytes(StandardCharsets.UTF_8);
         zip.write(bytes);
         zip.closeEntry();
+    }
+
+    private String buildDicomServerGitignoreContent() {
+        return String.join("\n",
+                "runtime/",
+                "*.tmp",
+                ""
+        );
+    }
+
+    private String buildDicomServerRuntimeConfigTemplate(Map<String, Object> config) {
+        Map<String, Object> template = OBJECT_MAPPER.convertValue(
+                config == null ? new LinkedHashMap<>() : config,
+                new TypeReference<LinkedHashMap<String, Object>>() {}
+        );
+
+        Object authorizationObject = template.get("Authorization");
+        Map<String, Object> authorization = authorizationObject instanceof Map<?, ?>
+                ? OBJECT_MAPPER.convertValue(authorizationObject, new TypeReference<LinkedHashMap<String, Object>>() {})
+                : new LinkedHashMap<>();
+        authorization.put("WebServiceTokenValidationUrl", ENV_PLACEHOLDER_CALLBACK_API_BASE_URL + VIEWER_DICOMWEB_AUTHORIZE_PATH);
+        authorization.put("WebServiceTokenDecoderUrl", ENV_PLACEHOLDER_CALLBACK_API_BASE_URL + VIEWER_DICOMWEB_DECODE_PATH);
+        authorization.put("WebServiceUserProfileUrl", ENV_PLACEHOLDER_CALLBACK_API_BASE_URL + VIEWER_DICOMWEB_PROFILE_PATH);
+        template.put("Authorization", authorization);
+
+        Map<String, String> users = new LinkedHashMap<>();
+        users.put(ENV_PLACEHOLDER_HTTP_USERNAME, ENV_PLACEHOLDER_HTTP_PASSWORD);
+        template.put("RegisteredUsers", users);
+
+        try {
+            return OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(template);
+        } catch (JsonProcessingException error) {
+            throw new IllegalStateException("Unable to build UDAYA_DICOM_SERVER runtime config template.", error);
+        }
     }
 
     private String buildDicomServerDockerComposeContent(DicomServerConfigBuildResponse response) {
@@ -2166,14 +2198,9 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "    ports:",
                 "      - \"${UDAYA_DICOM_SERVER_BIND_HOST:-127.0.0.1}:${UDAYA_DICOM_SERVER_HTTP_PORT:-8042}:8042\"",
                 "      - \"${UDAYA_DICOM_SERVER_BIND_HOST:-127.0.0.1}:${UDAYA_DICOM_SERVER_DICOM_PORT:-4242}:4242\"",
-                "    networks:",
-                "      default:",
-                "      pacs_api:",
-                "        aliases:",
-                "          - ${UDAYA_DICOM_SERVER_NETWORK_ALIAS:-" + projectName + "}",
                 "    volumes:",
                 "      - ./brand:" + DICOM_SERVER_BRAND_CONTAINER_DIRECTORY + ":ro",
-                "      - ./config/dicom_server.json:" + DICOM_SERVER_CONFIG_CONTAINER_PATH + ":ro",
+                "      - " + DICOM_SERVER_RUNTIME_CONFIG_HOST_PATH + ":" + DICOM_SERVER_CONFIG_CONTAINER_PATH + ":ro",
                 "      - ./scripts:" + DICOM_SERVER_SCRIPT_CONTAINER_DIRECTORY + ":ro",
                 "      - ./worklists:" + DEFAULT_WORKLISTS_DATABASE,
                 "      - " + volumeName + ":" + DEFAULT_STORAGE_DIRECTORY,
@@ -2192,11 +2219,6 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "volumes:",
                 "  " + volumeName + ":",
                 "    name: " + volumeName,
-                "",
-                "networks:",
-                "  pacs_api:",
-                "    name: ${UDAYA_PACS_API_NETWORK_NAME:-udaya_pacs_local_network}",
-                "    external: true",
                 ""
         );
     }
@@ -2292,6 +2314,28 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
                 "",
+                "if [[ \"${1:-}\" == \"-h\" || \"${1:-}\" == \"--help\" ]]; then",
+                "  cat <<'EOF'",
+                "Deploy UDAYA DICOM server",
+                "",
+                "Usage:",
+                "  bash ./scripts/deploy.sh",
+                "",
+                "Optional env:",
+                "  UDAYA_PACS_API_AUTH_CALLBACK=<pacs-api-url>/pacsApi",
+                "  UDAYA_DICOM_SERVER_BASE_IMAGE=dicom_server_base:latest",
+                "  UDAYA_DICOM_SERVER_UPSTREAM_IMAGE=orthancteam/orthanc:latest",
+                "  UDAYA_DICOM_SERVER_BASE_IMAGE_ARCHIVE=./images/dicom_server_base.tar",
+                "  UDAYA_DICOM_SERVER_ALLOW_PULL=true",
+                "",
+                "Examples:",
+                "  bash ./scripts/cache-base-image.sh",
+                "  bash ./scripts/deploy.sh",
+                "  UDAYA_DICOM_SERVER_ALLOW_PULL=true bash ./scripts/deploy.sh",
+                "EOF",
+                "  exit 0",
+                "fi",
+                "",
                 "SCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"",
                 "PROJECT_ROOT=\"$(cd \"${SCRIPT_DIR}/..\" && pwd)\"",
                 "cd \"${PROJECT_ROOT}\"",
@@ -2300,6 +2344,101 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "UPSTREAM_IMAGE=\"${UDAYA_DICOM_SERVER_UPSTREAM_IMAGE:-" + DICOM_SERVER_UPSTREAM_DOCKER_IMAGE + "}\"",
                 "IMAGE_ARCHIVE=\"${UDAYA_DICOM_SERVER_BASE_IMAGE_ARCHIVE:-${PROJECT_ROOT}/images/dicom_server_base.tar}\"",
                 "ALLOW_PULL=\"${UDAYA_DICOM_SERVER_ALLOW_PULL:-false}\"",
+                "",
+                "render_runtime_config() {",
+                "  local template_path=\"${PROJECT_ROOT}/config/dicom_server.json\"",
+                "  local output_path=\"${PROJECT_ROOT}/runtime/config/dicom_server.json\"",
+                "  python3 - \"${template_path}\" \"${PROJECT_ROOT}/.env\" \"${output_path}\" <<'PY'",
+                "import json",
+                "import os",
+                "import re",
+                "import sys",
+                "from ipaddress import ip_address",
+                "from pathlib import Path",
+                "from urllib.parse import urlparse",
+                "",
+                "template_path = Path(sys.argv[1])",
+                "env_path = Path(sys.argv[2])",
+                "output_path = Path(sys.argv[3])",
+                "placeholder = re.compile(r\"[$][{]([A-Za-z_][A-Za-z0-9_]*)[}]\")",
+                "",
+                "def fail(message):",
+                "    print(message, file=sys.stderr)",
+                "    sys.exit(1)",
+                "",
+                "def read_env(path):",
+                "    values = {}",
+                "    if not path.exists():",
+                "        return values",
+                "    for raw_line in path.read_text(encoding=\"utf-8\").splitlines():",
+                "        line = raw_line.strip()",
+                "        if not line or line.startswith(\"#\") or \"=\" not in line:",
+                "            continue",
+                "        key, value = line.split(\"=\", 1)",
+                "        key = key.strip()",
+                "        value = value.strip()",
+                "        if len(value) >= 2 and value[0] == value[-1] and value[0] in (\"'\", '\"'):",
+                "            value = value[1:-1]",
+                "        values[key] = value",
+                "    return values",
+                "",
+                "def replace_node(node, values):",
+                "    if isinstance(node, dict):",
+                "        rendered = {}",
+                "        for key, value in node.items():",
+                "            rendered_key = replace_node(key, values) if isinstance(key, str) else key",
+                "            rendered[rendered_key] = replace_node(value, values)",
+                "        return rendered",
+                "    if isinstance(node, list):",
+                "        return [replace_node(item, values) for item in node]",
+                "    if isinstance(node, str):",
+                "        return placeholder.sub(lambda match: values[match.group(1)], node)",
+                "    return node",
+                "",
+                "if not template_path.exists():",
+                "    fail(f\"Missing DICOM config template: {template_path}\")",
+                "",
+                "values = read_env(env_path)",
+                "values.update(os.environ)",
+                "template_text = template_path.read_text(encoding=\"utf-8\")",
+                "required = sorted(set(placeholder.findall(template_text)))",
+                "missing = [name for name in required if not values.get(name)]",
+                "if missing:",
+                "    fail(\"Missing required env for DICOM runtime config: \" + \", \".join(missing))",
+                "",
+                "callback_url = values.get(\"UDAYA_PACS_API_AUTH_CALLBACK\", \"\").strip().rstrip(\"/\")",
+                "values[\"UDAYA_PACS_API_AUTH_CALLBACK\"] = callback_url",
+                "parsed = urlparse(callback_url)",
+                "host = (parsed.hostname or \"\").lower()",
+                "if parsed.scheme not in (\"http\", \"https\") or not host:",
+                "    fail(\"UDAYA_PACS_API_AUTH_CALLBACK must be a full http(s) URL.\")",
+                "if host in {\"0.0.0.0\", \"localhost\", \"::1\", \"host-gateway\", \"host.docker.internal\"} or host.startswith(\"127.\"):",
+                "    fail(\"UDAYA_PACS_API_AUTH_CALLBACK must use the PACS API IP or domain reachable from this hospital install, not localhost or a Docker host alias.\")",
+                "try:",
+                "    parsed_ip = ip_address(host)",
+                "    if parsed_ip.is_unspecified or parsed_ip.is_loopback or parsed_ip.is_link_local or parsed_ip.is_multicast or parsed_ip.is_reserved:",
+                "        fail(\"UDAYA_PACS_API_AUTH_CALLBACK must use an IP or domain reachable from this hospital install, not a local/reserved address.\")",
+                "except ValueError:",
+                "    pass",
+                "",
+                "bind_host = values.get(\"UDAYA_DICOM_SERVER_BIND_HOST\", \"\").strip().lower()",
+                "if bind_host in {\"0.0.0.0\", \"::\", \"[::]\", \"*\"}:",
+                "    fail(\"UDAYA_DICOM_SERVER_BIND_HOST must be a specific hostname or interface address, not a wildcard bind.\")",
+                "",
+                "try:",
+                "    template = json.loads(template_text)",
+                "except json.JSONDecodeError as error:",
+                "    fail(f\"Invalid DICOM config template JSON: {error}\")",
+                "",
+                "rendered = replace_node(template, values)",
+                "output_path.parent.mkdir(parents=True, exist_ok=True)",
+                "tmp_path = output_path.with_suffix(output_path.suffix + \".tmp\")",
+                "tmp_path.write_text(json.dumps(rendered, indent=2) + \"\\n\", encoding=\"utf-8\")",
+                "tmp_path.replace(output_path)",
+                "PY",
+                "  chmod 600 \"${output_path}\"",
+                "  echo \"Rendered runtime DICOM config: ${output_path}\"",
+                "}",
                 "",
                 "image_exists() {",
                 "  docker image inspect \"${BASE_IMAGE}\" >/dev/null 2>&1",
@@ -2344,6 +2483,7 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "  fi",
                 "fi",
                 "",
+                "render_runtime_config",
                 "docker compose build --pull=false",
                 "docker compose up -d --force-recreate --no-build",
                 "docker compose ps",
@@ -2422,8 +2562,11 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "```",
                 "",
                 "The deploy script loads `images/dicom_server_base.tar` when the shared base image `dicom_server_base:latest` is missing, then builds and starts this server-specific image.",
+                "Before Docker starts, it renders `runtime/config/dicom_server.json` from `config/dicom_server.json` and the private `.env` values.",
                 "It does not pull from Docker Hub by default. To prepare the offline image once, run `bash ./scripts/cache-base-image.sh` on a machine with internet access and keep `images/dicom_server_base.tar` with this folder.",
                 "For a one-time online deploy only, run `UDAYA_DICOM_SERVER_ALLOW_PULL=true sudo bash ./scripts/deploy.sh`.",
+                "Use the PACS API callback base URL configured in DICOM Server Management for `UDAYA_PACS_API_AUTH_CALLBACK`. It can be an IP or domain reachable from this hospital install; localhost, wildcard binds, Docker host aliases, and local/reserved addresses are rejected by deploy.",
+                "The PACS API and DICOM server can run on different servers. The DICOM container does not join the PACS API Docker network; it calls the API through `UDAYA_PACS_API_AUTH_CALLBACK`.",
                 "",
                 "After startup, configure DICOM Server Management with the real archive server URL:",
                 "`http://<archive-server-ip>:" + defaultPositiveInteger(response.getConfig() == null ? null : (Integer) response.getConfig().get("HttpPort"), DICOM_SERVER_CONTAINER_HTTP_PORT, "HTTP port") + "` or `http://localhost:${UDAYA_DICOM_SERVER_HTTP_PORT}` when API and the archive run on the same host.",
@@ -2436,7 +2579,8 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "",
                 "## Files",
                 "",
-                "- `config/dicom_server.json`: UDAYA_DICOM_SERVER archive configuration.",
+                "- `config/dicom_server.json`: safe runtime config template. It uses `${...}` placeholders, not real passwords.",
+                "- `runtime/config/dicom_server.json`: generated private archive configuration. Do not commit or share this file.",
                 "- `brand/`: UDAYA Explorer logo and UI brand overrides.",
                 "- `images/`: optional offline Docker base image archive (`dicom_server_base.tar`).",
                 "- `scripts/deploy.sh`: prepares the base image and runs Docker Compose.",
@@ -2485,10 +2629,7 @@ public class DicomServerServiceImpl implements DicomServerService {
     private String resolveCallbackApiBaseUrl(HospitalModalityServerRouteResponse serverRoute) {
         String resolved = trimToNull(serverRoute == null ? null : serverRoute.getPacsApiCallbackBaseUrl());
         if (resolved == null) {
-            resolved = trimToNull(apiAuthUrl);
-        }
-        if (resolved == null) {
-            resolved = DEFAULT_CALLBACK_API_BASE_URL;
+            throw new IllegalStateException("PACS API callback base URL is required before building DICOM server deployment config. Configure it in DICOM Server Management.");
         }
         return resolved.replaceAll("/+$", "");
     }
@@ -2515,7 +2656,7 @@ public class DicomServerServiceImpl implements DicomServerService {
 
     private String resolveDicomServerBindHost(HospitalModalityServerRouteResponse serverRoute) {
         String bindHost = trimToNull(stripUrlScheme(serverRoute == null ? null : serverRoute.getIpAddress()));
-        if (bindHost == null || "0.0.0.0".equals(bindHost) || "*".equals(bindHost) || "::".equals(bindHost) || "[::]".equals(bindHost)) {
+        if (bindHost == null || "*".equals(bindHost) || "::".equals(bindHost) || "[::]".equals(bindHost)) {
             return "127.0.0.1";
         }
         return escapeEnvironmentValue(bindHost);

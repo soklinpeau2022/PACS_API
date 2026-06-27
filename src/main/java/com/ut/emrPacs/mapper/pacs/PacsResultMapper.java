@@ -26,6 +26,10 @@ public interface PacsResultMapper {
                      @Param("status") String status,
                      @Param("modifiedBy") Long modifiedBy);
 
+    int updateResultStatusById(@Param("resultId") Long resultId,
+                               @Param("status") String status,
+                               @Param("completed") Boolean completed);
+
     PacsResultResponse findById(@Param("resultId") Long resultId);
 
     PacsResultResponse findByResultKey(@Param("resultKey") String resultKey);

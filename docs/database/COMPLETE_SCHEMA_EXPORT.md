@@ -6,27 +6,22 @@ and CHECK constraints.
 
 Use the PostgreSQL-native export:
 
-```powershell
-.\tools\export_complete_schema.ps1
+```bash
+bash ./tools/export_complete_schema.sh
 ```
 
 To choose the output file:
 
-```powershell
-.\tools\export_complete_schema.ps1 `
-  -OutputPath "C:\Users\MSI\Desktop\emr_pacs_db(9).sql"
+```bash
+bash ./tools/export_complete_schema.sh --output-path ./dist/emr_pacs_db_schema.sql
 ```
 
 The script:
 
 1. Runs PostgreSQL 18 `pg_dump --schema-only`.
-2. Requires `pgcrypto`, `pg_trgm`, all cache/partition functions, CHECK
-   constraints, triggers, and all six partitioned parents.
-3. Verifies every table partition is represented by native attachment DDL.
-4. Restores the SQL into a temporary database.
-5. Compares source and restored table, index, constraint, function, trigger,
-   and partition counts.
-6. Deletes the temporary database and writes a companion `.audit.json` file.
+2. Restores the SQL into a temporary validation database.
+3. Compares source and restored public schema object counts.
+4. Deletes the temporary database unless `--keep-temp` is passed.
 
 `pg_dump` represents native children with:
 

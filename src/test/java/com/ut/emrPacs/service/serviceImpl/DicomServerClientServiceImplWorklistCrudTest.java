@@ -127,8 +127,8 @@ class DicomServerClientServiceImplWorklistCrudTest {
 
     @Test
     void serverSideCallsShouldRewriteLoopbackWhenRunningInContainer() {
-        dicomServerClientService = new DicomServerClientServiceImpl(restTemplate, true);
-        server.expect(once(), requestTo("http://host.docker.internal:8042/studies/study-1"))
+        dicomServerClientService = new DicomServerClientServiceImpl(restTemplate, true, "pacs-docker-host.local");
+        server.expect(once(), requestTo("http://pacs-docker-host.local:8042/studies/study-1"))
                 .andExpect(method(HttpMethod.GET))
                 .andExpect(header(HttpHeaders.AUTHORIZATION, basicAuth("dicom_server", "dicom_server")))
                 .andRespond(withSuccess("""

@@ -1,12 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Build UDAYA PACS API deploy bundle
+
+Usage:
+  bash ./scripts/package-deploy.sh --target <local|qa|prod> [--skip-tests] [--skip-pentest]
+
+What it creates:
+  dist/udaya_pacs_<target>_api.zip
+
+Options:
+  --target <target>  Required. local, qa, or prod.
+  --skip-tests       Skip API unit/security test gate.
+  --skip-pentest     Skip endpoint pentest gate.
+
+Examples:
+  bash ./scripts/package-deploy.sh --target qa
+  bash ./scripts/package-deploy.sh --target qa --skip-tests --skip-pentest
+  bash ./scripts/package-deploy.sh --target prod
+EOF
+}
+
 TARGET=""
 SKIP_TESTS=false
 SKIP_PENTEST=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
     --target)
       TARGET="${2:-}"
       shift 2
@@ -21,7 +47,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: bash scripts/package-deploy.sh --target <local|qa|prod> [--skip-tests] [--skip-pentest]"
+      usage
       exit 1
       ;;
   esac
@@ -29,11 +55,13 @@ done
 
 if [[ -z "$TARGET" ]]; then
   echo "--target is required (local|qa|prod)"
+  usage
   exit 1
 fi
 
 if [[ "$TARGET" != "local" && "$TARGET" != "qa" && "$TARGET" != "prod" ]]; then
   echo "Invalid target: $TARGET (use local|qa|prod)"
+  usage
   exit 1
 fi
 
@@ -111,6 +139,45 @@ env_file_value() {
   ' "$file_path"
 }
 
+resolve_project_path() {
+  local value="$1"
+  if [[ -z "$value" ]]; then
+    return 1
+  fi
+  case "$value" in
+    /*)
+      printf '%s' "$value"
+      ;;
+    *)
+      printf '%s/%s' "$PROJECT_ROOT" "${value#./}"
+      ;;
+  esac
+}
+
+copy_dicom_server_base_image_archive() {
+  local include_archive configured_path source_path bundle_path
+  include_archive="$(env_file_value "$ENV_FILE_SOURCE" PACS_DICOM_SERVER_PACKAGE_INCLUDE_BASE_IMAGE)"
+  configured_path="$(env_file_value "$ENV_FILE_SOURCE" PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_HOST_PATH)"
+  configured_path="${configured_path:-./dicom-server-images/dicom_server_base.tar}"
+  source_path="$(resolve_project_path "$configured_path")"
+
+  if [[ -f "$source_path" ]]; then
+    bundle_path="$BUNDLE_DIR/dicom-server-images/dicom_server_base.tar"
+    mkdir -p "$(dirname "$bundle_path")"
+    cp "$source_path" "$bundle_path"
+    set_env_value "$BUNDLE_DIR/$ENV_FILE_NAME" "PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_HOST_PATH" "./dicom-server-images/dicom_server_base.tar"
+    set_env_value "$BUNDLE_DIR/$ENV_FILE_NAME" "PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_CONTAINER_PATH" "/app/dicom-server-images/dicom_server_base.tar"
+    set_env_value "$BUNDLE_DIR/$ENV_FILE_NAME" "PACS_DICOM_SERVER_PACKAGE_BASE_IMAGE_ARCHIVE_PATH" "/app/dicom-server-images/dicom_server_base.tar"
+    echo "Included DICOM server offline base image: $bundle_path"
+    return 0
+  fi
+
+  if [[ "${include_archive,,}" == "true" ]]; then
+    echo "Warning: DICOM server base image embed is enabled, but archive was not found: $source_path" >&2
+    echo "Put dicom_server_base.tar at $configured_path before packaging if DICOM zips must include offline image." >&2
+  fi
+}
+
 create_zip() {
   local source_parent="$1"
   local bundle_name="$2"
@@ -122,15 +189,30 @@ create_zip() {
     return
   fi
 
-  if command -v powershell.exe >/dev/null 2>&1; then
-    local bundle_win zip_win
-    bundle_win="$(cygpath -w "$source_parent/$bundle_name")"
-    zip_win="$(cygpath -w "$zip_path")"
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "\$ProgressPreference='SilentlyContinue'; Compress-Archive -Path '${bundle_win}\\*' -DestinationPath '${zip_win}' -Force"
+  local python_bin=""
+  if command -v python3 >/dev/null 2>&1; then
+    python_bin="python3"
+  elif command -v python >/dev/null 2>&1; then
+    python_bin="python"
+  fi
+  if [[ -n "$python_bin" ]]; then
+    "$python_bin" - "$source_parent" "$bundle_name" "$zip_path" <<'PY'
+import os
+import sys
+import zipfile
+
+source_parent, bundle_name, zip_path = sys.argv[1:4]
+bundle_root = os.path.join(source_parent, bundle_name)
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for root, _, files in os.walk(bundle_root):
+        for file_name in files:
+            full_path = os.path.join(root, file_name)
+            archive.write(full_path, os.path.relpath(full_path, source_parent))
+PY
     return
   fi
 
-  echo "zip command is required to create $zip_path" >&2
+  echo "zip command or Python is required to create $zip_path." >&2
   exit 1
 }
 
@@ -169,6 +251,10 @@ if [[ -z "$API_BASE_URL" ]]; then
   API_BASE_URL="http://localhost:8080/pacsApi"
 fi
 HEALTH_URL="${API_BASE_URL%/}/actuator/health"
+IMAGE_HOST_PATH="$(env_file_value "$ENV_FILE_SOURCE" HOSPITAL_IMAGE_HOST_PATH)"
+IMAGE_HOST_PATH="${IMAGE_HOST_PATH:-./runtime-image}"
+IMAGE_ROOT_PATH="$(env_file_value "$ENV_FILE_SOURCE" HOSPITAL_IMAGE_ROOT_PATH)"
+IMAGE_ROOT_PATH="${IMAGE_ROOT_PATH:-/var/ut-image}"
 
 rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR/artifact" "$BUNDLE_DIR/scripts"
@@ -207,7 +293,7 @@ set_env_value "$BUNDLE_DIR/$ENV_FILE_NAME" "$CONTAINER_KEY" "$BUNDLE_NAME"
 set_env_value "$BUNDLE_DIR/$ENV_FILE_NAME" "API_COMPOSE_PROJECT_NAME" "$BUNDLE_NAME"
 copy_shell_script "$PROJECT_ROOT/scripts/stack.sh" "$BUNDLE_DIR/scripts/stack.sh"
 copy_shell_script "$PROJECT_ROOT/scripts/normalize-hospital-image-folders.sh" "$BUNDLE_DIR/scripts/normalize-hospital-image-folders.sh"
-cp "$PROJECT_ROOT/scripts/stack.ps1" "$BUNDLE_DIR/scripts/stack.ps1"
+copy_dicom_server_base_image_archive
 
 cat > "$BUNDLE_DIR/README-DEPLOY.txt" <<EOF
 # UDAYA_PACS_API Deploy Bundle
@@ -217,7 +303,9 @@ Run PostgreSQL on the DB server or point $ENV_FILE_NAME to an existing PostgreSQ
 
 ## 1) Prepare Ubuntu Folders
 \`\`\`bash
-sudo mkdir -p /var/www/$BUNDLE_NAME /var/ut-image /var/ut-key
+sudo mkdir -p /var/www/$BUNDLE_NAME "$IMAGE_HOST_PATH" /var/ut-key
+sudo chown -R 10001:10001 "$IMAGE_HOST_PATH"
+sudo chmod -R u+rwX "$IMAGE_HOST_PATH"
 \`\`\`
 
 ## 2) Review Env
@@ -226,11 +314,13 @@ Open $ENV_FILE_NAME and confirm:
 
 \`\`\`env
 KEY_PATH=/var/ut-key
-HOSPITAL_IMAGE_HOST_PATH=/var/ut-image
-HOSPITAL_IMAGE_ROOT_PATH=/var/ut-image
+HOSPITAL_IMAGE_HOST_PATH=$IMAGE_HOST_PATH
+HOSPITAL_IMAGE_ROOT_PATH=$IMAGE_ROOT_PATH
 SECURITY_JWT_PRIVATE_KEY=file:/app/config/key/private_key.pem
 SECURITY_JWT_PUBLIC_KEY=file:/app/config/key/public_key.pem
 PACS_RESULT_STATIC_AUTH_ENABLED=true
+PACS_DICOM_SERVER_PACKAGE_INCLUDE_BASE_IMAGE=$(env_file_value "$ENV_FILE_SOURCE" PACS_DICOM_SERVER_PACKAGE_INCLUDE_BASE_IMAGE)
+PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_HOST_PATH=./dicom-server-images/dicom_server_base.tar
 \`\`\`
 
 scripts/stack.sh auto-corrects bad key paths, auto-creates
@@ -242,12 +332,13 @@ Required QA values:
 
 \`\`\`env
 QA_API_PORT=8080
-QA_SPRING_DATASOURCE_URL=jdbc:postgresql://DB_SERVER_IP:5432/emr_pacs_db
+QA_SPRING_DATASOURCE_URL=jdbc:postgresql://utdatabase.lan:5432/emr_pacs_db
 QA_SPRING_DATASOURCE_USERNAME=pacs_app_qa
 QA_SPRING_DATASOURCE_PASSWORD=<db password>
-QA_API_AUTH_URL=http://API_SERVER_IP:8080/pacsApi
-QA_SPRINGDOC_SERVER_URL=http://API_SERVER_IP:8080/pacsApi
-CORS_ALLOWED_ORIGINS=http://FRONTEND_SERVER_IP:4173,http://VIEWER_SERVER_IP:3005
+QA_API_AUTH_URL=http://utpac.lan:8080/pacsApi
+QA_SPRINGDOC_SERVER_URL=http://utpac.lan:8080/pacsApi
+API_HOST_ALIASES=
+CORS_ALLOWED_ORIGINS=http://utpac.lan:4173,http://utpac.lan:3005
 \`\`\`
 
 If QA_SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY, SECURITY_JWT_KEY_ID, or PACS_RESULT_API_KEY
@@ -264,16 +355,16 @@ sudo docker load -i ./$IMAGE_TAR
 Deploy runs this automatically. You can also run it manually after copying old files:
 
 \`\`\`bash
-sudo bash ./scripts/normalize-hospital-image-folders.sh /var/ut-image
-sudo find /var/ut-image -maxdepth 3 -type d | sort
+sudo bash ./scripts/normalize-hospital-image-folders.sh "$IMAGE_HOST_PATH"
+sudo find "$IMAGE_HOST_PATH" -maxdepth 3 -type d | sort
 \`\`\`
 
 Expected structure:
 
 \`\`\`text
-/var/ut-image/H001_UDAYA_HOSPITAL/LOGO
-/var/ut-image/H001_UDAYA_HOSPITAL/CT_COMPUTED_TOMOGRAPHY
-/var/ut-image/H001_UDAYA_HOSPITAL/MR_MAGNETIC_RESONANCE_IMAGING
+$IMAGE_HOST_PATH/H001_UDAYA_HOSPITAL/LOGO
+$IMAGE_HOST_PATH/H001_UDAYA_HOSPITAL/CT_COMPUTED_TOMOGRAPHY
+$IMAGE_HOST_PATH/H001_UDAYA_HOSPITAL/MR_MAGNETIC_RESONANCE_IMAGING
 \`\`\`
 
 ## 5) Deploy
@@ -282,13 +373,21 @@ sudo bash ./scripts/stack.sh $TARGET deploy --no-build
 sudo bash ./scripts/stack.sh $TARGET health
 \`\`\`
 
-## 6) Health Check
+## 6) Prod LAN DNS
+
+\`\`\`bash
+getent ahostsv4 apiapp.utemr.lan
+getent ahostsv4 frontend.utemr.lan
+getent ahostsv4 dicomviewer.utemr.lan
+\`\`\`
+
+## 7) Health Check
 \`\`\`bash
 curl -fsS $HEALTH_URL
 sudo bash ./scripts/stack.sh $TARGET logs
 \`\`\`
 
-## 7) Stop
+## 8) Stop
 \`\`\`bash
 sudo bash ./scripts/stack.sh $TARGET down
 \`\`\`

@@ -184,7 +184,7 @@ public class PacsResultServiceImpl implements PacsResultService {
             validateSaveRequest(safeRequest, images, false);
 
             PacsResultResponse existing = pacsResultMapper.findExisting(safeRequest);
-            validateWritableResult(existing, findViewerStateForResult(safeRequest), access.claims());
+            validateWritableResult(existing, findViewerStateForResult(safeRequest), access.claims(), isCompletedStudy(safeRequest));
 
             Long resultId;
             String status = resultStatus(safeRequest.getCompleted());
@@ -404,7 +404,7 @@ public class PacsResultServiceImpl implements PacsResultService {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("PACS result not found.", false));
             }
             Long resultId = existing.getId();
-            validateWritableResult(existing, findViewerStateForResult(existing), access.claims());
+            validateWritableResult(existing, findViewerStateForResult(existing), access.claims(), isCompletedStudy(existing));
             attachImages(existing);
 
             applyAccessClaims(request, access.claims());
@@ -463,7 +463,7 @@ public class PacsResultServiceImpl implements PacsResultService {
             }
             Long resultId = result.getId();
             ResultAccess access = authorizeExistingResult(result, httpServletRequest, true, requireServerApiKey);
-            validateWritableResult(result, findViewerStateForResult(result), access.claims());
+            validateWritableResult(result, findViewerStateForResult(result), access.claims(), isCompletedStudy(result));
             if (images == null || images.isEmpty()) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("At least one image file is required.", false));
             }
@@ -535,7 +535,7 @@ public class PacsResultServiceImpl implements PacsResultService {
         PacsResultResponse result = pacsResultMapper.findById(image.getResultId());
         try {
             ResultAccess access = authorizeExistingResult(result, httpServletRequest, true, requireServerApiKey);
-            validateWritableResult(result, findViewerStateForResult(result), access.claims());
+            validateWritableResult(result, findViewerStateForResult(result), access.claims(), isCompletedStudy(result));
         } catch (ResultAccessException accessError) {
             return resultAccessDenied(accessError);
         }
@@ -778,7 +778,7 @@ public class PacsResultServiceImpl implements PacsResultService {
             if (!viewerStateMatchesAccess(response, claims)) {
                 return resultAccessDenied(ResultAccessException.forbidden("Viewer access is not allowed for this saved viewer state."));
             }
-            response.setCanEdit(canEditViewerState(response, findResultForViewerState(safeRequest), claims));
+            response.setCanEdit(canEditViewerState(response, findResultForViewerState(safeRequest), claims, isCompletedStudy(safeRequest)));
             return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(response), true));
         } catch (IllegalArgumentException validation) {
             return ResponseMessageUtils.makeResponse(false, messageService.message(validation.getMessage(), false));
@@ -807,7 +807,7 @@ public class PacsResultServiceImpl implements PacsResultService {
                 return resultAccessDenied(ResultAccessException.forbidden("Viewer access is not allowed for this saved viewer state."));
             }
             hydrateViewerStateResponse(response);
-            response.setCanEdit(canEditViewerState(response, findResultForViewerState(safeRequest), claims));
+            response.setCanEdit(canEditViewerState(response, findResultForViewerState(safeRequest), claims, isCompletedStudy(safeRequest)));
             return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(response), true));
         } catch (IllegalArgumentException validation) {
             return ResponseMessageUtils.makeResponse(false, messageService.message(validation.getMessage(), false));
@@ -849,7 +849,7 @@ public class PacsResultServiceImpl implements PacsResultService {
             }
             long payloadSizeBytes = validateViewerStateChunkPayloadSize(request.getPayloadSizeBytes());
             String payloadSha256 = validateViewerStatePayloadSha256(request.getPayloadSha256());
-            if (isCompletedResult(findResultForViewerState(safeRequest))) {
+            if (isCompletedResult(findResultForViewerState(safeRequest)) || isCompletedStudy(safeRequest)) {
                 throw ResultAccessException.forbidden("This PACS result is completed; labels and annotations are read-only.");
             }
             byte[] chunkBytes = decodeViewerStateChunk(request.getChunkData());
@@ -944,7 +944,7 @@ public class PacsResultServiceImpl implements PacsResultService {
             if (existing != null && !viewerStateMatchesAccess(existing, claims)) {
                 return resultAccessDenied(ResultAccessException.forbidden("Viewer access is not allowed for this saved viewer state."));
             }
-            validateWritableViewerState(existing, findResultForViewerState(safeRequest), claims);
+            validateWritableViewerState(existing, findResultForViewerState(safeRequest), claims, isCompletedStudy(safeRequest));
             if (existing == null && hasText(safeRequest.getViewerStateKey())) {
                 return ResponseMessageUtils.makeResponse(
                         false,
@@ -968,7 +968,7 @@ public class PacsResultServiceImpl implements PacsResultService {
                 throw new IllegalStateException("Saved viewer state could not be reloaded.");
             }
             hydrateViewerStateResponse(response);
-            response.setCanEdit(canEditViewerState(response, findResultForViewerState(safeRequest), claims));
+            response.setCanEdit(canEditViewerState(response, findResultForViewerState(safeRequest), claims, isCompletedStudy(safeRequest)));
             return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(response), true));
         } catch (IllegalArgumentException validation) {
             if (transactionMutated) {
@@ -1015,7 +1015,7 @@ public class PacsResultServiceImpl implements PacsResultService {
             if (!viewerStateMatchesAccess(existing, claims)) {
                 return resultAccessDenied(ResultAccessException.forbidden("Viewer access is not allowed for this saved viewer state."));
             }
-            validateWritableViewerState(existing, findResultForViewerState(safeRequest), claims);
+            validateWritableViewerState(existing, findResultForViewerState(safeRequest), claims, isCompletedStudy(safeRequest));
             transactionMutated = true;
             int rows = pacsResultMapper.deactivateViewerState(safeRequest, claims == null ? null : claims.userId());
             return ResponseMessageUtils.makeResponse(true, messageService.message(rows > 0 ? "Success" : "No viewer state found.", true));
@@ -1578,13 +1578,17 @@ public class PacsResultServiceImpl implements PacsResultService {
     private static void validateWritableResult(
             PacsResultResponse existing,
             PacsViewerStateResponse existingState,
-            ViewerAccessClaims claims
+            ViewerAccessClaims claims,
+            boolean studyCompleted
     ) {
         if (!ViewerAccessKeyService.canWrite(claims)) {
             throw ResultAccessException.forbidden("This viewer is read-only for PACS result.");
         }
         if (claims == null || claims.userId() == null || claims.userId() <= 0L) {
             throw ResultAccessException.forbidden("Doctor identity is required to save PACS result.");
+        }
+        if (studyCompleted) {
+            throw ResultAccessException.forbidden("This completed study is read-only. Reopen it to Image Received before editing.");
         }
         if (isCompletedResult(existing)) {
             throw ResultAccessException.forbidden("This PACS result is completed and cannot be edited.");
@@ -1598,13 +1602,17 @@ public class PacsResultServiceImpl implements PacsResultService {
     private static void validateWritableViewerState(
             PacsViewerStateResponse existing,
             PacsResultResponse existingResult,
-            ViewerAccessClaims claims
+            ViewerAccessClaims claims,
+            boolean studyCompleted
     ) {
         if (!ViewerAccessKeyService.canWrite(claims)) {
             throw ResultAccessException.forbidden("This viewer is read-only for labels and annotations.");
         }
         if (claims == null || claims.userId() == null || claims.userId() <= 0L) {
             throw ResultAccessException.forbidden("Doctor identity is required to save labels and annotations.");
+        }
+        if (studyCompleted) {
+            throw ResultAccessException.forbidden("This completed study is read-only. Reopen it to Image Received before saving labels or annotations.");
         }
         if (isCompletedResult(existingResult)) {
             throw ResultAccessException.forbidden("This PACS result is completed; labels and annotations are read-only.");
@@ -1620,10 +1628,12 @@ public class PacsResultServiceImpl implements PacsResultService {
     private static boolean canEditViewerState(
             PacsViewerStateResponse existing,
             PacsResultResponse existingResult,
-            ViewerAccessClaims claims
+            ViewerAccessClaims claims,
+            boolean studyCompleted
     ) {
         Long ownerId = viewerOwnerId(existingResult, existing);
         return existing != null
+                && !studyCompleted
                 && !isCompletedResult(existingResult)
                 && ViewerAccessKeyService.canWrite(claims)
                 && claims != null
@@ -1637,6 +1647,40 @@ public class PacsResultServiceImpl implements PacsResultService {
                 && (Boolean.TRUE.equals(result.getCompleted())
                 || RESULT_STATUS_FINAL.equalsIgnoreCase(String.valueOf(result.getStatus()))
                 || LEGACY_RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
+    }
+
+    private boolean isCompletedStudy(PacsResultSaveRequest request) {
+        if (request == null) {
+            return false;
+        }
+        return isCompletedStudy(request.getHospitalId(), request.getStudyId());
+    }
+
+    private boolean isCompletedStudy(PacsViewerStateRequest request) {
+        if (request == null) {
+            return false;
+        }
+        return isCompletedStudy(request.getHospitalId(), request.getStudyId());
+    }
+
+    private boolean isCompletedStudy(PacsResultResponse result) {
+        if (result == null) {
+            return false;
+        }
+        return isCompletedStudy(result.getHospitalId(), result.getStudyId());
+    }
+
+    private boolean isCompletedStudy(Long hospitalId, Long studyId) {
+        if (hospitalId == null || hospitalId <= 0L || studyId == null || studyId <= 0L || studyMapper == null) {
+            return false;
+        }
+        StudyResponse study = studyMapper.findById(hospitalId, studyId);
+        return isCompletedStudy(study);
+    }
+
+    private static boolean isCompletedStudy(StudyResponse study) {
+        return study != null
+                && StudyStatus.COMPLETED.name().equalsIgnoreCase(String.valueOf(study.getStatus()));
     }
 
     private static Long viewerOwnerId(PacsResultResponse result, PacsViewerStateResponse state) {

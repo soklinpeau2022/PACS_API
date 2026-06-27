@@ -17,17 +17,20 @@ import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import com.ut.emrPacs.model.base.filter.StudyListFilter;
 import com.ut.emrPacs.model.dto.request.pacs.result.PacsViewerStateRequest;
+import com.ut.emrPacs.model.dto.request.pacs.study.StudyStatusUpdateRequest;
 import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
 import com.ut.emrPacs.model.dto.response.pacs.result.PacsResultResponse;
 import com.ut.emrPacs.model.dto.response.pacs.result.PacsViewerStateResponse;
 import com.ut.emrPacs.model.dto.response.pacs.study.StudyResponse;
 import com.ut.emrPacs.model.dto.response.pacs.worklist.ViewerInfoResponse;
+import com.ut.emrPacs.model.enums.StudyStatus;
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.StudyService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import static com.ut.emrPacs.authentication.util.AuthorityUtils.isAdminUser;
 
 import java.net.UnknownHostException;
@@ -36,10 +39,12 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 @Service
 public class StudyServiceImpl implements StudyService {
     private static final String DEFAULT_VIEWER_STATE_TYPE = "OHIF_VIEWER_STATE";
+    private static final String RESULT_STATUS_IMAGE_RECEIVED = "IMAGE_RECEIVED";
     private static final String RESULT_STATUS_FINAL = "FINAL";
     private static final String LEGACY_RESULT_STATUS_COMPLETED = "COMPLETED";
 
@@ -73,9 +78,13 @@ public class StudyServiceImpl implements StudyService {
             Long modalityId = publicEntityKeyResolver.resolve(Entity.MODALITY, safeFilter.getModalityKey(), null);
             safeFilter.setHospitalId(hospitalId);
             safeFilter.setModalityId(modalityId);
-            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
+            boolean useWeekCache = shouldUseWeekCache(safeFilter);
+            Long total = useWeekCache
+                    ? studyMapper.countWeekCache(hospitalId, safeFilter)
+                    : studyMapper.count(hospitalId, safeFilter);
+            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter, total);
 
-            List<StudyResponse> studies = shouldUseWeekCache(safeFilter)
+            List<StudyResponse> studies = useWeekCache
                     ? studyMapper.listWeekCache(hospitalId, safeFilter)
                     : studyMapper.list(hospitalId, safeFilter);
 
@@ -110,6 +119,59 @@ public class StudyServiceImpl implements StudyService {
             LocalTime endDuration = LocalTime.now();
             Long errorLine = (error.getStackTrace() != null && error.getStackTrace().length > 0) ? (long) error.getStackTrace()[0].getLineNumber() : null;
             activityLogService.insert(ApiConstants.Study.BASE_PATH + ApiConstants.Study.FIND_PATH, errorLine, error.toString(), "Study", "Study (View)", "View", 2, "Error", startDuration, endDuration, httpServletRequest);
+            return ResponseMessageUtils.makeResponse(false, messageService.message("An unexpected error occurred. Please try again.", null, false));
+        }
+    }
+
+    @Override
+    @Transactional
+    public ResponseMessage<BaseResult> updateStatus(Long id, StudyStatusUpdateRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        LocalTime startDuration = LocalTime.now();
+        try {
+            if (!isAdminUser()) {
+                return ResponseMessageUtils.makeResponse(false, 403, messageService.message("Only admin users can update study status.", false));
+            }
+            if (id == null || id <= 0L) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message("Study not found.", false));
+            }
+            if (request == null) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message("Request is required.", false));
+            }
+
+            StudyStatus targetStatus;
+            try {
+                targetStatus = StudyStatus.fromValue(request.getStatus());
+            } catch (IllegalArgumentException validation) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message(validation.getMessage(), false));
+            }
+
+            Long scopedHospitalId = currentHospitalIdOrNull();
+            StudyResponse study = scopedHospitalId == null ? null : studyMapper.findById(scopedHospitalId, id);
+            if (study == null) {
+                study = studyMapper.findById(null, id);
+            }
+            if (study == null) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message("Study not found.", false));
+            }
+
+            int updated = studyMapper.updateStatusById(study.getHospitalId(), study.getId(), targetStatus.code());
+            if (updated <= 0) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message("Study status was not updated.", false));
+            }
+            syncResultStatusForStudy(study, targetStatus);
+
+            LocalTime endDuration = LocalTime.now();
+            activityLogService.insert(ApiConstants.Study.BASE_PATH + ApiConstants.Study.STATUS_UPDATE_PATH, null, null, "Study", "Study (Status Update)", "Update", 1, "Success", startDuration, endDuration, httpServletRequest);
+            Map<String, Object> payload = Map.of(
+                    "publicKey", study.getPublicKey(),
+                    "status", targetStatus.name(),
+                    "completed", targetStatus == StudyStatus.COMPLETED
+            );
+            return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(payload), true));
+        } catch (Exception error) {
+            LocalTime endDuration = LocalTime.now();
+            Long errorLine = (error.getStackTrace() != null && error.getStackTrace().length > 0) ? (long) error.getStackTrace()[0].getLineNumber() : null;
+            activityLogService.insert(ApiConstants.Study.BASE_PATH + ApiConstants.Study.STATUS_UPDATE_PATH, errorLine, error.toString(), "Study", "Study (Status Update)", "Update", 2, "Error", startDuration, endDuration, httpServletRequest);
             return ResponseMessageUtils.makeResponse(false, messageService.message("An unexpected error occurred. Please try again.", null, false));
         }
     }
@@ -209,6 +271,11 @@ public class StudyServiceImpl implements StudyService {
         return principal.hospitalId();
     }
 
+    private static Long currentHospitalIdOrNull() {
+        var principal = UserAuthSession.getCurrentUser();
+        return principal == null ? null : principal.hospitalId();
+    }
+
     private static Long resolveHospitalId(Long requestedHospitalId) {
         if (requestedHospitalId != null && requestedHospitalId > 0) {
             return isAdminUser() ? requestedHospitalId : currentHospitalId();
@@ -282,6 +349,9 @@ public class StudyServiceImpl implements StudyService {
             return ViewerEditCapabilities.READ_ONLY;
         }
         try {
+            if (isCompletedStudy(study)) {
+                return ViewerEditCapabilities.READ_ONLY;
+            }
             PacsResultResponse existingResult = findExistingStudyResult(study);
             if (isCompletedResult(existingResult)) {
                 return ViewerEditCapabilities.READ_ONLY;
@@ -320,6 +390,22 @@ public class StudyServiceImpl implements StudyService {
         return null;
     }
 
+    private void syncResultStatusForStudy(StudyResponse study, StudyStatus targetStatus) {
+        if (pacsResultMapper == null || study == null) {
+            return;
+        }
+        PacsResultResponse existingResult = findExistingStudyResult(study);
+        if (existingResult == null || existingResult.getId() == null) {
+            return;
+        }
+        boolean completed = targetStatus == StudyStatus.COMPLETED;
+        pacsResultMapper.updateResultStatusById(
+                existingResult.getId(),
+                completed ? RESULT_STATUS_FINAL : RESULT_STATUS_IMAGE_RECEIVED,
+                completed
+        );
+    }
+
     private PacsViewerStateResponse findExistingStudyViewerState(StudyResponse study) {
         if (study == null || study.getHospitalId() == null || study.getHospitalId() <= 0L) {
             return null;
@@ -339,6 +425,11 @@ public class StudyServiceImpl implements StudyService {
                 && (Boolean.TRUE.equals(result.getCompleted())
                 || RESULT_STATUS_FINAL.equalsIgnoreCase(String.valueOf(result.getStatus()))
                 || LEGACY_RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
+    }
+
+    private static boolean isCompletedStudy(StudyResponse study) {
+        return study != null
+                && StudyStatus.COMPLETED.name().equalsIgnoreCase(String.valueOf(study.getStatus()));
     }
 
     private static Long viewerOwnerId(PacsResultResponse result, PacsViewerStateResponse state) {

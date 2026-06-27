@@ -56,7 +56,8 @@ public class UserLogServiceImpl implements UserLogService {
             userService.getUserAuth().getId();
 
             UserLogFilter safeFilter = filter == null ? new UserLogFilter() : filter;
-            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
+            Long total = userLogMapper.countList(safeFilter);
+            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter, total);
 
             List<UserLogResponse> userLogResponses = userLogMapper.listUserLog(safeFilter);
 

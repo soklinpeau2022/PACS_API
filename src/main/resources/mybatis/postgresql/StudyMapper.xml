@@ -437,7 +437,7 @@
             ORDER BY linked_qsl.linked_at DESC, linked_qsl.id DESC
             LIMIT 1
         ) q ON TRUE
-        WHERE s.hospital_id = #{hospitalId}
+        WHERE (#{hospitalId} IS NULL OR s.hospital_id = #{hospitalId})
           AND s.id = #{id}
           AND s.is_active = 1
         LIMIT 1

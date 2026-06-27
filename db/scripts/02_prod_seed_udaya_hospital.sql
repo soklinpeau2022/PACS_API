@@ -349,6 +349,34 @@ INSERT INTO public.oauth2_clients (
   dicom_server_id
 ) VALUES (
   1,
+  'pacs-web',
+  'PACS Web Client',
+  NULL,
+  'PUBLIC',
+  'password_login,refresh_token',
+  'pacs.api pacs.patient.read pacs.patient.write pacs.study.read pacs.viewer.open user.read user.write',
+  900000,
+  2592000000,
+  true,
+  NOW(),
+  NOW(),
+  NULL
+), (
+  2,
+  'pacs-mobile',
+  'PACS Mobile Client',
+  NULL,
+  'PUBLIC',
+  'password_login,refresh_token',
+  'pacs.api pacs.patient.read pacs.patient.write pacs.study.read pacs.viewer.open user.read',
+  900000,
+  2592000000,
+  true,
+  NOW(),
+  NOW(),
+  NULL
+), (
+  3,
   'udaya-dicom-server',
   'UDAYA DICOM Server Callback',
   NULL,
@@ -363,7 +391,7 @@ INSERT INTO public.oauth2_clients (
   1
 );
 
-SELECT setval(pg_get_serial_sequence('public.oauth2_clients', 'id'), 1, true);
+SELECT setval(pg_get_serial_sequence('public.oauth2_clients', 'id'), 3, true);
 
 SELECT 'hospitals' AS table_name, count(*) AS rows FROM public.hospitals
 UNION ALL SELECT 'users', count(*) FROM public.users

@@ -1229,10 +1229,12 @@ public class DicomUploadServiceImpl implements DicomUploadService {
 
         String firstName = firstNonBlank(patientName.firstName(), normalizedPatientHn, "Unknown");
         String lastName = firstNonBlank(patientName.lastName(), "");
-        LocalDate safeBirthDate = birthDate == null ? LocalDate.of(1900, 1, 1) : birthDate;
-        String safeGender = firstNonBlank(gender, "U");
+        String safeGender = firstNonBlank(gender, "");
 
-        PatientResponse existing = patientMapper.findByDemographics(hospitalId, firstName, lastName, safeBirthDate, safeGender);
+        // A missing DICOM Patient Birth Date (0010,0030) stays NULL — never coerce it to a
+        // placeholder like 1900-01-01. Demographics matching is null-safe in the mapper, so
+        // patients with an unknown DOB still de-duplicate by name + gender.
+        PatientResponse existing = patientMapper.findByDemographics(hospitalId, firstName, lastName, birthDate, safeGender);
         if (existing != null) {
             if (normalizedPatientHn != null) {
                 patientMapper.updatePatientHnIfBlank(hospitalId, existing.getId(), normalizedPatientHn);
@@ -1246,7 +1248,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         createRequest.setFirstName(firstName);
         createRequest.setLastName(lastName);
         createRequest.setGender(safeGender);
-        createRequest.setDateOfBirth(safeBirthDate);
+        createRequest.setDateOfBirth(birthDate);
         createRequest.setPhoneNumber(null);
 
         for (int attempt = 0; attempt < PATIENT_CODE_CREATE_RETRY; attempt++) {

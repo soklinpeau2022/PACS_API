@@ -22,6 +22,7 @@ import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -50,7 +52,6 @@ class DicomServerServiceImplDicomServerConfigTest {
     @SuppressWarnings("unchecked")
     void buildDicomServerConfigShouldUseAuthorizationPluginForDirectViewerAccess() {
         DicomServerServiceImpl service = new DicomServerServiceImpl();
-        ReflectionTestUtils.setField(service, "apiAuthUrl", "http://localhost:8080/pacsApi");
         HospitalModalityServerRouteResponse route = secureRoute();
         route.setAuthorizationEnabled(false);
 
@@ -68,9 +69,9 @@ class DicomServerServiceImplDicomServerConfigTest {
         assertEquals(Map.of("dicom_server", "secret-123"), (Map<String, String>) config.get("RegisteredUsers"));
         Map<String, Object> authorization = (Map<String, Object>) config.get("Authorization");
         assertEquals(Boolean.TRUE, authorization.get("Enabled"));
-        assertEquals("http://localhost:8080/pacsApi/worklist/viewer-dicom-web-authorize", authorization.get("WebServiceTokenValidationUrl"));
-        assertEquals("http://localhost:8080/pacsApi/worklist/viewer-dicom-web-decode", authorization.get("WebServiceTokenDecoderUrl"));
-        assertEquals("http://localhost:8080/pacsApi/worklist/viewer-dicom-web-profile", authorization.get("WebServiceUserProfileUrl"));
+        assertEquals("https://pacs.example.com/pacsApi/worklist/viewer-dicom-web-authorize", authorization.get("WebServiceTokenValidationUrl"));
+        assertEquals("https://pacs.example.com/pacsApi/worklist/viewer-dicom-web-decode", authorization.get("WebServiceTokenDecoderUrl"));
+        assertEquals("https://pacs.example.com/pacsApi/worklist/viewer-dicom-web-profile", authorization.get("WebServiceUserProfileUrl"));
         assertEquals(List.of("Authorization"), authorization.get("TokenHttpHeaders"));
         assertEquals(List.of("token"), authorization.get("TokenGetArguments"));
         assertEquals(List.of("ohif"), authorization.get("StandardConfigurations"));
@@ -121,13 +122,26 @@ class DicomServerServiceImplDicomServerConfigTest {
     @Test
     void callbackBaseUrlShouldPreferDicomServerUiValue() {
         DicomServerServiceImpl service = new DicomServerServiceImpl();
-        ReflectionTestUtils.setField(service, "apiAuthUrl", "http://localhost:8080/pacsApi");
         HospitalModalityServerRouteResponse route = secureRoute();
-        route.setPacsApiCallbackBaseUrl("http://192.168.8.10:8080/pacsApi/");
+        route.setPacsApiCallbackBaseUrl("http://203.0.113.10:8080/pacsApi/");
 
         String resolved = ReflectionTestUtils.invokeMethod(service, "resolveCallbackApiBaseUrl", route);
 
-        assertEquals("http://192.168.8.10:8080/pacsApi", resolved);
+        assertEquals("http://203.0.113.10:8080/pacsApi", resolved);
+    }
+
+    @Test
+    void callbackBaseUrlShouldBeRequiredFromDicomServerUi() {
+        DicomServerServiceImpl service = new DicomServerServiceImpl();
+        HospitalModalityServerRouteResponse route = secureRoute();
+        route.setPacsApiCallbackBaseUrl(null);
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> ReflectionTestUtils.invokeMethod(service, "resolveCallbackApiBaseUrl", route)
+        );
+
+        assertTrue(error.getMessage().contains("Configure it in DICOM Server Management"));
     }
 
     @Test
@@ -163,6 +177,10 @@ class DicomServerServiceImplDicomServerConfigTest {
         String deployScript = ReflectionTestUtils.invokeMethod(service, "buildDicomServerDeployScriptContent");
 
         assertTrue(deployScript.contains("images/dicom_server_base.tar"));
+        assertTrue(deployScript.contains("render_runtime_config"));
+        assertTrue(deployScript.contains("UDAYA_PACS_API_AUTH_CALLBACK=<pacs-api-url>/pacsApi"));
+        assertTrue(deployScript.contains("UDAYA_PACS_API_AUTH_CALLBACK must use the PACS API IP or domain"));
+        assertTrue(deployScript.contains("not a local/reserved address"));
         assertTrue(deployScript.contains("docker load -i"));
         assertTrue(deployScript.contains("UDAYA_DICOM_SERVER_ALLOW_PULL"));
         assertTrue(deployScript.contains("docker compose build --pull=false"));
@@ -200,13 +218,15 @@ class DicomServerServiceImplDicomServerConfigTest {
         assertTrue(compose.contains("pull_policy: never"));
         assertTrue(compose.contains("pull: false"));
         assertTrue(compose.contains("container_name: ${UDAYA_DICOM_SERVER_CONTAINER_NAME:-dicom_server_ksfh}"));
+        assertTrue(compose.contains("./runtime/config/dicom_server.json:/etc/dicom_server/config.json:ro"));
+        assertFalse(compose.contains("./config/dicom_server.json:/etc/dicom_server/config.json:ro"));
     }
 
     @Test
     void dicomServerUrlsShouldDeriveFromHostPortAndDicomwebPath() {
         DicomServerServiceImpl service = new DicomServerServiceImpl();
         HospitalDicomServerRequestUpdate request = new HospitalDicomServerRequestUpdate();
-        request.setIpAddress("192.168.8.12");
+        request.setIpAddress("dicom-ct.example.lan");
         request.setPort(8043);
         request.setDicomPort(4243);
         request.setSslEnabled(false);
@@ -216,8 +236,8 @@ class DicomServerServiceImplDicomServerConfigTest {
         String publicUiBaseUrl = (String) ReflectionTestUtils.getField(endpoint, "baseUrl");
         String dicomwebBaseUrl = ReflectionTestUtils.invokeMethod(service, "buildDerivedDicomwebBaseUrl", publicUiBaseUrl, request.getDicomwebPath());
 
-        assertEquals("http://192.168.8.12:8043", publicUiBaseUrl);
-        assertEquals("http://192.168.8.12:8043/dicom-web", dicomwebBaseUrl);
+        assertEquals("http://dicom-ct.example.lan:8043", publicUiBaseUrl);
+        assertEquals("http://dicom-ct.example.lan:8043/dicom-web", dicomwebBaseUrl);
     }
 
     @Test
@@ -230,7 +250,7 @@ class DicomServerServiceImplDicomServerConfigTest {
         existing.setDicomwebPath("/dicom-web");
 
         HospitalDicomServerRequestUpdate request = new HospitalDicomServerRequestUpdate();
-        request.setIpAddress("192.168.8.12");
+        request.setIpAddress("dicom-ct.example.lan");
         request.setPort(8044);
         request.setDicomPort(4244);
         request.setSslEnabled(false);
@@ -239,8 +259,8 @@ class DicomServerServiceImplDicomServerConfigTest {
         String publicUiBaseUrl = (String) ReflectionTestUtils.getField(endpoint, "baseUrl");
         String dicomwebBaseUrl = ReflectionTestUtils.invokeMethod(service, "buildDerivedDicomwebBaseUrl", publicUiBaseUrl, existing.getDicomwebPath());
 
-        assertEquals("http://192.168.8.12:8044", publicUiBaseUrl);
-        assertEquals("http://192.168.8.12:8044/dicom-web", dicomwebBaseUrl);
+        assertEquals("http://dicom-ct.example.lan:8044", publicUiBaseUrl);
+        assertEquals("http://dicom-ct.example.lan:8044/dicom-web", dicomwebBaseUrl);
     }
 
     @Test
@@ -256,8 +276,6 @@ class DicomServerServiceImplDicomServerConfigTest {
         ReflectionTestUtils.setField(service, "userService", userService);
         ReflectionTestUtils.setField(service, "activityLogService", mock(ActivityLogService.class));
         ReflectionTestUtils.setField(service, "passwordEncoder", passwordEncoder);
-        ReflectionTestUtils.setField(service, "apiAuthUrl", "http://localhost:8080/pacsApi");
-
         User user = new User();
         user.setId(7L);
         when(userService.getUserAuth()).thenReturn(user);
@@ -310,7 +328,7 @@ class DicomServerServiceImplDicomServerConfigTest {
         DicomServerServiceImpl service = new DicomServerServiceImpl();
         DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
         response.setProjectName("dicom_server_ksfh");
-        response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=http://192.168.192.4:8080/pacsApi\n");
+        response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=https://pacs.example.com/pacsApi\n");
         response.setConfig(new LinkedHashMap<>(Map.of(
                 "AuthenticationEnabled", true,
                 "RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")),
@@ -326,11 +344,20 @@ class DicomServerServiceImplDicomServerConfigTest {
         Map<String, String> files = unzipTextFiles(base64);
 
         assertTrue(files.containsKey("dicom_server_ksfh/images/README.md"));
+        assertTrue(files.containsKey("dicom_server_ksfh/.gitignore"));
         assertTrue(files.containsKey("dicom_server_ksfh/scripts/cache-base-image.sh"));
         assertTrue(files.containsKey("dicom_server_ksfh/scripts/deploy.sh"));
         assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("pull_policy: never"));
         assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("pull: false"));
+        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("./runtime/config/dicom_server.json:/etc/dicom_server/config.json:ro"));
+        assertFalse(files.get("dicom_server_ksfh/docker-compose.yml").contains("UDAYA_PACS_API_NETWORK_NAME"));
+        assertFalse(files.get("dicom_server_ksfh/docker-compose.yml").contains("pacs_api"));
+        assertTrue(files.get("dicom_server_ksfh/config/dicom_server.json").contains("${UDAYA_DICOM_SERVER_HTTP_USERNAME}"));
+        assertTrue(files.get("dicom_server_ksfh/config/dicom_server.json").contains("${UDAYA_DICOM_SERVER_HTTP_PASSWORD}"));
+        assertTrue(files.get("dicom_server_ksfh/config/dicom_server.json").contains("${UDAYA_PACS_API_AUTH_CALLBACK}/worklist/viewer-dicom-web-authorize"));
+        assertFalse(files.get("dicom_server_ksfh/config/dicom_server.json").contains("secret-123"));
         assertTrue(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("images/dicom_server_base.tar"));
+        assertTrue(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("render_runtime_config"));
         assertTrue(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("docker compose build --pull=false"));
         assertFalse(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("docker compose up -d --build --force-recreate"));
         assertTrue(files.get("dicom_server_ksfh/Dockerfile").startsWith("FROM dicom_server_base:latest"));
@@ -338,7 +365,7 @@ class DicomServerServiceImplDicomServerConfigTest {
     }
 
     @Test
-    void dicomServerProjectZipShouldOptionallyIncludeOfflineBaseImageArchive() throws Exception {
+    void dicomServerProjectZipBase64ShouldNotIncludeOfflineBaseImageArchive() throws Exception {
         Path archive = Files.createTempFile("dicom-server-base", ".tar");
         Files.writeString(archive, "local-image-archive", java.nio.charset.StandardCharsets.UTF_8);
         try {
@@ -347,7 +374,7 @@ class DicomServerServiceImplDicomServerConfigTest {
             ReflectionTestUtils.setField(service, "dicomServerBaseImageArchivePath", archive.toString());
             DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
             response.setProjectName("dicom_server_ksfh");
-            response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=http://192.168.192.4:8080/pacsApi\n");
+            response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=https://pacs.example.com/pacsApi\n");
             response.setConfig(new LinkedHashMap<>(Map.of(
                     "AuthenticationEnabled", true,
                     "RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")),
@@ -362,10 +389,7 @@ class DicomServerServiceImplDicomServerConfigTest {
             String base64 = ReflectionTestUtils.invokeMethod(service, "buildDicomServerProjectZipBase64", response);
             Map<String, byte[]> files = unzipFiles(base64);
 
-            assertArrayEquals(
-                    "local-image-archive".getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                    files.get("dicom_server_ksfh/images/dicom_server_base.tar")
-            );
+            assertFalse(files.containsKey("dicom_server_ksfh/images/dicom_server_base.tar"));
         } finally {
             Files.deleteIfExists(archive);
         }
@@ -382,7 +406,7 @@ class DicomServerServiceImplDicomServerConfigTest {
             ReflectionTestUtils.setField(service, "maxEmbeddedDicomServerBaseImageBytes", 4L);
             DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
             response.setProjectName("dicom_server_ksfh");
-            response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=http://192.168.192.4:8080/pacsApi\n");
+            response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=https://pacs.example.com/pacsApi\n");
             response.setConfig(new LinkedHashMap<>(Map.of(
                     "AuthenticationEnabled", true,
                     "RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")),
@@ -433,7 +457,7 @@ class DicomServerServiceImplDicomServerConfigTest {
             DicomServerServiceImpl service = new DicomServerServiceImpl();
             DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
             response.setProjectName("dicom_server_ksfh");
-            response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=http://192.168.192.4:8080/pacsApi\n");
+            response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=https://pacs.example.com/pacsApi\n");
             response.setConfig(new LinkedHashMap<>(Map.of(
                     "AuthenticationEnabled", true,
                     "RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")),
@@ -461,6 +485,75 @@ class DicomServerServiceImplDicomServerConfigTest {
             );
         } finally {
             Files.deleteIfExists(archive);
+        }
+    }
+
+    @Test
+    void downloadRoutingDicomServerConfigZipShouldWorkWithoutConfiguredBaseImageArchive() throws Exception {
+        DicomServerServiceImpl service = new DicomServerServiceImpl();
+        DicomServerMapper dicomServerMapper = mock(DicomServerMapper.class);
+        OAuth2ClientMapper oauth2ClientMapper = mock(OAuth2ClientMapper.class);
+        UserService userService = mock(UserService.class);
+        PasswordEncoder passwordEncoder = mock(PasswordEncoder.class);
+        ReflectionTestUtils.setField(service, "dicomServerMapper", dicomServerMapper);
+        ReflectionTestUtils.setField(service, "oauth2ClientMapper", oauth2ClientMapper);
+        ReflectionTestUtils.setField(service, "userService", userService);
+        ReflectionTestUtils.setField(service, "activityLogService", mock(ActivityLogService.class));
+        ReflectionTestUtils.setField(service, "passwordEncoder", passwordEncoder);
+        ReflectionTestUtils.setField(service, "includeDicomServerBaseImageInPackage", false);
+        ReflectionTestUtils.setField(service, "dicomServerBaseImageArchivePath", "");
+
+        User user = new User();
+        user.setId(7L);
+        when(userService.getUserAuth()).thenReturn(user);
+        when(passwordEncoder.encode(anyString())).thenReturn("encoded-secret");
+
+        HospitalDicomRoutingConfigResponse routeConfig = new HospitalDicomRoutingConfigResponse();
+        routeConfig.setId(10L);
+        routeConfig.setPublicKey("route-public-key");
+        routeConfig.setHospitalId(1L);
+        routeConfig.setHospitalPublicKey("hospital-public-key");
+        routeConfig.setHospitalName("KSFH Hospital");
+
+        HospitalModalityServerRouteResponse route = secureRoute();
+        route.setRoutingConfigId(10L);
+        route.setDicomServerId(33L);
+        route.setDicomServerPublicKey("server-public-key");
+        route.setDicomServerName("UDAYA_DICOM_SERVER KSFH");
+        route.setUsername("ksfh_archive");
+        route.setPassword("secret-123");
+        route.setPort(8042);
+        route.setDicomPort(4242);
+        route.setDicomServerUiBaseUrl("http://localhost:8042");
+        route.setDicomwebPath("/dicom-web");
+        route.setHttpServerEnabled(true);
+        route.setRemoteAccessAllowed(true);
+        route.setAuthenticationEnabled(true);
+        route.setAuthorizationEnabled(true);
+
+        when(dicomServerMapper.getRoutingConfigById(10L, 1L)).thenReturn(routeConfig);
+        when(dicomServerMapper.listRoutesByRoutingConfigIds(eq(List.of(10L)), eq(1L), isNull())).thenReturn(List.of(route));
+        when(oauth2ClientMapper.upsertDicomServerCallbackClient(eq(33L), anyString(), anyString(), anyString())).thenReturn(1);
+        when(dicomServerMapper.updateDicomServerPacsResultApiKeyHash(eq(33L), eq(1L), anyString(), eq(7L))).thenReturn(1);
+        when(dicomServerMapper.markRoutingConfigPackageBuilt(10L, 1L, 7L)).thenReturn(1);
+
+        TestingAuthenticationToken authentication = new TestingAuthenticationToken("admin", "n/a");
+        authentication.setDetails(new CurrentUserPrincipal(7L, "admin", 1L, "H001", "pacs-web", "jti", 1L));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            ResponseEntity<StreamingResponseBody> response = service.downloadRoutingDicomServerConfigZip(10L, mock(HttpServletRequest.class));
+            assertEquals(200, response.getStatusCode().value());
+            assertNotNull(response.getBody());
+
+            java.io.ByteArrayOutputStream outputStream = new java.io.ByteArrayOutputStream();
+            response.getBody().writeTo(outputStream);
+            Map<String, byte[]> files = unzipBytes(outputStream.toByteArray());
+
+            assertTrue(files.keySet().stream().anyMatch(name -> name.endsWith("/Dockerfile")));
+            assertFalse(files.keySet().stream().anyMatch(name -> name.endsWith("/images/dicom_server_base.tar")));
+            verify(dicomServerMapper).markRoutingConfigPackageBuilt(10L, 1L, 7L);
+        } finally {
+            SecurityContextHolder.clearContext();
         }
     }
 
@@ -505,6 +598,7 @@ class DicomServerServiceImplDicomServerConfigTest {
         route.setAeTitle("dicom_server");
         route.setUsername("dicom_server");
         route.setPassword("secret-123");
+        route.setPacsApiCallbackBaseUrl("https://pacs.example.com/pacsApi");
         route.setMachineAeTitle("KSFH_CT01");
         route.setMachineHost("192.168.40.21");
         route.setMachinePort(104);

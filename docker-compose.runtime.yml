@@ -25,7 +25,7 @@ x-api-common: &api-common
       max-file: "3"
   volumes:
     - ${KEY_PATH:-./key}:/app/config/key:ro
-    - ${HOSPITAL_IMAGE_HOST_PATH:-./runtime-image}:/var/ut-image
+    - ${HOSPITAL_IMAGE_HOST_PATH:-./runtime-image}:${HOSPITAL_IMAGE_ROOT_PATH:-/var/ut-image}
     - ${PACS_DICOM_UPLOAD_TEMP_HOST_PATH:-../runtime-dicom-upload-temp}:/var/ut-dicom-upload-temp
     - ${PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_HOST_PATH:-./dicom-server-images/dicom_server_base.tar}:${PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_CONTAINER_PATH:-/app/dicom-server-images/dicom_server_base.tar}:ro
 

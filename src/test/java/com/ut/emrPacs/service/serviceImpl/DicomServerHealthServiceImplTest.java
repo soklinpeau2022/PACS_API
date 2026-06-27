@@ -56,20 +56,20 @@ class DicomServerHealthServiceImplTest {
                 DicomServerHealthServiceImpl.class,
                 "rewriteLoopbackUrl",
                 "http://127.0.0.1:8042/system",
-                "host.docker.internal"
+                "pacs-docker-host.local"
         );
 
-        assertEquals("http://host.docker.internal:8042/system", rewritten);
+        assertEquals("http://pacs-docker-host.local:8042/system", rewritten);
     }
 
     @Test
     void rewriteLoopbackHealthUrlKeepsNonLoopbackHost() {
-        String original = "http://10.10.10.20:8042/system";
+        String original = "http://dicom-ct.example.lan:8042/system";
         String rewritten = ReflectionTestUtils.invokeMethod(
                 DicomServerHealthServiceImpl.class,
                 "rewriteLoopbackUrl",
                 original,
-                "host.docker.internal"
+                "pacs-docker-host.local"
         );
 
         assertEquals(original, rewritten);

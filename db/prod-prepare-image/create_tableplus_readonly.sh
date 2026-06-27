@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -e
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Create or update TablePlus read-only audit user
+
+Usage:
+  bash ./create_tableplus_readonly.sh
+
+Required env from PostgreSQL entrypoint:
+  POSTGRES_USER
+  POSTGRES_DB
+
+Optional env:
+  PACS_TABLEPLUS_AUDIT_PASSWORD=<readonly-password>
+EOF
+  exit 0
+fi
+
 audit_password="${PACS_TABLEPLUS_AUDIT_PASSWORD:-PacsAudit_2026_ReadOnly}"
 
 case "$audit_password" in

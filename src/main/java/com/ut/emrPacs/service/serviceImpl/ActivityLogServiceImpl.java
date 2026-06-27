@@ -211,7 +211,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
         LocalTime startDuration = LocalTime.now();
         try {
             ActivityFilter safeFilter = filter == null ? new ActivityFilter() : filter;
-            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
+            Long total = activityLogMapper.countList(safeFilter);
+            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter, total);
 
             List<ActivityLog> activityLogs = activityLogMapper.listActivityLog(safeFilter);
 

@@ -54,7 +54,7 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
     private static final int DEFAULT_OFFLINE_FAILURE_THRESHOLD = 3;
     private static final int MAX_OFFLINE_FAILURE_THRESHOLD = 20;
     private static final long DEFAULT_OFFLINE_GRACE_MS = 180_000L;
-    private static final String DEFAULT_LOOPBACK_HOST_OVERRIDE = "host.docker.internal";
+    private static final String DEFAULT_LOOPBACK_HOST_OVERRIDE = "";
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault());
 
     private final DicomServerMapper dicomServerMapper;
@@ -77,7 +77,7 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
     @Value("${pacs.dicom-server.client.rewrite-loopback-in-container:true}")
     private boolean loopbackRewriteEnabled;
 
-    @Value("${pacs.dicom-server.client.loopback-host-override:host.docker.internal}")
+    @Value("${pacs.dicom-server.client.loopback-host-override:}")
     private String loopbackHostOverride;
 
     public DicomServerHealthServiceImpl(DicomServerMapper dicomServerMapper, JdbcTemplate jdbcTemplate) {
@@ -527,8 +527,7 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
         return "localhost".equals(normalized)
                 || "127.0.0.1".equals(normalized)
                 || "::1".equals(normalized)
-                || "0:0:0:0:0:0:0:1".equals(normalized)
-                || "0.0.0.0".equals(normalized);
+                || "0:0:0:0:0:0:0:1".equals(normalized);
     }
 
     private static boolean isRunningInContainer() {

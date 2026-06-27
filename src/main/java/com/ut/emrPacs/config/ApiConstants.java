@@ -161,6 +161,7 @@ public final class ApiConstants {
         public static final String BASE_PATH = "/study";
         public static final String LIST_PATH = "/study-list";
         public static final String FIND_PATH = "/study-find/{id}";
+        public static final String STATUS_UPDATE_PATH = "/study-status-update/{id}";
         public static final String VIEWER_INFO_PATH = "/{studyId}/viewer-info";
 
         private Study() {

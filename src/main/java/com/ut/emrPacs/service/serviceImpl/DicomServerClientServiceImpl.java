@@ -69,7 +69,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
     private static final long DICOMWEB_PROXY_RETRY_BACKOFF_MS = 200L;
     private static final int DICOMWEB_STREAM_BUFFER_BYTES = 1024 * 1024;
     private static final int UPLOAD_ERROR_BODY_MAX_CHARS = 400;
-    private static final String DEFAULT_LOOPBACK_HOST_OVERRIDE = "host.docker.internal";
+    private static final String DEFAULT_LOOPBACK_HOST_OVERRIDE = "";
 
     DicomServerClientServiceImpl(RestTemplate restTemplate) {
         this(restTemplate, new ObjectMapper(), 10000, 7200000, true, DEFAULT_LOOPBACK_HOST_OVERRIDE, isRunningInContainer());
@@ -79,13 +79,17 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         this(restTemplate, new ObjectMapper(), 10000, 7200000, true, DEFAULT_LOOPBACK_HOST_OVERRIDE, runningInContainer);
     }
 
+    DicomServerClientServiceImpl(RestTemplate restTemplate, boolean runningInContainer, String loopbackHostOverride) {
+        this(restTemplate, new ObjectMapper(), 10000, 7200000, true, loopbackHostOverride, runningInContainer);
+    }
+
     @Autowired
     public DicomServerClientServiceImpl(
             RestTemplate restTemplate,
             @Value("${pacs.dicom-server.client.connect-timeout-ms:10000}") int connectTimeoutMs,
             @Value("${pacs.dicom-server.client.read-timeout-ms:7200000}") int readTimeoutMs,
             @Value("${pacs.dicom-server.client.rewrite-loopback-in-container:true}") boolean loopbackRewriteEnabled,
-            @Value("${pacs.dicom-server.client.loopback-host-override:host.docker.internal}") String loopbackHostOverride
+            @Value("${pacs.dicom-server.client.loopback-host-override:}") String loopbackHostOverride
     ) {
         this(restTemplate, new ObjectMapper(), connectTimeoutMs, readTimeoutMs, loopbackRewriteEnabled, loopbackHostOverride, isRunningInContainer());
     }
@@ -725,8 +729,7 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         return "localhost".equals(normalized)
                 || "127.0.0.1".equals(normalized)
                 || "::1".equals(normalized)
-                || "0:0:0:0:0:0:0:1".equals(normalized)
-                || "0.0.0.0".equals(normalized);
+                || "0:0:0:0:0:0:0:1".equals(normalized);
     }
 
     private static String stripOrthancUiPath(String baseUrl) {

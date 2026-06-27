@@ -223,8 +223,12 @@ public class WorklistServiceImpl implements WorklistService {
             safeFilter.applyOperationalWorklistDefaultStatuses();
             Long requestedHospitalId = publicEntityKeyResolver.resolve(Entity.HOSPITAL, safeFilter.getHospitalKey(), null);
             Long hospitalId = resolveOptionalHospitalId(requestedHospitalId);
-            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter);
-            List<WorklistListResponse> WorklistList = shouldUseWeekCache(safeFilter)
+            boolean useWeekCache = shouldUseWeekCache(safeFilter);
+            Long total = useWeekCache
+                    ? WorklistMapper.countWeekCache(hospitalId, safeFilter)
+                    : WorklistMapper.countList(hospitalId, safeFilter);
+            Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter, total);
+            List<WorklistListResponse> WorklistList = useWeekCache
                     ? WorklistMapper.listWeekCache(hospitalId, safeFilter)
                     : WorklistMapper.list(hospitalId, safeFilter);
 
@@ -4761,6 +4765,9 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             return ViewerEditCapabilities.READ_ONLY;
         }
         try {
+            if (isCompletedLinkedStudy(worklist)) {
+                return ViewerEditCapabilities.READ_ONLY;
+            }
             PacsResultFindByWorklistRequest resultRequest = new PacsResultFindByWorklistRequest();
             resultRequest.setHospitalId(worklist.getHospitalId());
             resultRequest.setWorklistId(worklist.getId());
@@ -4848,6 +4855,9 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             return ViewerEditCapabilities.READ_ONLY;
         }
         try {
+            if (isCompletedStudy(study)) {
+                return ViewerEditCapabilities.READ_ONLY;
+            }
             PacsResultResponse existingResult = findExistingStudyResult(study);
             if (isCompletedResult(existingResult)) {
                 return ViewerEditCapabilities.READ_ONLY;
@@ -4918,6 +4928,24 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 && (Boolean.TRUE.equals(result.getCompleted())
                 || RESULT_STATUS_FINAL.equalsIgnoreCase(String.valueOf(result.getStatus()))
                 || LEGACY_RESULT_STATUS_COMPLETED.equalsIgnoreCase(String.valueOf(result.getStatus())));
+    }
+
+    private boolean isCompletedLinkedStudy(WorklistDetailRow worklist) {
+        if (worklist == null
+                || worklist.getHospitalId() == null
+                || worklist.getHospitalId() <= 0L
+                || worklist.getStudyId() == null
+                || worklist.getStudyId() <= 0L
+                || studyMapper == null) {
+            return false;
+        }
+        StudyResponse study = studyMapper.findById(worklist.getHospitalId(), worklist.getStudyId());
+        return isCompletedStudy(study);
+    }
+
+    private static boolean isCompletedStudy(StudyResponse study) {
+        return study != null
+                && StudyStatus.COMPLETED.name().equalsIgnoreCase(String.valueOf(study.getStatus()));
     }
 
     private static Long positiveUserId(Long userId) {

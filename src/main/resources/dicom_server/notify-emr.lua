@@ -283,7 +283,11 @@ function OnStableStudy(studyId, tags, metadata, origin)
     ['Authorization'] = 'Bearer ' .. bearerToken
   }
   local body = DumpJson(payload, true)
-  local callbackUrl = env('UDAYA_DICOM_SERVER_CALLBACK_URL', 'http://localhost:8080/pacsApi/worklist/worklist-received-study')
+  local callbackUrl = env('UDAYA_DICOM_SERVER_CALLBACK_URL', '')
+  if not hasText(callbackUrl) then
+    print('Skipping EMR callback for stable study ' .. studyId .. ' because UDAYA_DICOM_SERVER_CALLBACK_URL is not configured')
+    return
+  end
 
   local ok, result = httpPostWithRetry('DicomServer EMR callback for stable study ' .. studyId, callbackUrl, body, headers, true)
   if not ok then

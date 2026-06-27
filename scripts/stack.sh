@@ -1,6 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+UDAYA PACS API stack
+
+Usage:
+  bash ./scripts/stack.sh <target> <action> [--build|--no-build]
+
+Targets:
+  local | qa | prod
+
+Actions:
+  deploy                    Build or load API image, start tmp, health-check, promote.
+  up                        Start API container directly.
+  down                      Stop/remove API and Redis containers.
+  restart                   Restart API container.
+  health                    Check API and Redis health.
+  logs                      Show API logs.
+  ps                        Show API/Redis container status.
+  db-backup                 Backup PostgreSQL through db-admin.sh.
+  db-migrate                Backup DB, then run Flyway migrations.
+  db-validate               Run DB validation SQL.
+  db-refresh-cache          Refresh PACS week cache and validate DB.
+  db-partition-maintenance  Run partition maintenance and validate DB.
+
+Options:
+  --build     Build image before deploy.
+  --no-build  Use existing loaded image/bundle.
+
+Examples:
+  bash ./scripts/stack.sh qa deploy --no-build
+  bash ./scripts/stack.sh qa health
+  bash ./scripts/stack.sh local deploy --build
+  bash ./scripts/stack.sh local db-migrate --build
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
 TARGET="${1:-}"
 ACTION="${2:-up}"
 BUILD=false
@@ -21,7 +62,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: bash scripts/stack.sh <local|qa|prod> <up|down|restart|deploy|logs|ps|health|db-backup|db-migrate|db-validate|db-refresh-cache|db-partition-maintenance> [--build|--no-build]"
+      usage
       exit 1
       ;;
   esac
@@ -29,6 +70,7 @@ done
 
 if [[ "$TARGET" != "local" && "$TARGET" != "qa" && "$TARGET" != "prod" ]]; then
   echo "Target is required: local, qa, or prod"
+  usage
   exit 1
 fi
 
@@ -93,6 +135,36 @@ docker_cmd() {
   MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker "$@"
 }
 
+require_docker_daemon() {
+  if ! command -v docker >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+Docker is required to deploy and run the UDAYA PACS API container, but docker was not found.
+Install Docker Engine on this server:
+  sudo apt-get update
+  sudo apt-get install -y ca-certificates curl gnupg
+  sudo install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  sudo chmod a+r /etc/apt/keyrings/docker.gpg
+  . /etc/os-release
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+  sudo apt-get update
+  sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  sudo systemctl enable --now docker
+EOF
+    exit 1
+  fi
+
+  if ! docker info >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+Docker is installed, but the Docker daemon is not running or /var/run/docker.sock is unavailable.
+Start Docker on this server:
+  sudo systemctl enable --now docker
+  sudo systemctl status docker --no-pager
+EOF
+    exit 1
+  fi
+}
+
 primary_ipv4() {
   local ip
   if command -v ip >/dev/null 2>&1; then
@@ -112,6 +184,74 @@ primary_ipv4() {
   printf '127.0.0.1'
 }
 
+is_ipv4_address() {
+  [[ "${1:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+resolve_ipv4_for_host() {
+  local host="$1"
+  local ip
+  if is_ipv4_address "$host"; then
+    printf '%s' "$host"
+    return 0
+  fi
+  if command -v getent >/dev/null 2>&1; then
+    ip="$(getent ahostsv4 "$host" 2>/dev/null | awk '$1 !~ /^(0|127|169\.254)\./ { print $1; exit }')"
+    if [[ -n "$ip" ]]; then
+      printf '%s' "$ip"
+      return 0
+    fi
+  fi
+  if command -v host >/dev/null 2>&1; then
+    ip="$(host "$host" 2>/dev/null | awk '/has address/ && $NF !~ /^(0|127|169\.254)\./ { print $NF; exit }')"
+    if [[ -n "$ip" ]]; then
+      printf '%s' "$ip"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+url_host() {
+  local url="$1"
+  local authority host
+  url="${url#*://}"
+  authority="${url%%/*}"
+  authority="${authority%@*}"
+  if [[ "$authority" == \[*\]* ]]; then
+    host="${authority%%]*}"
+    host="${host#[}"
+  else
+    host="${authority%%:*}"
+  fi
+  printf '%s' "$host"
+}
+
+api_public_hostname() {
+  local value
+  value="$(env_value "${TARGET^^}_API_PUBLIC_HOSTNAME")"
+  value="${value:-$(env_value API_PUBLIC_HOSTNAME)}"
+  if [[ -z "$value" ]]; then
+    value="$(env_value "${TARGET^^}_API_AUTH_URL")"
+    value="${value:-$(env_value API_AUTH_URL)}"
+  fi
+  value="$(url_host "$value")"
+  printf '%s' "$value"
+}
+
+preferred_auto_bind_host() {
+  local configured_host resolved_ip
+  configured_host="$(api_public_hostname)"
+  if [[ -n "$configured_host" && ! "$configured_host" =~ ^(localhost|127\.) ]]; then
+    resolved_ip="$(resolve_ipv4_for_host "$configured_host" || true)"
+    if [[ -n "$resolved_ip" ]]; then
+      printf '%s' "$resolved_ip"
+      return 0
+    fi
+  fi
+  primary_ipv4
+}
+
 resolve_bind_host() {
   local value="${1:-}"
   value="$(printf '%s' "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
@@ -121,16 +261,16 @@ resolve_bind_host() {
     if [[ "$TARGET" == "local" ]]; then
       printf '127.0.0.1'
     else
-      primary_ipv4
+      preferred_auto_bind_host
     fi
     return
   fi
   case "$lower" in
-    0.0.0.0|\*|::|\[::\])
+    \*|::|\[::\])
       if [[ "$TARGET" == "local" ]]; then
         printf '127.0.0.1'
       else
-        primary_ipv4
+        preferred_auto_bind_host
       fi
       ;;
     *)
@@ -141,7 +281,9 @@ resolve_bind_host() {
 
 health_host_for_bind() {
   local value="${1:-127.0.0.1}"
-  if [[ "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" == "localhost" ]]; then
+  local lower
+  lower="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$lower" == "localhost" || "$lower" == "*" || "$lower" == "::" || "$lower" == "[::]" ]]; then
     printf '127.0.0.1'
   else
     printf '%s' "$value"
@@ -168,11 +310,11 @@ telegram_enabled() {
 }
 
 telegram_bot_token() {
-  telegram_config_value DEPLOY_TELEGRAM_API_TOKEN "${TARGET^^}_TELEGRAM_API_TOKEN" TELEGRAM_API_TOKEN telegram.api.token
+  telegram_config_value DEPLOY_TELEGRAM_API_TOKEN "${TARGET^^}_TELEGRAM_API_TOKEN"
 }
 
 telegram_chat_id() {
-  telegram_config_value DEPLOY_TELEGRAM_CHAT_ID "${TARGET^^}_TELEGRAM_CHAT_ID" TELEGRAM_CHAT_ID telegram.chat.id
+  telegram_config_value DEPLOY_TELEGRAM_CHAT_ID "${TARGET^^}_TELEGRAM_CHAT_ID"
 }
 
 sanitize_text() {
@@ -222,6 +364,7 @@ write_deploy_report() {
   "dockerSystemDf": $(json_string "$docker_df"),
   "uptime": $(json_string "$uptime_output"),
   "disk": $(json_string "$disk_output"),
+  "deployError": $(json_string "${deploy_report_extra:-}"),
   "containerLogsTail": $(json_string "$logs")
 }
 JSON
@@ -483,6 +626,8 @@ fi
 api_bind_host="$(env_value "${TARGET^^}_API_BIND_HOST")"
 api_bind_host="${api_bind_host:-$(env_value API_BIND_HOST)}"
 api_bind_host="$(resolve_bind_host "$api_bind_host")"
+api_public_host="$(api_public_hostname)"
+api_public_host="${api_public_host:-$(health_host_for_bind "$api_bind_host")}"
 redis_container_key="${TARGET^^}_REDIS_CONTAINER_NAME"
 redis_password_key="${TARGET^^}_REDIS_PASSWORD"
 redis_host_port_key="${TARGET^^}_REDIS_HOST_PORT"
@@ -502,8 +647,117 @@ redis_network_name="${redis_network_name:-udaya_pacs_${TARGET}_network}"
 redis_image="$(env_value_or_default REDIS_IMAGE redis:7-alpine)"
 redis_port="$(env_value_or_default REDIS_PORT 6379)"
 
+image_exists() {
+  docker_cmd image inspect "$image_name" >/dev/null 2>&1
+}
+
+load_bundle_image() {
+  local image_repo image_tar
+  image_repo="${image_name%%:*}"
+
+  for image_tar in \
+    "$PROJECT_ROOT/${image_repo}.tar" \
+    "$PROJECT_ROOT/$(basename "$PROJECT_ROOT").tar"; do
+    if [[ -f "$image_tar" ]]; then
+      echo "Loading Docker image from $(basename "$image_tar")..."
+      docker_cmd load -i "$image_tar"
+      if image_exists; then
+        return 0
+      fi
+      echo "Loaded image tar, but expected image is still missing: $image_name" >&2
+      return 1
+    fi
+  done
+
+  if image_exists; then
+    return 0
+  fi
+
+  echo "Docker image is missing: $image_name" >&2
+  echo "Expected bundle image tar in $PROJECT_ROOT, for example ${image_repo}.tar." >&2
+  return 1
+}
+
 compose() {
   docker_cmd compose --env-file "$ENV_FILE" --profile "$TARGET" -f docker-compose.yml "$@"
+}
+
+docker_host_alias_args() {
+  local aliases alias name value lower_value datasource_host datasource_ip
+  aliases="$(env_value API_HOST_ALIASES)"
+  aliases="${aliases//,/ }"
+  for alias in $aliases; do
+    if [[ -n "$alias" ]]; then
+      name="${alias%%:*}"
+      value="${alias#*:}"
+      lower_value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+      if [[ "$name" != "$alias" && ( "$lower_value" == "auto" || "$lower_value" == "primary" || "$lower_value" == "primary-ip" ) ]]; then
+        alias="${name}:$(primary_ipv4)"
+      fi
+      printf '%s\0%s\0' "--add-host" "$alias"
+    fi
+  done
+
+  if [[ "$TARGET" != "local" ]]; then
+    datasource_host="$(datasource_host || true)"
+    if [[ -n "$datasource_host" ]] && ! is_ipv4_address "$datasource_host" && ! host_alias_is_configured "$datasource_host"; then
+      datasource_ip="$(resolve_ipv4_for_host "$datasource_host" || true)"
+      if [[ -n "$datasource_ip" ]]; then
+        printf '%s\0%s:%s\0' "--add-host" "$datasource_host" "$datasource_ip"
+      fi
+    fi
+  fi
+}
+
+resolve_host_alias_for_connection() {
+  local host="$1"
+  local aliases alias name value
+  aliases="$(env_value API_HOST_ALIASES)"
+  aliases="${aliases//,/ }"
+  for alias in $aliases; do
+    name="${alias%%:*}"
+    value="${alias#*:}"
+    if [[ "$name" == "$host" && "$value" != "$alias" && -n "$value" ]]; then
+      case "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" in
+        auto|primary|primary-ip)
+          value="$(primary_ipv4)"
+          ;;
+      esac
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+  printf '%s' "$host"
+}
+
+host_alias_is_configured() {
+  local host="$1"
+  local aliases alias name
+  aliases="$(env_value API_HOST_ALIASES)"
+  aliases="${aliases//,/ }"
+  for alias in $aliases; do
+    name="${alias%%:*}"
+    if [[ "$name" == "$host" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+datasource_host() {
+  local url endpoint
+  url="$(target_env_value SPRING_DATASOURCE_URL SPRING_DATASOURCE_URL)"
+  [[ "$url" == jdbc:postgresql://* ]] || return 1
+  endpoint="${url#jdbc:postgresql://}"
+  endpoint="${endpoint%%/*}"
+  endpoint="${endpoint%%,*}"
+  if [[ "$endpoint" == \[*\]* ]]; then
+    endpoint="${endpoint#\[}"
+    endpoint="${endpoint%%\]*}"
+  else
+    endpoint="${endpoint%%:*}"
+  fi
+  printf '%s' "$endpoint"
 }
 
 endpoint_gate() {
@@ -547,7 +801,7 @@ api_base_url() {
     if [[ "$TARGET" == "local" ]]; then
       base_host="127.0.0.1"
     else
-      base_host="$(health_host_for_bind "$api_bind_host")"
+      base_host="$api_public_host"
     fi
     value="http://${base_host}:${health_port}/pacsApi"
   fi
@@ -559,20 +813,21 @@ public_api_health_url() {
 }
 
 validate_target_network_config() {
-  local api_url origins
+  local api_url origins blocked_docker_host_alias
   [[ "$TARGET" == "local" ]] && return 0
   api_url="$(api_base_url)"
   origins="$(env_value CORS_ALLOWED_ORIGINS)"
+  blocked_docker_host_alias="$(printf '%s' "host"".docker"".internal")"
   if [[ -z "$origins" ]]; then
     echo "CORS_ALLOWED_ORIGINS is required for $TARGET." >&2
     return 1
   fi
-  if [[ "$api_url" == *"localhost"* || "$api_url" == *"127.0.0.1"* || "$api_url" == *"host.docker.internal"* ]]; then
-    echo "${TARGET^^}_API_AUTH_URL must use the deployed server IP or DNS name: $api_url" >&2
+  if [[ "$api_url" == *"localhost"* || "$api_url" == *"127.0.0.1"* || "$api_url" == *"$blocked_docker_host_alias"* || "$api_url" == *".example.lan"* ]]; then
+    echo "${TARGET^^}_API_AUTH_URL must use the deployed server hostname or DNS name: $api_url" >&2
     return 1
   fi
-  if [[ "$origins" == *"localhost"* || "$origins" == *"127.0.0.1"* || "$origins" == *"host.docker.internal"* ]]; then
-    echo "CORS_ALLOWED_ORIGINS must use deployed server IPs or DNS names for $TARGET." >&2
+  if [[ "$origins" == *"localhost"* || "$origins" == *"127.0.0.1"* || "$origins" == *"$blocked_docker_host_alias"* || "$origins" == *".example.lan"* ]]; then
+    echo "CORS_ALLOWED_ORIGINS must use deployed server hostnames or DNS names for $TARGET." >&2
     return 1
   fi
 }
@@ -593,7 +848,8 @@ database_preflight() {
   else
     port="5432"
   fi
-  if timeout 5 bash -c ":</dev/tcp/${host}/${port}" 2>/dev/null; then
+  connect_host="$(resolve_host_alias_for_connection "$host")"
+  if timeout 5 bash -c ":</dev/tcp/${connect_host}/${port}" 2>/dev/null; then
     echo "Database endpoint reachable: ${host}:${port}"
     return 0
   fi
@@ -603,6 +859,7 @@ database_preflight() {
 
 database_container_preflight() {
   local url endpoint host port
+  local host_alias_args=()
   [[ "$TARGET" == "local" ]] && return 0
   url="$(target_env_value SPRING_DATASOURCE_URL SPRING_DATASOURCE_URL)"
   endpoint="${url#jdbc:postgresql://}"
@@ -613,8 +870,10 @@ database_container_preflight() {
   else
     port="5432"
   fi
+  mapfile -d '' -t host_alias_args < <(docker_host_alias_args)
   if docker_cmd run --rm \
     --network "$redis_network_name" \
+    "${host_alias_args[@]}" \
     --entrypoint bash \
     "$image_name" \
     -c "timeout 5 bash -c ':</dev/tcp/${host}/${port}'" >/dev/null 2>&1; then
@@ -785,6 +1044,7 @@ start_api_container() {
   local image_override="${5:-$image_name}"
   local key_path
   local image_path
+  local image_container_path
   local dicom_upload_mount
   local base_image_archive_host_path
   local base_image_archive_container_path
@@ -794,6 +1054,7 @@ start_api_container() {
 
   key_path="$(resolve_host_path "$(env_value KEY_PATH)" "./src/main/resources/key")"
   image_path="$(resolve_host_path "$(env_value HOSPITAL_IMAGE_HOST_PATH)" "./runtime-image")"
+  image_container_path="$(env_value_or_default HOSPITAL_IMAGE_ROOT_PATH /var/ut-image)"
   mkdir -p "$image_path"
   if command -v chown >/dev/null 2>&1; then
     chown -R 10001:10001 "$image_path" 2>/dev/null || true
@@ -884,7 +1145,13 @@ start_api_container() {
     "TZ=$(env_value TZ)"
   )
 
-  local args=(run -d --name "$name" -p "$port_spec" --restart "$restart_policy" --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --network "$redis_network_name" --tmpfs /tmp:size=64m,mode=1777 -v "${key_path}:/app/config/key:ro" -v "${image_path}:/var/ut-image" -v "$dicom_upload_mount")
+  local host_alias_args=()
+  mapfile -d '' -t host_alias_args < <(docker_host_alias_args)
+  local args=(run -d --name "$name" "${host_alias_args[@]}" -p "$port_spec")
+  if [[ "$public_bind" == "true" && "$api_bind_host" != "127.0.0.1" && "$api_bind_host" != "localhost" ]]; then
+    args+=(-p "127.0.0.1:${host_port}:8080")
+  fi
+  args+=(--restart "$restart_policy" --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --network "$redis_network_name" --tmpfs /tmp:size=64m,mode=1777 -v "${key_path}:/app/config/key:ro" -v "${image_path}:${image_container_path}" -v "$dicom_upload_mount")
   if [[ -f "$base_image_archive_host_path" ]]; then
     args+=(-v "${base_image_archive_host_path}:${base_image_archive_container_path}:ro")
   fi
@@ -960,6 +1227,14 @@ EOF
   fi
 }
 
+case "$ACTION" in
+  db-backup|db-migrate|db-validate|db-refresh-cache|db-partition-maintenance)
+    ;;
+  *)
+    require_docker_daemon
+    ;;
+esac
+
 log_local_docker_ps_snapshot
 
 case "$ACTION" in
@@ -1010,6 +1285,8 @@ case "$ACTION" in
     if [[ "$BUILD" == "true" && "$NO_BUILD" == "false" ]]; then
       endpoint_gate
       compose build
+    else
+      load_bundle_image
     fi
     database_container_preflight
     echo "Testing API tmp container $tmp_name on 127.0.0.1:${candidate_port}..."
@@ -1034,7 +1311,12 @@ case "$ACTION" in
       docker_cmd rename "$service_name" "$backup_name"
     fi
 
-    if start_api_container "$service_name" "$health_port" "unless-stopped" "true" "$image_name" && public_api_health 60 1; then
+    promotion_error_log="$(mktemp "/tmp/udaya_pacs_api_${TARGET}_promotion_XXXXXX.log")"
+    if start_api_container "$service_name" "$health_port" "unless-stopped" "true" "$image_name" 2>"$promotion_error_log" && api_health 60 1; then
+      if ! public_api_health 10 1; then
+        echo "Warning: API is healthy on 127.0.0.1:${health_port}, but the configured public health URL did not answer yet: $(public_api_health_url)" >&2
+      fi
+      rm -f "$promotion_error_log"
       remove_container_if_exists "$tmp_name"
       if [[ "$had_live" == "true" ]]; then
         remove_container_if_exists "$backup_name"
@@ -1044,7 +1326,12 @@ case "$ACTION" in
       exit 0
     fi
 
+    deploy_report_extra="$(cat "$promotion_error_log" 2>/dev/null || true)"
+    rm -f "$promotion_error_log"
+    show_container_failure "$service_name"
     echo "Promotion failed. Attempting rollback to previous API container." >&2
+    notify_deploy "FAILED" "API promotion failed. Rollback was attempted." "promotion" "$service_name"
+    deploy_error_notified=true
     remove_container_if_exists "$service_name"
     if [[ "$had_live" == "true" ]]; then
       docker_cmd rename "$backup_name" "$service_name"
@@ -1052,8 +1339,6 @@ case "$ACTION" in
       public_api_health 30 1
     fi
     remove_container_if_exists "$tmp_name"
-    notify_deploy "FAILED" "API promotion failed. Rollback was attempted." "promotion"
-    deploy_error_notified=true
     exit 1
     ;;
   logs)

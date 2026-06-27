@@ -9,8 +9,8 @@ under `src/main/resources/db/migration` are the only canonical migrations.
 bash scripts/stack.sh local db-backup
 ```
 
-```powershell
-.\scripts\stack.ps1 -Target local -Action db-backup
+```bash
+bash ./scripts/stack.sh local db-backup
 ```
 
 Backups are custom-format `pg_dump` files under `backups/`. No database
@@ -22,8 +22,8 @@ password is printed or copied into the command line.
 bash scripts/stack.sh local db-migrate --build
 ```
 
-```powershell
-.\scripts\stack.ps1 -Target local -Action db-migrate -Build
+```bash
+bash ./scripts/stack.sh local db-migrate --build
 ```
 
 This performs a backup, deploys the API so Flyway applies pending migrations,

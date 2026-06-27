@@ -171,9 +171,9 @@ public final class RequestClientInfoHelper {
     }
 
     /**
-     * Returns {@code true} when {@code host} is a loopback or wildcard address.
+     * Returns {@code true} when {@code host} is a loopback address.
      *
-     * <p>Recognized values: {@code localhost}, {@code 0.0.0.0}, {@code ::1}, any {@code 127.x.x.x}.</p>
+     * <p>Recognized values: {@code localhost}, {@code ::1}, any {@code 127.x.x.x}.</p>
      */
     public static boolean isLoopbackHost(String host) {
         if (host == null || host.isBlank()) {
@@ -181,7 +181,6 @@ public final class RequestClientInfoHelper {
         }
         String normalized = host.trim().toLowerCase(Locale.ROOT);
         return "localhost".equals(normalized)
-                || "0.0.0.0".equals(normalized)
                 || "::1".equals(normalized)
                 || normalized.startsWith("127.");
     }

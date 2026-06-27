@@ -2,10 +2,10 @@
 
 Spring Boot API for UDAYA_PACS. The current deploy flow is intentionally small:
 
-- `scripts/package-deploy.*` builds an API deploy bundle.
-- `scripts/package-db-deploy.*` builds a DB deploy bundle.
-- `scripts/stack.*` starts, health-checks, promotes, stops, and logs containers.
-- `scripts/test-gate.*` is used internally by `package-deploy` unless the skip flag is passed.
+- `scripts/package-deploy.sh` builds an API deploy bundle.
+- `scripts/package-db-deploy.sh` builds a DB deploy bundle.
+- `scripts/stack.sh` starts, health-checks, promotes, stops, and logs containers.
+- `scripts/test-gate.sh` is used internally by `package-deploy.sh` unless the skip flag is passed.
 
 Older API-only wrapper scripts were removed. Use `stack` for local, QA, and prod.
 
@@ -74,11 +74,11 @@ PROD_REDIS_NETWORK_NAME=udaya_pacs_prod_network
 PROD_REDIS_PASSWORD=<strong password>
 ```
 
-If a target password is missing or still a placeholder, `stack.ps1` / `stack.sh` generates a strong password and writes it to the target env file. Do not commit real Redis passwords.
+If a target password is missing or still a placeholder, `stack.sh` generates a strong password and writes it to the target env file. Do not commit real Redis passwords.
 
 ## Deploy Telegram Notifications
 
-`stack.sh` and `stack.ps1` send Telegram notifications for `deploy` success and failure when these values are set in the runtime env file or server environment:
+`stack.sh` sends Telegram notifications for `deploy` success and failure when these values are set in the runtime env file or server environment:
 
 ```env
 DEPLOY_TELEGRAM_ENABLED=true
@@ -90,12 +90,12 @@ Target-specific keys are also supported, for example `QA_TELEGRAM_CHAT_ID` and `
 
 ## Build Deploy Bundle
 
-Windows:
+From the project root with Bash:
 
-```powershell
-cd D:\Soklin\PACS_System\PACS_API
-powershell -ExecutionPolicy Bypass -File .\scripts\package-deploy.ps1 -Target qa -SkipTests -SkipPentest
-powershell -ExecutionPolicy Bypass -File .\scripts\package-db-deploy.ps1 -Target qa -NoData
+```bash
+cd PACS_API
+bash ./scripts/package-deploy.sh --target qa --skip-tests --skip-pentest
+bash ./scripts/package-db-deploy.sh --target qa --no-data
 ```
 
 macOS/Linux:
@@ -141,16 +141,16 @@ cd /var/www/udaya_pacs_qa_db
 if [ -f ./postgres-18.tar ]; then sudo docker load -i ./postgres-18.tar; fi
 sudo cp .env.db.example .env.db
 sudo nano .env.db
-sudo docker compose --env-file .env.db up -d
+sudo bash ./scripts/deploy-db.sh
 sudo docker inspect udaya_pacs_qa_db --format '{{.State.Health.Status}}'
 ```
 
 ## Local Commands
 
-```powershell
-cd D:\Soklin\PACS_System\PACS_API
-powershell -ExecutionPolicy Bypass -File .\scripts\stack.ps1 local deploy -NoBuild
-powershell -ExecutionPolicy Bypass -File .\scripts\stack.ps1 local health
+```bash
+cd PACS_API
+bash ./scripts/stack.sh local deploy --no-build
+bash ./scripts/stack.sh local health
 ```
 
 Git Bash:
@@ -225,12 +225,12 @@ Full notes: [PACS_WEEK_CACHE.md](docs/database/PACS_WEEK_CACHE.md).
 
 ## Docker Database Operations
 
-```powershell
-.\scripts\stack.ps1 -Target local -Action db-backup
-.\scripts\stack.ps1 -Target local -Action db-migrate -Build
-.\scripts\stack.ps1 -Target local -Action db-validate
-.\scripts\stack.ps1 -Target local -Action db-refresh-cache
-.\scripts\stack.ps1 -Target local -Action db-partition-maintenance
+```bash
+bash ./scripts/stack.sh local db-backup
+bash ./scripts/stack.sh local db-migrate --build
+bash ./scripts/stack.sh local db-validate
+bash ./scripts/stack.sh local db-refresh-cache
+bash ./scripts/stack.sh local db-partition-maintenance
 ```
 
 Linux uses the same actions through `bash scripts/stack.sh`. See
@@ -240,11 +240,10 @@ Linux uses the same actions through `bash scripts/stack.sh`. See
 
 Use PostgreSQL `pg_dump`, not a generic table-DDL exporter:
 
-```powershell
-.\tools\export_complete_schema.ps1 `
-  -OutputPath "C:\Users\MSI\Desktop\emr_pacs_db(9).sql"
+```bash
+bash ./tools/export_complete_schema.sh --output-path ./dist/emr_pacs_db_schema.sql
 ```
 
-The export is restored into a temporary database and catalog-count validated
-before it is accepted. See
+The export is restored into a temporary database and validated before it is
+accepted. See
 [COMPLETE_SCHEMA_EXPORT.md](docs/database/COMPLETE_SCHEMA_EXPORT.md).

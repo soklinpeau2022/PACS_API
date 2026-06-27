@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Normalize hospital image folders
+
+Usage:
+  bash ./scripts/normalize-hospital-image-folders.sh [image-root]
+
+Default image root:
+  ${HOSPITAL_IMAGE_HOST_PATH:-/var/ut-image}
+
+What it does:
+  Moves legacy <hospital>/LOGO files into the canonical <hospital>_<name>/LOGO folder.
+
+Example:
+  sudo bash ./scripts/normalize-hospital-image-folders.sh "$HOSPITAL_IMAGE_HOST_PATH"
+EOF
+  exit 0
+fi
+
 IMAGE_ROOT="${1:-${HOSPITAL_IMAGE_HOST_PATH:-/var/ut-image}}"
 
 if [ ! -d "$IMAGE_ROOT" ]; then

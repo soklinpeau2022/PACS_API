@@ -88,9 +88,11 @@ public class HospitalServiceImpl implements HospitalService {
         LocalTime startDuration = LocalTime.now();
         try {
 
-            Pagination pagination = PaginationHelper.buildAndApplyOffset(filter);
+            HospitalListFilter safeFilter = filter != null ? filter : new HospitalListFilter();
+            Long total = hospitalMapper.countHospitalList(safeFilter);
+            Pagination pagination = PaginationHelper.buildAndApplyOffset(filter == null ? null : safeFilter, total);
 
-            List<HospitalResponse> hospitalList = hospitalMapper.listHospital(filter);
+            List<HospitalResponse> hospitalList = hospitalMapper.listHospital(safeFilter);
 
             if (!hospitalList.isEmpty()) {
                 for (HospitalResponse hospitalResponse: hospitalList) {
@@ -860,4 +862,3 @@ public class HospitalServiceImpl implements HospitalService {
     }
 
 }
-

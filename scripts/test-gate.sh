@@ -1,12 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Run API endpoint/security test gate
+
+Usage:
+  bash ./scripts/test-gate.sh --target <local|qa|prod> [--tag <tag>] [--context <name>]
+
+Options:
+  --target <target>  Required. local, qa, or prod.
+  --tag <tag>        Build/image tag shown in notifications. Default: latest.
+  --context <name>   Context label shown in notifications. Default: build.
+
+Examples:
+  bash ./scripts/test-gate.sh --target qa
+  bash ./scripts/test-gate.sh --target prod --tag release-2026-06-25 --context package
+EOF
+}
+
 TARGET=""
 TAG="latest"
 CONTEXT="build"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
     --target)
       TARGET="${2:-}"
       shift 2
@@ -21,7 +43,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: bash scripts/test-gate.sh --target <local|qa|prod> [--tag <tag>] [--context <name>]"
+      usage
       exit 1
       ;;
   esac
@@ -29,6 +51,7 @@ done
 
 if [[ -z "$TARGET" || ! "$TARGET" =~ ^(local|qa|prod)$ ]]; then
   echo "Invalid --target (use local|qa|prod)"
+  usage
   exit 1
 fi
 
@@ -68,8 +91,8 @@ resolve_telegram_creds() {
       chat_id="$(read_env_value "$env_file" "PROD_TELEGRAM_CHAT_ID")"
       ;;
     local)
-      token="$(read_env_value "$env_file" "TELEGRAM_API_TOKEN")"
-      chat_id="$(read_env_value "$env_file" "TELEGRAM_CHAT_ID")"
+      token="$(read_env_value "$env_file" "LOCAL_TELEGRAM_API_TOKEN")"
+      chat_id="$(read_env_value "$env_file" "LOCAL_TELEGRAM_CHAT_ID")"
       ;;
   esac
 

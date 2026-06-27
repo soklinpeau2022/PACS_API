@@ -420,6 +420,31 @@ class PacsResultServiceImplAccessTest {
     }
 
     @Test
+    void editingDoctorCannotCreateResultWhenStudyIsCompleted() throws Exception {
+        when(request.getHeader(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "X-PACS-VIEWER-ACCESS" -> "viewer-token";
+            default -> null;
+        });
+        when(viewerAccessKeyService.decode("viewer-token"))
+                .thenReturn(claims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
+        when(worklistMapper.findWorklistById(1L, 7L)).thenReturn(worklistContext());
+        StudyResponse study = studyContext();
+        study.setId(22L);
+        study.setStatus("COMPLETED");
+        when(studyMapper.findById(1L, 22L)).thenReturn(study);
+        when(modalityMapper.countActiveModalitiesByIds(List.of(3L))).thenReturn(1L);
+        when(modalityMapper.countActiveHospitalModality(1L, 3L)).thenReturn(1L);
+        when(pacsResultMapper.findExisting(any(PacsResultSaveRequest.class))).thenReturn(null);
+
+        PacsResultSaveRequest saveRequest = saveRequest();
+        saveRequest.setResultText("<p>Try to edit completed study</p>");
+        var response = service.createBrowser(saveRequest, List.of(), request);
+
+        assertFalse(response.isSuccess());
+        verify(pacsResultMapper, never()).insertResult(any(PacsResultSaveRequest.class), anyString(), any());
+    }
+
+    @Test
     void uploadImagesStoresUnderHospitalAndModalityFolders() throws Exception {
         when(viewerAccessKeyService.decode("viewer-token"))
                 .thenReturn(claims(ViewerAccessKeyService.ACCESS_EDIT, 99L));
@@ -962,6 +987,18 @@ class PacsResultServiceImplAccessTest {
         Worklist.setStudyInstanceUid("1.2.3");
         Worklist.setAccessionNumber("ACC-7");
         return Worklist;
+    }
+
+    private static PacsResultContextResponse resultContext(String status) {
+        PacsResultContextResponse context = new PacsResultContextResponse();
+        context.setHospitalId(1L);
+        context.setWorklistId(7L);
+        context.setStudyId(22L);
+        context.setModalityId(3L);
+        context.setStudyInstanceUid("1.2.3");
+        context.setAccessionNumber("ACC-7");
+        context.setStatus(status);
+        return context;
     }
 
     private static PacsResultResponse resultResponse(Long id, Long createdBy) {
