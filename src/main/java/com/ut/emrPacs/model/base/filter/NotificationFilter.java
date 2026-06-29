@@ -13,6 +13,8 @@ public class NotificationFilter extends Filter {
 
     private List<String> sources;
 
+    private List<String> notificationIds;
+
     private String severity;
 
     private Integer days;

@@ -1,6 +1,7 @@
 package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.authentication.session.UserAuthSession;
+import com.ut.emrPacs.authentication.principal.CurrentUserPrincipal;
 import com.ut.emrPacs.helper.pagination.PaginationHelper;
 import com.ut.emrPacs.mapper.notification.NotificationMapper;
 import com.ut.emrPacs.model.base.BaseResult;
@@ -9,6 +10,7 @@ import com.ut.emrPacs.model.base.Pagination;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import com.ut.emrPacs.model.base.filter.NotificationFilter;
+import com.ut.emrPacs.model.dto.request.notification.NotificationActionRequest;
 import com.ut.emrPacs.model.dto.response.notification.NotificationResponse;
 import com.ut.emrPacs.service.service.NotificationService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -42,8 +44,9 @@ public class NotificationServiceImpl implements NotificationService {
     public ResponseMessage<BaseResult> listNotifications(NotificationFilter filter, HttpServletRequest httpServletRequest) {
         try {
             NotificationFilter safeFilter = filter == null ? new NotificationFilter() : filter;
-            Long hospitalId = currentHospitalId();
-            safeFilter.setHospitalId(hospitalId);
+            CurrentUserPrincipal principal = currentPrincipal();
+            safeFilter.setHospitalId(principal.hospitalId());
+            safeFilter.setUserId(principal.userId());
             safeFilter.setDays(resolveNotificationDays(safeFilter.getDays()));
             boolean explicitSourceSelection = safeFilter.getSources() != null
                     || FunctionHelper.hasText(safeFilter.getSource());
@@ -64,12 +67,65 @@ public class NotificationServiceImpl implements NotificationService {
         }
     }
 
-    private static Long currentHospitalId() {
+    @Override
+    public ResponseMessage<BaseResult> markNotificationsRead(NotificationActionRequest request, HttpServletRequest httpServletRequest) {
+        try {
+            NotificationActionRequest safeRequest = prepareActionRequest(request);
+            if (safeRequest.getNotificationIds().isEmpty()) {
+                return ResponseMessageUtils.makeResponse(true, messageService.message("No notifications selected.", true));
+            }
+
+            notificationMapper.markNotificationsRead(safeRequest);
+            return ResponseMessageUtils.makeResponse(true, messageService.message("Notifications marked as read.", true));
+        } catch (Exception error) {
+            LOGGER.error("Failed to mark notifications read", error);
+            return ResponseMessageUtils.makeResponse(false, messageService.message("Unable to update notifications.", null, false));
+        }
+    }
+
+    @Override
+    public ResponseMessage<BaseResult> clearNotifications(NotificationActionRequest request, HttpServletRequest httpServletRequest) {
+        try {
+            NotificationActionRequest safeRequest = prepareActionRequest(request);
+            if (safeRequest.getNotificationIds().isEmpty()) {
+                return ResponseMessageUtils.makeResponse(true, messageService.message("No notifications selected.", true));
+            }
+
+            notificationMapper.clearNotifications(safeRequest);
+            return ResponseMessageUtils.makeResponse(true, messageService.message("Notifications cleared.", true));
+        } catch (Exception error) {
+            LOGGER.error("Failed to clear notifications", error);
+            return ResponseMessageUtils.makeResponse(false, messageService.message("Unable to clear notifications.", null, false));
+        }
+    }
+
+    private static CurrentUserPrincipal currentPrincipal() {
         var principal = UserAuthSession.getCurrentUser();
-        if (principal == null || principal.hospitalId() == null || principal.hospitalId() <= 0) {
+        if (principal == null
+                || principal.userId() == null
+                || principal.userId() <= 0
+                || principal.hospitalId() == null
+                || principal.hospitalId() <= 0) {
             throw new IllegalStateException("Hospital context not found in OAuth2 token claims.");
         }
-        return principal.hospitalId();
+        return principal;
+    }
+
+    private static NotificationActionRequest prepareActionRequest(NotificationActionRequest request) {
+        CurrentUserPrincipal principal = currentPrincipal();
+        NotificationActionRequest safeRequest = request == null ? new NotificationActionRequest() : request;
+        List<String> notificationIds = safeRequest.getNotificationIds() == null
+                ? List.of()
+                : safeRequest.getNotificationIds().stream()
+                    .filter(FunctionHelper::hasText)
+                    .map(String::trim)
+                    .distinct()
+                    .limit(200)
+                    .toList();
+        safeRequest.setUserId(principal.userId());
+        safeRequest.setHospitalId(principal.hospitalId());
+        safeRequest.setNotificationIds(notificationIds);
+        return safeRequest;
     }
 
     private static int resolveNotificationDays(Integer requestedDays) {

@@ -2,6 +2,7 @@ package com.ut.emrPacs.service.serviceImpl;
 import com.ut.emrPacs.helper.pagination.PaginationHelper;
 
 import com.ut.emrPacs.authentication.helper.UserAuthHelper;
+import com.ut.emrPacs.cache.permission.PermissionCacheService;
 import com.ut.emrPacs.authentication.util.PasswordPolicy;
 import com.ut.emrPacs.config.ApiConstants;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
@@ -71,6 +72,9 @@ public class UserServiceImpl implements UserService {
 
     @Autowired
     private RolePermissionMapper rolePermissionMapper;
+
+    @Autowired
+    private PermissionCacheService permissionCacheService;
 
     @Autowired
     private MessageService messageService;
@@ -671,6 +675,7 @@ public class UserServiceImpl implements UserService {
             }
         }
         rolePermissionMapper.bumpPermissionVersion(userId);
+        permissionCacheService.invalidateByUser(userId);
     }
 
     private void syncSuperAdminHospitals() {
@@ -694,6 +699,7 @@ public class UserServiceImpl implements UserService {
             roleMapper.insertRoleUser(roleId, SUPER_ADMIN_USER_ID);
         }
         rolePermissionMapper.bumpPermissionVersion(SUPER_ADMIN_USER_ID);
+        permissionCacheService.invalidateByUser(SUPER_ADMIN_USER_ID);
     }
 
     private List<Long> allActiveHospitalIds() {

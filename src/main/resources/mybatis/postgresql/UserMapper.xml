@@ -348,6 +348,7 @@
     <select id="getMemberDropdownByHospital" resultType="com.ut.emrPacs.model.dto.response.dropDown.DropDownModelResponse">
         SELECT
             u.id AS value,
+            u.public_id::text AS "publicKey",
             TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''), CASE WHEN COALESCE(u.username, '') = '' THEN '' ELSE ' (' || u.username || ')' END)) AS label
         FROM users u
         JOIN user_hospitals uh ON uh.user_id = u.id

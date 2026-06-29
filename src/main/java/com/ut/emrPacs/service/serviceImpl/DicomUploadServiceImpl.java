@@ -131,10 +131,10 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     @Autowired(required = false)
     private SecurityIncidentReporter securityIncidentReporter;
 
-    @Value("${spring.servlet.multipart.location:${HOSPITAL_IMAGE_ROOT_PATH:/var/ut-image}/tmp/dicom-upload}")
+    @Value("${spring.servlet.multipart.location:${HOSPITAL_IMAGE_ROOT_PATH:/home/Images}/tmp/dicom-upload}")
     private String multipartLocation;
 
-    @Value("${pacs.dicom-upload.temp-dir:${java.io.tmpdir}/udaya-pacs-dicom-upload}")
+    @Value("${pacs.dicom-upload.temp-dir:${HOSPITAL_IMAGE_ROOT_PATH:/home/Images}/tmp/dicom-upload}")
     private String dicomUploadTempDir;
 
     @Value("${app.security.dicom-upload.max-request-bytes:4294967296}")
@@ -1336,7 +1336,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     }
 
     private Long resolveHospitalId(Long requestedHospitalId) {
-        if (requestedHospitalId != null && requestedHospitalId > 0 && AuthorityUtils.isAdminUser()) {
+        if (requestedHospitalId != null && requestedHospitalId > 0 && AuthorityUtils.isCrossHospitalAdminUser()) {
             return requestedHospitalId;
         }
         CurrentUserPrincipal principal = UserAuthSession.getCurrentUser();

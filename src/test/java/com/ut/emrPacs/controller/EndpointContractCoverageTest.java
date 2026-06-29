@@ -43,6 +43,8 @@ class EndpointContractCoverageTest {
                 "POST /dicom-routing/dicom-routing-build-config/{id}",
                 "POST /dropdown/dropdown-dicom-server",
                 "POST /notification/notification-list",
+                "POST /notification/notification-read",
+                "POST /notification/notification-clear",
                 "GET /notification/notification-stream",
                 "POST /pacs-result/pacs-result-create",
                 "POST /pacs-result/pacs-result-image-upload",

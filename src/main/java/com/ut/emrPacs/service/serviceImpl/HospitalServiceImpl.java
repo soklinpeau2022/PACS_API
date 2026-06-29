@@ -1,6 +1,7 @@
 package com.ut.emrPacs.service.serviceImpl;
 import com.ut.emrPacs.helper.pagination.PaginationHelper;
 import com.ut.emrPacs.cache.config.CacheConfig;
+import com.ut.emrPacs.authentication.session.UserAuthSession;
 
 import java.io.IOException;
 import java.net.UnknownHostException;
@@ -29,7 +30,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.stereotype.Service;
 import com.ut.emrPacs.mapper.hospital.HospitalMapper;
-import com.ut.emrPacs.mapper.user.UserPermissionMapper;
+import com.ut.emrPacs.mapper.user.UserMapper;
 import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.MessageService;
 import com.ut.emrPacs.model.base.Pagination;
@@ -53,7 +54,7 @@ public class HospitalServiceImpl implements HospitalService {
     private static final long DEFAULT_MAX_LOGO_BYTES = 2L * 1024L * 1024L;
     private static final Set<String> ALLOWED_LOGO_MIME_TYPES = Set.of("image/jpeg", "image/png", "image/webp");
 
-    @Value("${hospital.image.root-path:${HOSPITAL_IMAGE_ROOT_PATH:/var/ut-image}}")
+    @Value("${hospital.image.root-path:${HOSPITAL_IMAGE_ROOT_PATH:/home/Images}}")
     private String hospitalImageRootPath;
     @Value("${hospital.logo.max-bytes:2097152}")
     private long hospitalLogoMaxBytes;
@@ -71,7 +72,7 @@ public class HospitalServiceImpl implements HospitalService {
     private UserService userService;
 
     @Autowired
-    private UserPermissionMapper permissionMapper;
+    private UserMapper userMapper;
 
     @Autowired
     private CommonHelper commonHelper;
@@ -89,8 +90,13 @@ public class HospitalServiceImpl implements HospitalService {
         try {
 
             HospitalListFilter safeFilter = filter != null ? filter : new HospitalListFilter();
+            safeFilter.setHospitalId(publicEntityKeyResolver.resolve(Entity.HOSPITAL, safeFilter.getHospitalKey(), safeFilter.getHospitalId()));
+            Long currentUserId = currentUserIdOrNull();
+            if (!isSuperAdmin(currentUserId)) {
+                safeFilter.setUserId(currentUserId);
+            }
             Long total = hospitalMapper.countHospitalList(safeFilter);
-            Pagination pagination = PaginationHelper.buildAndApplyOffset(filter == null ? null : safeFilter, total);
+            Pagination pagination = PaginationHelper.buildAndApplyOffset(safeFilter, total);
 
             List<HospitalResponse> hospitalList = hospitalMapper.listHospital(safeFilter);
 
@@ -117,6 +123,13 @@ public class HospitalServiceImpl implements HospitalService {
         // Query flow: load hospital by id and return API response.
         LocalTime startDuration = LocalTime.now();
         try {
+
+            if (id == null || id <= 0) {
+                return ResponseMessageUtils.makeResponse(false, messageService.message("Hospital not found.", false));
+            }
+            if (!canAccessHospital(id)) {
+                return ResponseMessageUtils.makeResponse(false, 403, "FORBIDDEN", "Forbidden");
+            }
 
             List<HospitalResponseDetail> hospitalResponseDetails = hospitalMapper.getHospitalById(id);
 
@@ -183,6 +196,9 @@ public class HospitalServiceImpl implements HospitalService {
             HospitalResponseDetail existingHospital = existingHospitals == null || existingHospitals.isEmpty() ? null : existingHospitals.get(0);
             if (existingHospital == null) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Hospital not found.", false));
+            }
+            if (!canAccessHospital(hospitalRequestUpdate.getId())) {
+                return ResponseMessageUtils.makeResponse(false, 403, "FORBIDDEN", "Forbidden");
             }
             if (hospitalRequestUpdate.getCode() == null || hospitalRequestUpdate.getCode().trim().isEmpty()) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Hospital code is required.", false));
@@ -853,6 +869,27 @@ public class HospitalServiceImpl implements HospitalService {
             sanitized = sanitized.substring(0, MAX_PATH_SEGMENT_LENGTH);
         }
         return sanitized.toUpperCase(Locale.ROOT);
+    }
+
+    private boolean canAccessHospital(Long hospitalId) {
+        Long currentUserId = currentUserIdOrNull();
+        if (isSuperAdmin(currentUserId)) {
+            return true;
+        }
+        if (currentUserId == null || hospitalId == null || hospitalId <= 0) {
+            return false;
+        }
+        Long count = userMapper.countActiveUserInHospital(currentUserId, hospitalId);
+        return count != null && count > 0;
+    }
+
+    private static boolean isSuperAdmin(Long userId) {
+        return SUPER_ADMIN_USER_ID.equals(userId);
+    }
+
+    private static Long currentUserIdOrNull() {
+        var principal = UserAuthSession.getCurrentUser();
+        return principal == null ? null : principal.userId();
     }
 
     private record HospitalLogoFile(String storedPath, String originalFileName, String mimeType, Long fileSize) {

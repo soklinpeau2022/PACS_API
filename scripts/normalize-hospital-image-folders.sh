@@ -9,7 +9,7 @@ Usage:
   bash ./scripts/normalize-hospital-image-folders.sh [image-root]
 
 Default image root:
-  ${HOSPITAL_IMAGE_HOST_PATH:-/var/ut-image}
+  ${HOSPITAL_IMAGE_HOST_PATH:-/home/Images}
 
 What it does:
   Moves legacy <hospital>/LOGO files into the canonical <hospital>_<name>/LOGO folder.
@@ -20,7 +20,7 @@ EOF
   exit 0
 fi
 
-IMAGE_ROOT="${1:-${HOSPITAL_IMAGE_HOST_PATH:-/var/ut-image}}"
+IMAGE_ROOT="${1:-${HOSPITAL_IMAGE_HOST_PATH:-/home/Images}}"
 
 if [ ! -d "$IMAGE_ROOT" ]; then
   echo "Image root not found: $IMAGE_ROOT"

@@ -49,8 +49,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-import static com.ut.emrPacs.authentication.util.AuthorityUtils.isAdminUser;
-
 @Service
 public class StudyRetentionServiceImpl implements StudyRetentionService {
 
@@ -146,9 +144,6 @@ public class StudyRetentionServiceImpl implements StudyRetentionService {
     public ResponseMessage<BaseResult> savePolicy(StudyRetentionPolicySaveRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
         LocalTime startDuration = LocalTime.now();
         try {
-            if (!isAdminUser()) {
-                return ResponseMessageUtils.makeResponse(false, 403, "Forbidden", "Only Admin users can update retention policy.");
-            }
             if (request == null) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Invalid request.", false));
             }
@@ -202,9 +197,6 @@ public class StudyRetentionServiceImpl implements StudyRetentionService {
     public ResponseMessage<BaseResult> deletePolicy(Long id, HttpServletRequest httpServletRequest) throws UnknownHostException {
         LocalTime startDuration = LocalTime.now();
         try {
-            if (!isAdminUser()) {
-                return ResponseMessageUtils.makeResponse(false, 403, "Forbidden", "Only Admin users can delete retention policy.");
-            }
             Long hospitalId = isSuperAdmin() ? null : currentHospitalId();
             StudyRetentionPolicyResponse existing = studyRetentionMapper.findPolicyById(id, hospitalId);
             if (existing == null) {

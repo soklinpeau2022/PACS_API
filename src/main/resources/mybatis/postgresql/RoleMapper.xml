@@ -99,6 +99,15 @@
         WHERE u.is_active = 1
           AND ug.is_active = 1
           AND ug.role_id = #{id}
+          <if test="hospitalId != null">
+              AND EXISTS (
+                  SELECT 1
+                  FROM user_hospitals uh
+                  WHERE uh.user_id = u.id
+                    AND uh.hospital_id = #{hospitalId}
+                    AND uh.is_active = 1
+              )
+          </if>
         ORDER BY u.id DESC
     </select>
 
@@ -150,6 +159,29 @@
     <select id="countUserGroups" resultType="java.lang.Long">
         SELECT COUNT(DISTINCT r.id)
         <include refid="BASE_FROM"/>
+        <include refid="USER_GROUP_BASE_WHERE"/>
+    </select>
+
+    <select id="summarizeUserGroups" resultType="com.ut.emrPacs.model.dto.response.authentication.role.UserGroupSummaryResponse">
+        SELECT
+            COUNT(DISTINCT r.id) AS "totalGroups",
+            COUNT(DISTINCT CASE
+                WHEN u.id IS NOT NULL THEN CONCAT(ug.role_id, ':', u.id)
+                ELSE NULL
+            END) AS "totalMembers"
+        FROM roles r
+        LEFT JOIN user_groups ug ON ug.role_id = r.id AND ug.is_active = 1
+        LEFT JOIN users u ON u.id = ug.user_id
+            AND u.is_active = 1
+            <if test="visibleHospitalId != null">
+                AND EXISTS (
+                    SELECT 1
+                    FROM user_hospitals uh
+                    WHERE uh.user_id = u.id
+                      AND uh.hospital_id = #{visibleHospitalId}
+                      AND uh.is_active = 1
+                )
+            </if>
         <include refid="USER_GROUP_BASE_WHERE"/>
     </select>
 

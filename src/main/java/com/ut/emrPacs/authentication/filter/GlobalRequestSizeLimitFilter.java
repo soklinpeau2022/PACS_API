@@ -1,6 +1,7 @@
 package com.ut.emrPacs.authentication.filter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ut.emrPacs.config.ApiConstants;
 import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import com.ut.emrPacs.helper.security.SecurityAuditLogger;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
@@ -90,6 +91,9 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
         if (isDicomUploadRequest(request)) {
             return dicomUploadMaxRequestBytes;
         }
+        if (isApplicationBrandUploadRequest(request)) {
+            return viewerStateMaxRequestBytes;
+        }
         if (isViewerStateRequest(request)) {
             return viewerStateMaxRequestBytes;
         }
@@ -121,6 +125,20 @@ public class GlobalRequestSizeLimitFilter extends OncePerRequestFilter {
         }
         path = normalizePath(path);
         return isConfiguredUploadPath(path) || path.endsWith(dicomUploadPath);
+    }
+
+    private static boolean isApplicationBrandUploadRequest(HttpServletRequest request) {
+        String requestUri = request.getRequestURI();
+        if (requestUri == null || requestUri.isBlank()) {
+            return false;
+        }
+        String contextPath = request.getContextPath();
+        String path = requestUri;
+        if (contextPath != null && !contextPath.isBlank() && path.startsWith(contextPath)) {
+            path = path.substring(contextPath.length());
+        }
+        return path.equals(ApiConstants.ApplicationSettings.BASE_PATH + ApiConstants.ApplicationSettings.BRAND_LOGO_UPLOAD_PATH)
+                || path.equals(ApiConstants.ApplicationSettings.BASE_PATH + ApiConstants.ApplicationSettings.BRAND_BACKGROUND_UPLOAD_PATH);
     }
 
     private boolean isConfiguredUploadPath(String path) {

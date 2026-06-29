@@ -254,7 +254,7 @@ HEALTH_URL="${API_BASE_URL%/}/actuator/health"
 IMAGE_HOST_PATH="$(env_file_value "$ENV_FILE_SOURCE" HOSPITAL_IMAGE_HOST_PATH)"
 IMAGE_HOST_PATH="${IMAGE_HOST_PATH:-./runtime-image}"
 IMAGE_ROOT_PATH="$(env_file_value "$ENV_FILE_SOURCE" HOSPITAL_IMAGE_ROOT_PATH)"
-IMAGE_ROOT_PATH="${IMAGE_ROOT_PATH:-/var/ut-image}"
+IMAGE_ROOT_PATH="${IMAGE_ROOT_PATH:-/home/Images}"
 
 rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR/artifact" "$BUNDLE_DIR/scripts"

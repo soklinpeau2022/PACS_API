@@ -81,7 +81,7 @@ class ModulePermissionFilterTest {
         rule.setEndpointPattern("/patient/patient-list");
         rule.setPermissionCode("pacs.patient.view");
 
-        when(endpointPermissionCache.resolveRule("POST", "/patient/patient-list")).thenReturn(rule);
+        when(endpointPermissionCache.resolveRules("POST", "/patient/patient-list")).thenReturn(List.of(rule));
         when(permissionCacheService.getPermissionCodes(100L, 11L, 1L)).thenReturn(Set.of("user.view"));
 
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/patient/patient-list");
@@ -112,7 +112,7 @@ class ModulePermissionFilterTest {
         rule.setEndpointPattern("/patient/patient-list");
         rule.setPermissionCode("pacs.patient.view");
 
-        when(endpointPermissionCache.resolveRule("POST", "/patient/patient-list")).thenReturn(rule);
+        when(endpointPermissionCache.resolveRules("POST", "/patient/patient-list")).thenReturn(List.of(rule));
 
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/patient/patient-list");
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -138,7 +138,7 @@ class ModulePermissionFilterTest {
         rule.setHttpMethod("POST");
         rule.setEndpointPattern("/worklist/worklist-list");
         rule.setPermissionCode("pacs.worklist.view");
-        when(endpointPermissionCache.resolveRule("POST", "/worklist/worklist-list")).thenReturn(rule);
+        when(endpointPermissionCache.resolveRules("POST", "/worklist/worklist-list")).thenReturn(List.of(rule));
 
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/worklist/worklist-list");
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -164,7 +164,7 @@ class ModulePermissionFilterTest {
         rule.setHttpMethod("POST");
         rule.setEndpointPattern("/worklist/worklist-received-study");
         rule.setRequiredScope("pacs.api");
-        when(endpointPermissionCache.resolveRule("POST", "/worklist/worklist-received-study")).thenReturn(rule);
+        when(endpointPermissionCache.resolveRules("POST", "/worklist/worklist-received-study")).thenReturn(List.of(rule));
 
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/worklist/worklist-received-study");
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -193,7 +193,7 @@ class ModulePermissionFilterTest {
         rule.setHttpMethod("POST");
         rule.setEndpointPattern("/worklist/worklist-received-study");
         rule.setRequiredScope("pacs.api");
-        when(endpointPermissionCache.resolveRule("POST", "/worklist/worklist-received-study")).thenReturn(rule);
+        when(endpointPermissionCache.resolveRules("POST", "/worklist/worklist-received-study")).thenReturn(List.of(rule));
         when(oauth2ClientMapper.isActiveDicomServerCallbackClient("dicom_server_server-4")).thenReturn(true);
 
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/worklist/worklist-received-study");

@@ -57,6 +57,16 @@ public class RoleController {
         return roleService.listRoleUserGroupl(filter, httpServletRequest);
     }
 
+    @PostMapping(ApiConstants.Role.USER_GROUP_SUMMARY_PATH)
+    @Operation(summary = "Summarize user groups", description = "Module -> Role. Endpoint -> POST /role/user-group-summary")
+    public ResponseMessage<BaseResult> summarizeRoleUserGroups(@Valid @RequestBody(required = false) RoleListFilter filter,
+                                                               HttpServletRequest httpServletRequest) throws UnknownHostException {
+        if (UserAuthSession.getCurrentUser() == null) {
+            return ResponseMessageUtils.makeResponse(false, 401, "Unauthorized", "You must be logged in.");
+        }
+        return roleService.summarizeRoleUserGroups(filter, httpServletRequest);
+    }
+
     @PostMapping(ApiConstants.Role.FIND_PATH)
     @Operation(summary = "Find role by ID", description = "Module -> Role. Endpoint -> POST /role/role-find/{id}")
     public ResponseMessage<BaseResult> getRoleById(@PathVariable String id,

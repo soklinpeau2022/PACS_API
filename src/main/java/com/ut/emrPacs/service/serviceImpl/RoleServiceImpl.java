@@ -27,7 +27,9 @@ import com.ut.emrPacs.model.dto.request.authentication.role.RoleCreateRequest;
 import com.ut.emrPacs.model.dto.request.authentication.role.RoleDataUpdate;
 import com.ut.emrPacs.model.dto.response.authentication.module.ModuleType;
 import com.ut.emrPacs.model.dto.response.authentication.role.RoleResponse;
+import com.ut.emrPacs.model.dto.response.authentication.role.UserGroupSummaryResponse;
 import com.ut.emrPacs.model.base.MessageService;
+import com.ut.emrPacs.model.role.RoleUser;
 import com.ut.emrPacs.service.service.ActivityLogService;
 import com.ut.emrPacs.service.service.RoleService;
 import com.ut.emrPacs.service.service.UserService;
@@ -136,7 +138,8 @@ public class RoleServiceImpl implements RoleService {
             List<RoleResponse> roles = roleMapper.getRoleById(id, null);
             if(!roles.isEmpty()){
                 Long roleId = roles.get(0).getId();
-                roles.get(0).setUserList(roleMapper.getUser(roleId, null));
+                Long visibleHospitalId = isSuperAdmin(actorUserId) ? null : currentHospitalIdOrNull();
+                roles.get(0).setUserList(roleMapper.getUser(roleId, visibleHospitalId));
 
                 ModuleTypeFilter moduleTypeFilter = new ModuleTypeFilter();
                 moduleTypeFilter.setPage(1);
@@ -280,6 +283,11 @@ public class RoleServiceImpl implements RoleService {
             if (permissionValidationError != null) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message(permissionValidationError, false));
             }
+            List<Long> persistedUserIds = mergeOutOfScopeRoleUsersForScopedActor(
+                    roleDataUpdate.getId(),
+                    requestedUserIds,
+                    actorUserId
+            );
 
             Role role = new Role();
             role.setId(roleDataUpdate.getId());
@@ -296,7 +304,7 @@ public class RoleServiceImpl implements RoleService {
                 if (beforeUserIds != null) {
                     impactedUserIds.addAll(beforeUserIds);
                 }
-                String applyUserResult = insertRoleUser(requestedUserIds, role.getId());
+                String applyUserResult = insertRoleUser(persistedUserIds, role.getId());
                 if (applyUserResult != null) {
                     throw new IllegalStateException(applyUserResult);
                 }
@@ -494,8 +502,9 @@ public class RoleServiceImpl implements RoleService {
 
             List<RoleResponse> roleList = roleMapper.listRole(safeFilter, null);
             if (!roleList.isEmpty()) {
+                Long visibleHospitalId = isSuperAdmin ? null : currentHospitalIdOrNull();
                 for (RoleResponse role : roleList) {
-                    role.setUserList(roleMapper.getUser(role.getId(), null));
+                    role.setUserList(roleMapper.getUser(role.getId(), visibleHospitalId));
                     role.setModuleTypeList(null);
                 }
             }
@@ -507,6 +516,37 @@ public class RoleServiceImpl implements RoleService {
             LocalTime endDuration = LocalTime.now();
             Long errorLine = (error.getStackTrace() != null && error.getStackTrace().length > 0) ? (long) error.getStackTrace()[0].getLineNumber() : null;
             activityLogService.insert(ApiConstants.Role.BASE_PATH + ApiConstants.Role.USER_GROUP_LIST_PATH, errorLine, error.toString(),"System Role","System Role (View)","View",2,"Error",startDuration,endDuration, httpServletRequest);
+            return ResponseMessageUtils.makeResponse(false, messageService.message("An unexpected error occurred. Please try again.", null, false));
+        }
+    }
+
+    /** Service implementation method. */
+    public ResponseMessage<BaseResult> summarizeRoleUserGroups(RoleListFilter filter, HttpServletRequest httpServletRequest) throws UnknownHostException {
+        LocalTime startDuration = LocalTime.now();
+
+        try {
+            RoleListFilter safeFilter = filter == null ? new RoleListFilter() : filter;
+            Long actorUserId = currentUserId();
+            boolean isSuperAdmin = isSuperAdmin(actorUserId);
+            safeFilter.setHospitalId(null);
+            safeFilter.setStrictHospitalOnly(false);
+            safeFilter.setHideCrossHospitalScopeGroup(!isSuperAdmin);
+
+            Long visibleHospitalId = isSuperAdmin ? null : currentHospitalIdOrNull();
+            UserGroupSummaryResponse summary = roleMapper.summarizeUserGroups(safeFilter, visibleHospitalId, false);
+            if (summary == null) {
+                summary = new UserGroupSummaryResponse();
+                summary.setTotalGroups(0L);
+                summary.setTotalMembers(0L);
+            }
+
+            LocalTime endDuration = LocalTime.now();
+            activityLogService.insert(ApiConstants.Role.BASE_PATH + ApiConstants.Role.USER_GROUP_SUMMARY_PATH, null, null, "System Role", "System Role (Summary)", "View", 1, "Success", startDuration, endDuration, httpServletRequest);
+            return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(summary), true));
+        } catch (Exception error) {
+            LocalTime endDuration = LocalTime.now();
+            Long errorLine = (error.getStackTrace() != null && error.getStackTrace().length > 0) ? (long) error.getStackTrace()[0].getLineNumber() : null;
+            activityLogService.insert(ApiConstants.Role.BASE_PATH + ApiConstants.Role.USER_GROUP_SUMMARY_PATH, errorLine, error.toString(), "System Role", "System Role (Summary)", "View", 2, "Error", startDuration, endDuration, httpServletRequest);
             return ResponseMessageUtils.makeResponse(false, messageService.message("An unexpected error occurred. Please try again.", null, false));
         }
     }
@@ -574,6 +614,36 @@ public class RoleServiceImpl implements RoleService {
         return SUPER_ADMIN_USER_ID.equals(userId);
     }
 
+    private static Long currentHospitalIdOrNull() {
+        var principal = UserAuthSession.getCurrentUser();
+        return principal != null ? principal.hospitalId() : null;
+    }
+
+    private List<Long> mergeOutOfScopeRoleUsersForScopedActor(Long roleId, List<Long> requestedUserIds, Long actorUserId) {
+        if (requestedUserIds == null || isSuperAdmin(actorUserId)) {
+            return requestedUserIds;
+        }
+        Long hospitalId = currentHospitalIdOrNull();
+        if (hospitalId == null) {
+            return requestedUserIds;
+        }
+
+        List<RoleUser> scopedExistingUsers = roleMapper.getUser(roleId, hospitalId);
+        List<RoleUser> allExistingUsers = roleMapper.getUser(roleId, null);
+        Set<Long> scopedExistingUserIds = (scopedExistingUsers == null ? List.<RoleUser>of() : scopedExistingUsers).stream()
+                .map(RoleUser::getId)
+                .filter(id -> id != null && id > 0)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<Long> mergedUserIds = (allExistingUsers == null ? List.<RoleUser>of() : allExistingUsers).stream()
+                .map(RoleUser::getId)
+                .filter(id -> id != null && id > 0 && !scopedExistingUserIds.contains(id))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        requestedUserIds.stream()
+                .filter(id -> id != null && id > 0)
+                .forEach(mergedUserIds::add);
+        return new ArrayList<>(mergedUserIds);
+    }
+
     private String validateRoleUsersInCurrentHospital(List<Long> userIds) {
         if (userIds == null) {
             return null;
@@ -582,17 +652,21 @@ public class RoleServiceImpl implements RoleService {
         if (normalizedIds.isEmpty()) {
             return null;
         }
-        Long hospitalId = null;
-        try {
-            var principal = UserAuthSession.getCurrentUser();
-            hospitalId = principal != null ? principal.hospitalId() : null;
-        } catch (Exception ex) {
-            LOGGER.debug("Could not resolve hospital from security context: {}", ex.getMessage());
+        Long actorUserId = currentUserId();
+        if (isSuperAdmin(actorUserId)) {
+            Long activeCount = roleMapper.countActiveUsersByIds(normalizedIds);
+            if (activeCount == null || activeCount != normalizedIds.size()) {
+                return "One or more user ids are invalid, inactive, or outside your hospital scope.";
+            }
+            return null;
         }
 
-        Long activeCount = (hospitalId != null)
-                ? roleMapper.countActiveUsersByIdsInHospital(normalizedIds, hospitalId)
-                : roleMapper.countActiveUsersByIds(normalizedIds);
+        Long hospitalId = currentHospitalIdOrNull();
+        if (hospitalId == null) {
+            LOGGER.debug("Could not resolve hospital from security context while validating role users.");
+            return "One or more user ids are invalid, inactive, or outside your hospital scope.";
+        }
+        Long activeCount = roleMapper.countActiveUsersByIdsInHospital(normalizedIds, hospitalId);
         if (activeCount == null || activeCount != normalizedIds.size()) {
             return "One or more user ids are invalid, inactive, or outside your hospital scope.";
         }
@@ -671,4 +745,3 @@ public class RoleServiceImpl implements RoleService {
     }
 
 }
-

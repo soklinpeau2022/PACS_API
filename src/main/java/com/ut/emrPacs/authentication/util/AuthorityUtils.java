@@ -10,14 +10,14 @@ import java.util.Locale;
 public final class AuthorityUtils {
 
     private static final java.util.Set<String> ADMIN_ROLES =
-            java.util.Set.of("ROLE_ADMIN", "ROLE_SUPER_ADMIN", "ROLE_SYSTEM_ADMIN");
+            java.util.Set.of("ROLE_SUPER_ADMIN", "ROLE_SYSTEM_ADMIN");
 
     private AuthorityUtils() {
     }
 
     /**
-     * Returns {@code true} when the current security context holds an admin-level role
-     * ({@code ROLE_ADMIN}, {@code ROLE_SUPER_ADMIN}, or {@code ROLE_SYSTEM_ADMIN}).
+     * Returns {@code true} when the current security context can access cross-hospital data.
+     * Hospital admins stay scoped to their login hospital.
      */
     public static boolean isAdminUser() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
@@ -30,6 +30,10 @@ public final class AuthorityUtils {
             }
         }
         return false;
+    }
+
+    public static boolean isCrossHospitalAdminUser() {
+        return isAdminUser();
     }
 
     public static String normalizeRole(String groupName) {
@@ -74,4 +78,3 @@ public final class AuthorityUtils {
                 .toArray(String[]::new);
     }
 }
-

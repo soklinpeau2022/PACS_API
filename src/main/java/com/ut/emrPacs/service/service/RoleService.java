@@ -14,6 +14,8 @@ public interface RoleService {
 
     ResponseMessage<BaseResult> listRoleUserGroupl(RoleListFilter filter, HttpServletRequest httpServletRequest) throws UnknownHostException;
 
+    ResponseMessage<BaseResult> summarizeRoleUserGroups(RoleListFilter filter, HttpServletRequest httpServletRequest) throws UnknownHostException;
+
     ResponseMessage<BaseResult> getRoleById(Long id, HttpServletRequest httpServletRequest) throws UnknownHostException;
 
     ResponseMessage<BaseResult> menu(HttpServletRequest httpServletRequest) throws UnknownHostException;

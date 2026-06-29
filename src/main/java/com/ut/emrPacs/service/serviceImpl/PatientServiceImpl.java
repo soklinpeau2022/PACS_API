@@ -2,6 +2,7 @@ package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.authentication.session.UserAuthSession;
 import com.ut.emrPacs.cache.config.CacheConfig;
+import com.ut.emrPacs.cache.permission.PermissionCacheService;
 import com.ut.emrPacs.helper.FunctionCodeGenerate;
 import com.ut.emrPacs.helper.FunctionHelper;
 import com.ut.emrPacs.helper.pagination.PaginationHelper;
@@ -33,12 +34,14 @@ import java.net.UnknownHostException;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.List;
+import java.util.Set;
 
 @Service
 public class PatientServiceImpl implements PatientService {
     private static final Logger LOGGER = LoggerFactory.getLogger(PatientServiceImpl.class);
     private static final LocalDate DEFAULT_DATE_OF_BIRTH = LocalDate.of(1900, 1, 1);
     private static final int PATIENT_CODE_CREATE_RETRY = 5;
+    private static final String PATIENT_CREATE_WORKLIST_PERMISSION = "pacs.patient.create_worklist";
 
     @Autowired
     private PatientMapper patientMapper;
@@ -50,6 +53,8 @@ public class PatientServiceImpl implements PatientService {
     private ActivityLogService activityLogService;
     @Autowired
     private PublicEntityKeyResolver publicEntityKeyResolver;
+    @Autowired
+    private PermissionCacheService permissionCacheService;
 
     @Override
     public ResponseMessage<BaseResult> list(PatientListFilter filter, HttpServletRequest httpServletRequest) throws UnknownHostException {
@@ -102,6 +107,9 @@ public class PatientServiceImpl implements PatientService {
         try {
             if (request == null) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Invalid request.", false));
+            }
+            if (Boolean.TRUE.equals(request.getCreateWorklistIntent()) && !canCreatePatientWorklist()) {
+                return ResponseMessageUtils.makeResponse(false, 403, "FORBIDDEN", "Forbidden");
             }
             Long requestedHospitalId = publicEntityKeyResolver.resolve(Entity.HOSPITAL, request.getHospitalKey(), null);
             Long hospitalId = resolveHospitalId(requestedHospitalId);
@@ -236,6 +244,22 @@ public class PatientServiceImpl implements PatientService {
             return requestedHospitalId != null && requestedHospitalId > 0 ? requestedHospitalId : null;
         }
         return currentHospitalId();
+    }
+
+    private boolean canCreatePatientWorklist() {
+        if (isAdminUser()) {
+            return true;
+        }
+        var principal = UserAuthSession.getCurrentUser();
+        if (principal == null || principal.userId() == null || principal.hospitalId() == null) {
+            return false;
+        }
+        Set<String> permissionCodes = permissionCacheService.getPermissionCodes(
+                principal.userId(),
+                principal.hospitalId(),
+                principal.permissionVersion()
+        );
+        return permissionCodes.contains(PATIENT_CREATE_WORKLIST_PERMISSION);
     }
 
     private String generatePatientCode(Long hospitalId) {

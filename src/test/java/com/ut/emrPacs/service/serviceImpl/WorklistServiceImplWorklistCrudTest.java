@@ -5,6 +5,7 @@ import com.ut.emrPacs.authentication.util.JwtTokenService;
 import com.ut.emrPacs.authentication.util.PublicViewerAttemptGuard;
 import com.ut.emrPacs.authentication.util.ViewerAccessKeyService;
 import com.ut.emrPacs.authentication.util.ViewerAccessKeyService.ViewerAccessClaims;
+import com.ut.emrPacs.cache.permission.PermissionCacheService;
 import com.ut.emrPacs.config.WorklistConstants;
 import com.ut.emrPacs.mapper.hospital.HospitalMapper;
 import com.ut.emrPacs.mapper.modality.ModalityMapper;
@@ -68,6 +69,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.Map;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -118,6 +120,8 @@ class WorklistServiceImplWorklistCrudTest {
     private PublicEntityKeyResolver publicEntityKeyResolver;
     @Mock
     private PublicViewerAttemptGuard publicViewerAttemptGuard;
+    @Mock
+    private PermissionCacheService permissionCacheService;
 
     private WorklistServiceImpl WorklistService;
 
@@ -140,9 +144,12 @@ class WorklistServiceImplWorklistCrudTest {
         ReflectionTestUtils.setField(WorklistService, "revokedTokenMapper", revokedTokenMapper);
         ReflectionTestUtils.setField(WorklistService, "publicEntityKeyResolver", publicEntityKeyResolver);
         ReflectionTestUtils.setField(WorklistService, "publicViewerAttemptGuard", publicViewerAttemptGuard);
+        ReflectionTestUtils.setField(WorklistService, "permissionCacheService", permissionCacheService);
         ReflectionTestUtils.setField(WorklistService, "viewerDicomwebTokenMs", 86_400_000L);
         lenient().when(publicEntityKeyResolver.resolve(any(PublicEntityKeyResolver.Entity.class), any(), any()))
                 .thenAnswer(invocation -> invocation.getArgument(2));
+        lenient().when(permissionCacheService.getPermissionCodes(anyLong(), anyLong(), any()))
+                .thenReturn(Set.of("pacs.worklist.assign"));
 
         TestingAuthenticationToken auth = new TestingAuthenticationToken("user", "n/a", "ROLE_ADMIN");
         auth.setAuthenticated(true);
@@ -1033,6 +1040,51 @@ class WorklistServiceImplWorklistCrudTest {
         assertTrue(response.isSuccess(), response.getHeader() != null ? String.valueOf(response.getHeader().getErrorText()) : "Unknown error");
         verify(WorklistMapper, never()).findWorklistByVisitCodeAnyHospital(expectedVisitCode);
         verify(WorklistMapper).assignWorklist(eq(11L), eq(99L), eq(expectedVisitCode), eq(request));
+    }
+
+    @Test
+    void assignWorklistShouldAllowPatientCreateWorklistPermission() throws Exception {
+        when(permissionCacheService.getPermissionCodes(99L, 11L, 1L))
+                .thenReturn(Set.of("pacs.patient.create_worklist"));
+
+        WorklistAssignRequest request = new WorklistAssignRequest();
+        request.setPatientId(501L);
+        request.setModalityId(5L);
+        request.setDicomServerId(7L);
+
+        PatientResponse patient = new PatientResponse();
+        patient.setId(501L);
+        when(patientMapper.findById(11L, 501L)).thenReturn(patient);
+        when(modalityMapper.countActiveModalitiesByIds(List.of(5L))).thenReturn(1L);
+
+        HospitalModalityServerRouteResponse route = new HospitalModalityServerRouteResponse();
+        route.setDicomServerId(7L);
+        when(dicomServerMapper.listActiveRoutesByHospitalAndModality(11L, 5L)).thenReturn(List.of(route));
+        when(WorklistMapper.countPatientModalityActiveWorklist(11L, 501L, 5L)).thenReturn(0L);
+
+        ModalityResponse modality = new ModalityResponse();
+        modality.setAbbr("CT");
+        when(modalityMapper.getModalityById(5L)).thenReturn(List.of(modality));
+
+        HospitalResponseDetail hospital = new HospitalResponseDetail();
+        hospital.setAbbr("KSFH");
+        hospital.setCode("H001");
+        hospital.setHospitalName("KSFH Hospital");
+        when(hospitalMapper.getHospitalById(11L)).thenReturn(List.of(hospital));
+
+        String todayToken = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        String shortDateToken = LocalDate.now().format(DateTimeFormatter.ofPattern("yyMMdd"));
+        String visitCode = "CT-KSFH-" + shortDateToken + "-0001";
+        when(WorklistMapper.nextVisitSequence(11L, "CT-KSFH-" + todayToken)).thenReturn(1L);
+        WorklistDetailRow createdWorklist = baseWorklist(2002L, WorklistStatus.WAITING);
+        createdWorklist.setVisitCode(visitCode);
+        when(WorklistMapper.findWorklistByVisitCode(11L, visitCode)).thenReturn(null, createdWorklist);
+        when(WorklistMapper.assignWorklist(eq(11L), eq(99L), eq(visitCode), eq(request))).thenReturn(true);
+
+        ResponseMessage<BaseResult> response = WorklistService.assignWorklist(request, null);
+
+        assertTrue(response.isSuccess(), response.getHeader() != null ? String.valueOf(response.getHeader().getErrorText()) : "Unknown error");
+        verify(WorklistMapper).assignWorklist(eq(11L), eq(99L), eq(visitCode), eq(request));
     }
 
     @Test

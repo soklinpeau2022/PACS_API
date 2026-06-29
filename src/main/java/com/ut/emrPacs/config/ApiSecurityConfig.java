@@ -117,6 +117,8 @@ public class ApiSecurityConfig {
             "/error",
             "/actuator/health",
             "/actuator/info",
+            ApiConstants.ApplicationSettings.BRAND_PUBLIC_GET_FULL_PATH,
+            ApiConstants.ApplicationSettings.BRAND_ASSET_FULL_PREFIX + "**",
             ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH,
             ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.VIEWER_DICOMWEB_AUTHORIZE_PATH,
             ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.VIEWER_DICOMWEB_PROXY_AUTHORIZE_PATH,
@@ -160,9 +162,6 @@ public class ApiSecurityConfig {
 
     @Value("${app.security.require-https:false}")
     private boolean requireHttps;
-
-    @Value("${app.security.admin.authorities:ROLE_ADMIN,ROLE_SUPER_ADMIN}")
-    private String adminAuthoritiesCsv;
 
     @Value("${cors.allowedOrigins:}")
     private String[] corsAllowedOrigins;
@@ -284,8 +283,6 @@ public class ApiSecurityConfig {
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        final String[] adminAuthorities = AuthorityUtils.parseCsvAuthorities(adminAuthoritiesCsv, "ROLE_ADMIN");
-
         if (requireHttps) {
             http.redirectToHttps(Customizer.withDefaults());
         }
@@ -325,13 +322,13 @@ public class ApiSecurityConfig {
                             ApiConstants.User.BASE_PATH + "/user-find/**",
                             ApiConstants.User.BASE_PATH + "/user-delete/**",
                             "/user-right/**"
-                    ).hasAnyAuthority(adminAuthorities);
+                    ).authenticated();
 
                     auth.requestMatchers(ApiConstants.SystemActivity.BASE_PATH + "/**").authenticated();
                     auth.requestMatchers(ApiConstants.Notification.BASE_PATH + "/**").authenticated();
 
                     auth.requestMatchers(ApiConstants.Role.MENU_FULL_PATH).authenticated();
-                    auth.requestMatchers(ApiConstants.Role.BASE_PATH + "/**").hasAnyAuthority(adminAuthorities);
+                    auth.requestMatchers(ApiConstants.Role.BASE_PATH + "/**").authenticated();
 
                     auth.anyRequest().authenticated();
                 })

@@ -2,6 +2,7 @@ package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.authentication.principal.CurrentUserPrincipal;
 import com.ut.emrPacs.authentication.util.ViewerAccessKeyService;
+import com.ut.emrPacs.cache.permission.PermissionCacheService;
 import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
 import com.ut.emrPacs.mapper.pacs.PacsResultMapper;
 import com.ut.emrPacs.mapper.pacs.StudyMapper;
@@ -24,6 +25,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -44,6 +46,8 @@ class StudyServiceImplViewerAccessTest {
     private PacsResultMapper pacsResultMapper;
     @Mock
     private ActivityLogService activityLogService;
+    @Mock
+    private PermissionCacheService permissionCacheService;
 
     @AfterEach
     void clearSecurityContext() {
@@ -243,6 +247,7 @@ class StudyServiceImplViewerAccessTest {
         StudyServiceImpl service = new StudyServiceImpl();
         ReflectionTestUtils.setField(service, "studyMapper", studyMapper);
         ReflectionTestUtils.setField(service, "pacsResultMapper", pacsResultMapper);
+        ReflectionTestUtils.setField(service, "permissionCacheService", permissionCacheService);
         ReflectionTestUtils.setField(service, "messageService", new MessageService());
         ReflectionTestUtils.setField(service, "activityLogService", activityLogService);
 
@@ -273,6 +278,7 @@ class StudyServiceImplViewerAccessTest {
         when(studyMapper.findById(11L, 22L)).thenReturn(study);
         when(studyMapper.updateStatusById(11L, 22L, 1)).thenReturn(1);
         when(pacsResultMapper.findByStudyId(11L, 3L, 22L)).thenReturn(result);
+        when(permissionCacheService.getPermissionCodes(99L, 11L, 1L)).thenReturn(Set.of("pacs.study.status_update"));
 
         StudyStatusUpdateRequest request = new StudyStatusUpdateRequest();
         request.setStatus("IMAGE_RECEIVED");

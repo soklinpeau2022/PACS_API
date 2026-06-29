@@ -50,6 +50,18 @@
         LEFT JOIN users uc ON uc.id = h.created_by
         LEFT JOIN users um ON um.id = h.modified_by
         WHERE h.is_active = 1
+        <if test="hospitalId != null">
+            AND h.id = #{hospitalId}
+        </if>
+        <if test="userId != null">
+            AND EXISTS (
+                SELECT 1
+                FROM user_hospitals uh_scope
+                WHERE uh_scope.hospital_id = h.id
+                  AND uh_scope.user_id = #{userId}
+                  AND uh_scope.is_active = 1
+            )
+        </if>
         <if test="searchText != null and searchText != ''">
             AND (
                 h.name ILIKE '%' || #{searchText} || '%'
@@ -65,6 +77,18 @@
         SELECT COUNT(1)
         FROM hospitals h
         WHERE h.is_active = 1
+        <if test="hospitalId != null">
+            AND h.id = #{hospitalId}
+        </if>
+        <if test="userId != null">
+            AND EXISTS (
+                SELECT 1
+                FROM user_hospitals uh_scope
+                WHERE uh_scope.hospital_id = h.id
+                  AND uh_scope.user_id = #{userId}
+                  AND uh_scope.is_active = 1
+            )
+        </if>
         <if test="searchText != null and searchText != ''">
             AND (
                 h.name ILIKE '%' || #{searchText} || '%'

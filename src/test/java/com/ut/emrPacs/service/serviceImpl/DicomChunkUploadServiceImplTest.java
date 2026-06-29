@@ -235,6 +235,18 @@ class DicomChunkUploadServiceImplTest {
         assertFalse(Files.exists(orphan));
     }
 
+    @Test
+    void cleanupShouldDeleteRestartOrphanedStagedZipEntryAfterTtl() throws Exception {
+        ReflectionTestUtils.setField(service, "sessionTtlMinutes", 1L);
+        Path orphan = tempDir.resolve("dicom-zip-entry-123456789.dcm");
+        Files.writeString(orphan, "orphan");
+        Files.setLastModifiedTime(orphan, FileTime.from(Instant.now().minus(Duration.ofMinutes(2))));
+
+        service.cleanupStaleSessions();
+
+        assertFalse(Files.exists(orphan));
+    }
+
     private DicomChunkUploadInitResponse initUpload(long totalSize, long chunkSize, int totalChunks) {
         DicomChunkUploadInitRequest request = new DicomChunkUploadInitRequest();
         request.setHospitalKey("H001");

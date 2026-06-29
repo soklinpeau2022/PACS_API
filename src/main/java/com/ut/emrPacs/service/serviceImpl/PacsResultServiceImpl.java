@@ -132,7 +132,7 @@ public class PacsResultServiceImpl implements PacsResultService {
     private boolean staticAuthEnabled;
     @Value("${pacs.result.static-auth.api-key:}")
     private String configuredApiKey;
-    @Value("${pacs.result.upload-root:/var/ut-image}")
+    @Value("${pacs.result.upload-root:/home/Images}")
     private String uploadRoot;
     @Value("${pacs.result.max-image-bytes:10485760}")
     private long maxImageBytes;

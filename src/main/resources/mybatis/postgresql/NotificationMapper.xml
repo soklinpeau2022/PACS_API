@@ -102,6 +102,12 @@
             <if test="days != null and days > 0">
                 AND COALESCE(q.created_at, q.created) >= NOW() - (#{days} * INTERVAL '1 day')
             </if>
+            <if test="notificationIds != null and notificationIds.size() > 0">
+                AND CONCAT('worklist-', q.id) IN
+                <foreach collection="notificationIds" item="notificationId" open="(" separator="," close=")">
+                    #{notificationId}
+                </foreach>
+            </if>
 
             UNION ALL
 
@@ -168,6 +174,12 @@
             </if>
             <if test="days != null and days > 0">
                 AND q.sent_at >= NOW() - (#{days} * INTERVAL '1 day')
+            </if>
+            <if test="notificationIds != null and notificationIds.size() > 0">
+                AND CONCAT('worklist-sent-', q.id) IN
+                <foreach collection="notificationIds" item="notificationId" open="(" separator="," close=")">
+                    #{notificationId}
+                </foreach>
             </if>
 
             UNION ALL
@@ -238,6 +250,12 @@
             <if test="days != null and days > 0">
                 AND COALESCE(s.received_at, s.created) >= NOW() - (#{days} * INTERVAL '1 day')
             </if>
+            <if test="notificationIds != null and notificationIds.size() > 0">
+                AND CONCAT('study-', s.id) IN
+                <foreach collection="notificationIds" item="notificationId" open="(" separator="," close=")">
+                    #{notificationId}
+                </foreach>
+            </if>
         ) notifications
     </sql>
 
@@ -256,6 +274,9 @@
         </choose>
         <if test="severity != null and severity != ''">
             AND LOWER(notifications.severity) = LOWER(#{severity})
+        </if>
+        <if test="userId != null and userId > 0">
+            AND notification_state.cleared_at IS NULL
         </if>
         <if test="searchText != null and searchText != ''">
             AND (
@@ -304,9 +325,13 @@
             notifications.modality_name,
             notifications.created_at,
             notifications.endpoint,
-            notifications.unread
+            (notification_state.read_at IS NULL) AS unread
         FROM
         <include refid="NOTIFICATION_SOURCE"/>
+        LEFT JOIN pacs_notification_user_states notification_state
+            ON notification_state.user_id = #{userId}
+           AND notification_state.hospital_id = notifications.hospital_id
+           AND notification_state.notification_id = notifications.id
         <include refid="NOTIFICATION_WHERE"/>
         ORDER BY notifications.created_at_sort DESC, notifications.reference_id DESC
         <if test="rowsPerPage != null">LIMIT #{rowsPerPage}</if>
@@ -316,6 +341,61 @@
         SELECT COUNT(*)
         FROM
         <include refid="NOTIFICATION_SOURCE"/>
+        LEFT JOIN pacs_notification_user_states notification_state
+            ON notification_state.user_id = #{userId}
+           AND notification_state.hospital_id = notifications.hospital_id
+           AND notification_state.notification_id = notifications.id
         <include refid="NOTIFICATION_WHERE"/>
     </select>
+
+    <insert id="markNotificationsRead" parameterType="com.ut.emrPacs.model.dto.request.notification.NotificationActionRequest">
+        INSERT INTO pacs_notification_user_states (
+            user_id,
+            hospital_id,
+            notification_id,
+            read_at,
+            created_at,
+            updated_at
+        )
+        SELECT
+            #{userId},
+            #{hospitalId},
+            notifications.id,
+            NOW(),
+            NOW(),
+            NOW()
+        FROM
+        <include refid="NOTIFICATION_SOURCE"/>
+        ON CONFLICT (user_id, hospital_id, notification_id)
+        DO UPDATE SET
+            read_at = COALESCE(pacs_notification_user_states.read_at, EXCLUDED.read_at),
+            updated_at = NOW()
+    </insert>
+
+    <insert id="clearNotifications" parameterType="com.ut.emrPacs.model.dto.request.notification.NotificationActionRequest">
+        INSERT INTO pacs_notification_user_states (
+            user_id,
+            hospital_id,
+            notification_id,
+            read_at,
+            cleared_at,
+            created_at,
+            updated_at
+        )
+        SELECT
+            #{userId},
+            #{hospitalId},
+            notifications.id,
+            NOW(),
+            NOW(),
+            NOW(),
+            NOW()
+        FROM
+        <include refid="NOTIFICATION_SOURCE"/>
+        ON CONFLICT (user_id, hospital_id, notification_id)
+        DO UPDATE SET
+            read_at = COALESCE(pacs_notification_user_states.read_at, EXCLUDED.read_at),
+            cleared_at = EXCLUDED.cleared_at,
+            updated_at = NOW()
+    </insert>
 </mapper>

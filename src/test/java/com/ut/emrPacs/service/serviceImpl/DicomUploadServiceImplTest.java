@@ -129,10 +129,7 @@ class DicomUploadServiceImplTest {
         lenient().when(publicEntityKeyResolver.resolve(any(PublicEntityKeyResolver.Entity.class), any(), any()))
                 .thenAnswer(invocation -> invocation.getArgument(2));
 
-        TestingAuthenticationToken auth = new TestingAuthenticationToken("admin", "n/a", "ROLE_ADMIN");
-        auth.setAuthenticated(true);
-        auth.setDetails(new CurrentUserPrincipal(99L, "admin", 11L, "HSP001", "pacs-web", "jti-1", 1L));
-        SecurityContextHolder.getContext().setAuthentication(auth);
+        setAuthenticatedUser(99L, 11L, "ROLE_ADMIN");
     }
 
     @AfterEach
@@ -150,6 +147,22 @@ class DicomUploadServiceImplTest {
 
         ReflectionTestUtils.setField(service, "instanceUploadParallelism", 0);
         assertEquals(Integer.valueOf(24), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
+    }
+
+    @Test
+    void hospitalAdminUploadUsesAuthenticatedHospitalEvenWhenAnotherHospitalIsRequested() {
+        Long resolvedHospitalId = ReflectionTestUtils.invokeMethod(service, "resolveHospitalId", 22L);
+
+        assertEquals(11L, resolvedHospitalId);
+    }
+
+    @Test
+    void superAdminUploadCanUseRequestedHospital() {
+        setAuthenticatedUser(99L, 11L, "ROLE_SUPER_ADMIN");
+
+        Long resolvedHospitalId = ReflectionTestUtils.invokeMethod(service, "resolveHospitalId", 22L);
+
+        assertEquals(22L, resolvedHospitalId);
     }
 
     @Test
@@ -662,6 +675,13 @@ class DicomUploadServiceImplTest {
                 eq(LocalDate.of(2023, 9, 26)), eq("CT CHEST"), eq("TSNH HOSPITAL"), eq(5L), eq(1), eq("orthanc-study-1"), eq("orthanc-patient-1"),
                 eq("series-1"), eq(3), eq(99L), any())).thenReturn(77L);
         when(studyMapper.findById(11L, 77L)).thenReturn(savedStudy());
+    }
+
+    private static void setAuthenticatedUser(Long userId, Long hospitalId, String authority) {
+        TestingAuthenticationToken auth = new TestingAuthenticationToken("admin", "n/a", authority);
+        auth.setAuthenticated(true);
+        auth.setDetails(new CurrentUserPrincipal(userId, "admin", hospitalId, "HSP001", "pacs-web", "jti-1", 1L));
+        SecurityContextHolder.getContext().setAuthentication(auth);
     }
 
     private static HospitalDicomServerResponse server() {

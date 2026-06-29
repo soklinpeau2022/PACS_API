@@ -1,0 +1,15 @@
+INSERT INTO endpoint_permissions (http_method, endpoint_pattern, permission_code, required_scope, is_active)
+VALUES
+    ('POST', '/worklist/worklist-assign', 'pacs.worklist.assign', 'pacs.api', 1),
+    ('POST', '/worklist/worklist-assign', 'pacs.patient.create_worklist', 'pacs.api', 1),
+    ('POST', '/worklist/worklist-routed-modality-list', 'pacs.patient.create_worklist', 'pacs.api', 1),
+    ('POST', '/worklist/worklist-route-availability', 'pacs.patient.create_worklist', 'pacs.api', 1)
+ON CONFLICT (http_method, endpoint_pattern, permission_code)
+DO UPDATE SET
+    required_scope = EXCLUDED.required_scope,
+    is_active = 1;
+
+UPDATE users
+SET permission_version = COALESCE(permission_version, 0) + 1,
+    modified = NOW()
+WHERE is_active = 1;

@@ -116,7 +116,7 @@ dist/udaya_pacs_qa_db.zip
 ## Deploy API On Server
 
 ```bash
-sudo mkdir -p /var/www/udaya_pacs_qa_api /var/ut-image /var/ut-key
+sudo mkdir -p /var/www/udaya_pacs_qa_api /home/Images /var/ut-key
 sudo unzip -o /tmp/udaya_pacs_qa_api.zip -d /var/www/udaya_pacs_qa_api
 cd /var/www/udaya_pacs_qa_api
 

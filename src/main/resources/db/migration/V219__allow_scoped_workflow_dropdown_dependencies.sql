@@ -1,0 +1,83 @@
+INSERT INTO endpoint_permissions (http_method, endpoint_pattern, permission_code, required_scope, is_active)
+VALUES
+    ('POST', '/dropdown/dropdown-hospital', 'hospital.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'hospital.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'hospital.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'dicom.server.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'dicom.server.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'dicom.server.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'dicom.machine.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'dicom.machine.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'dicom.machine.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'dicom.routing.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'dicom.routing.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'dicom.routing.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'study.retention.policy.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'study.retention.policy.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'study.retention.policy.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'study.retention.approval.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'pacs.result.template.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'pacs.result.template.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'pacs.result.template.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'pacs.study.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'pacs.worklist.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-hospital', 'pacs.patient.view', 'pacs.api', 1),
+
+    ('POST', '/dropdown/dropdown-modality', 'modality.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'dicom.machine.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'dicom.machine.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'dicom.machine.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'dicom.routing.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'dicom.routing.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'dicom.routing.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'study.retention.policy.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'study.retention.policy.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'study.retention.policy.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'study.retention.approval.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'pacs.result.template.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'pacs.result.template.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'pacs.result.template.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'pacs.study.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality', 'pacs.worklist.view', 'pacs.api', 1),
+
+    ('POST', '/dropdown/dropdown-modality-catalog', 'modality.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality-catalog', 'hospital.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality-catalog', 'hospital.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality-catalog', 'study.retention.policy.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-modality-catalog', 'study.retention.approval.view', 'pacs.api', 1),
+
+    ('POST', '/dropdown/dropdown-dicom-server', 'dicom.server.view', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-dicom-server', 'dicom.routing.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-dicom-server', 'dicom.routing.edit', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-dicom-server', 'study.retention.policy.add', 'pacs.api', 1),
+    ('POST', '/dropdown/dropdown-dicom-server', 'study.retention.policy.edit', 'pacs.api', 1),
+
+    ('POST', '/dropdown/dropdown-user', 'user.view', 'user.read', 1),
+    ('POST', '/dropdown/dropdown-user', 'user.edit', 'user.read', 1),
+    ('POST', '/dropdown/dropdown-user', 'hospital.add', 'user.read', 1),
+    ('POST', '/dropdown/dropdown-user', 'hospital.edit', 'user.read', 1),
+    ('POST', '/dropdown/dropdown-user-group', 'role.view', 'user.read', 1),
+    ('POST', '/dropdown/dropdown-user-group', 'user.add', 'user.read', 1),
+    ('POST', '/dropdown/dropdown-user-group', 'user.edit', 'user.read', 1),
+    ('POST', '/dropdown/dropdown-user-group-member', 'user.view', 'user.read', 1),
+    ('POST', '/dropdown/dropdown-user-group-member', 'role.add', 'user.read', 1),
+    ('POST', '/dropdown/dropdown-user-group-member', 'role.edit', 'user.read', 1),
+    ('POST', '/module-type/module-type-list', 'role.assign_permission', 'user.write', 1),
+    ('POST', '/module-type/module-type-list', 'role.add', 'user.write', 1),
+    ('POST', '/module-type/module-type-list', 'role.edit', 'user.write', 1),
+
+    ('POST', '/hospital-modality', 'hospital.modality.view', 'pacs.api', 1),
+    ('POST', '/hospital-modality', 'pacs.study.view', 'pacs.api', 1),
+    ('POST', '/hospital-modality', 'pacs.worklist.view', 'pacs.api', 1),
+    ('POST', '/hospital-modality', 'dicom.server.view', 'pacs.api', 1),
+    ('POST', '/hospital-modality', 'dicom.machine.view', 'pacs.api', 1),
+    ('POST', '/hospital-modality', 'dicom.routing.view', 'pacs.api', 1)
+ON CONFLICT (http_method, endpoint_pattern, permission_code)
+DO UPDATE SET
+    required_scope = EXCLUDED.required_scope,
+    is_active = 1;
+
+UPDATE users
+SET permission_version = COALESCE(permission_version, 0) + 1,
+    modified = NOW()
+WHERE is_active = 1;

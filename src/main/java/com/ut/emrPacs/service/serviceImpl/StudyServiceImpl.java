@@ -3,6 +3,7 @@ package com.ut.emrPacs.service.serviceImpl;
 import com.ut.emrPacs.authentication.session.UserAuthSession;
 import com.ut.emrPacs.authentication.util.JwtTokenService;
 import com.ut.emrPacs.authentication.util.ViewerAccessKeyService;
+import com.ut.emrPacs.cache.permission.PermissionCacheService;
 import com.ut.emrPacs.config.ApiConstants;
 import com.ut.emrPacs.helper.pagination.PaginationHelper;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
@@ -40,6 +41,7 @@ import java.time.LocalTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class StudyServiceImpl implements StudyService {
@@ -47,6 +49,7 @@ public class StudyServiceImpl implements StudyService {
     private static final String RESULT_STATUS_IMAGE_RECEIVED = "IMAGE_RECEIVED";
     private static final String RESULT_STATUS_FINAL = "FINAL";
     private static final String LEGACY_RESULT_STATUS_COMPLETED = "COMPLETED";
+    private static final String STUDY_STATUS_UPDATE_PERMISSION = "pacs.study.status_update";
 
     @Autowired
     private StudyMapper studyMapper;
@@ -58,6 +61,8 @@ public class StudyServiceImpl implements StudyService {
     private ViewerAccessKeyService viewerAccessKeyService;
     @Autowired(required = false)
     private JwtTokenService jwtTokenService;
+    @Autowired(required = false)
+    private PermissionCacheService permissionCacheService;
     @Autowired
     private MessageService messageService;
     @Autowired
@@ -79,9 +84,11 @@ public class StudyServiceImpl implements StudyService {
             safeFilter.setHospitalId(hospitalId);
             safeFilter.setModalityId(modalityId);
             boolean useWeekCache = shouldUseWeekCache(safeFilter);
-            Long total = useWeekCache
-                    ? studyMapper.countWeekCache(hospitalId, safeFilter)
-                    : studyMapper.count(hospitalId, safeFilter);
+            Long total = safeFilter.getLastStudyId() == null
+                    ? useWeekCache
+                        ? studyMapper.countWeekCache(hospitalId, safeFilter)
+                        : studyMapper.count(hospitalId, safeFilter)
+                    : null;
             Pagination pagination = PaginationHelper.buildAndApplyOffsetOrDefault(safeFilter, total);
 
             List<StudyResponse> studies = useWeekCache
@@ -128,8 +135,8 @@ public class StudyServiceImpl implements StudyService {
     public ResponseMessage<BaseResult> updateStatus(Long id, StudyStatusUpdateRequest request, HttpServletRequest httpServletRequest) throws UnknownHostException {
         LocalTime startDuration = LocalTime.now();
         try {
-            if (!isAdminUser()) {
-                return ResponseMessageUtils.makeResponse(false, 403, messageService.message("Only admin users can update study status.", false));
+            if (!canUpdateStudyStatus()) {
+                return ResponseMessageUtils.makeResponse(false, 403, messageService.message("You do not have permission to update study status.", false));
             }
             if (id == null || id <= 0L) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Study not found.", false));
@@ -161,7 +168,7 @@ public class StudyServiceImpl implements StudyService {
             syncResultStatusForStudy(study, targetStatus);
 
             LocalTime endDuration = LocalTime.now();
-            activityLogService.insert(ApiConstants.Study.BASE_PATH + ApiConstants.Study.STATUS_UPDATE_PATH, null, null, "Study", "Study (Status Update)", "Update", 1, "Success", startDuration, endDuration, httpServletRequest);
+            activityLogService.insert(ApiConstants.Study.BASE_PATH + ApiConstants.Study.STATUS_UPDATE_PATH, null, null, "Study", "Reopen study", "Update", 1, "Success", startDuration, endDuration, httpServletRequest);
             Map<String, Object> payload = Map.of(
                     "publicKey", study.getPublicKey(),
                     "status", targetStatus.name(),
@@ -171,7 +178,7 @@ public class StudyServiceImpl implements StudyService {
         } catch (Exception error) {
             LocalTime endDuration = LocalTime.now();
             Long errorLine = (error.getStackTrace() != null && error.getStackTrace().length > 0) ? (long) error.getStackTrace()[0].getLineNumber() : null;
-            activityLogService.insert(ApiConstants.Study.BASE_PATH + ApiConstants.Study.STATUS_UPDATE_PATH, errorLine, error.toString(), "Study", "Study (Status Update)", "Update", 2, "Error", startDuration, endDuration, httpServletRequest);
+            activityLogService.insert(ApiConstants.Study.BASE_PATH + ApiConstants.Study.STATUS_UPDATE_PATH, errorLine, error.toString(), "Study", "Reopen study", "Update", 2, "Error", startDuration, endDuration, httpServletRequest);
             return ResponseMessageUtils.makeResponse(false, messageService.message("An unexpected error occurred. Please try again.", null, false));
         }
     }
@@ -274,6 +281,25 @@ public class StudyServiceImpl implements StudyService {
     private static Long currentHospitalIdOrNull() {
         var principal = UserAuthSession.getCurrentUser();
         return principal == null ? null : principal.hospitalId();
+    }
+
+    private boolean canUpdateStudyStatus() {
+        if (isAdminUser()) {
+            return true;
+        }
+        if (permissionCacheService == null) {
+            return false;
+        }
+        var principal = UserAuthSession.getCurrentUser();
+        if (principal == null || principal.userId() == null || principal.hospitalId() == null) {
+            return false;
+        }
+        Set<String> permissionCodes = permissionCacheService.getPermissionCodes(
+                principal.userId(),
+                principal.hospitalId(),
+                principal.permissionVersion()
+        );
+        return permissionCodes.contains(STUDY_STATUS_UPDATE_PERMISSION);
     }
 
     private static Long resolveHospitalId(Long requestedHospitalId) {

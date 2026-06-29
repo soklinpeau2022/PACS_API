@@ -1,6 +1,7 @@
 package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.authentication.session.UserAuthSession;
+import com.ut.emrPacs.cache.permission.PermissionCacheService;
 import com.ut.emrPacs.config.ApiConstants;
 import com.ut.emrPacs.helper.pagination.PaginationHelper;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
@@ -73,6 +74,9 @@ public class UserGroupServiceImpl implements UserGroupService {
 
     @Autowired
     private RolePermissionMapper rolePermissionMapper;
+
+    @Autowired
+    private PermissionCacheService permissionCacheService;
 
     @Autowired
     private ModuleTypeMapper moduleTypeMapper;
@@ -163,13 +167,22 @@ public class UserGroupServiceImpl implements UserGroupService {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Unable to complete the request. Please try again.", false));
             }
 
+            List<Long> beforeUserIds = rolePermissionMapper.findUserIdsByRoleId(role.getId());
             replaceRoleUsers(role.getId(), request.getUserIds());
             replaceRolePermissions(
                     role.getId(),
                     resolveRequestedModuleDetailIds(request.getModuleDetailIds(), request.getModuleTypeList()),
                     actorUserId
             );
-            bumpRoleUsersPermissionVersion(role.getId());
+            Set<Long> impactedUserIds = new LinkedHashSet<>();
+            if (beforeUserIds != null) {
+                impactedUserIds.addAll(beforeUserIds);
+            }
+            List<Long> afterUserIds = rolePermissionMapper.findUserIdsByRoleId(role.getId());
+            if (afterUserIds != null) {
+                impactedUserIds.addAll(afterUserIds);
+            }
+            bumpPermissionVersion(new ArrayList<>(impactedUserIds));
 
             LocalTime endDuration = LocalTime.now();
             activityLogService.insert(ApiConstants.UserGroup.BASE_PATH + ApiConstants.UserGroup.ADD_PATH, null, null, "User Group", "User Group (Add)", "Add", 1, "Success", startDuration, endDuration, httpServletRequest);
@@ -222,13 +235,22 @@ public class UserGroupServiceImpl implements UserGroupService {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Unable to complete the request. Please try again.", false));
             }
 
+            List<Long> beforeUserIds = rolePermissionMapper.findUserIdsByRoleId(role.getId());
             replaceRoleUsers(role.getId(), request.getUserIds());
             replaceRolePermissions(
                     role.getId(),
                     resolveRequestedModuleDetailIds(request.getModuleDetailIds(), request.getModuleTypeList()),
                     actorUserId
             );
-            bumpRoleUsersPermissionVersion(role.getId());
+            Set<Long> impactedUserIds = new LinkedHashSet<>();
+            if (beforeUserIds != null) {
+                impactedUserIds.addAll(beforeUserIds);
+            }
+            List<Long> afterUserIds = rolePermissionMapper.findUserIdsByRoleId(role.getId());
+            if (afterUserIds != null) {
+                impactedUserIds.addAll(afterUserIds);
+            }
+            bumpPermissionVersion(new ArrayList<>(impactedUserIds));
 
             LocalTime endDuration = LocalTime.now();
             activityLogService.insert(ApiConstants.UserGroup.BASE_PATH + ApiConstants.UserGroup.UPDATE_PATH, null, null, "User Group", "User Group (Update)", "Edit", 1, "Success", startDuration, endDuration, httpServletRequest);
@@ -432,6 +454,7 @@ public class UserGroupServiceImpl implements UserGroupService {
             }
             rolePermissionMapper.bumpPermissionVersion(userId);
         }
+        permissionCacheService.invalidateByUsers(userIds);
     }
 
     private List<UserGroupUserResponse> mapUsers(List<RoleUser> users) {

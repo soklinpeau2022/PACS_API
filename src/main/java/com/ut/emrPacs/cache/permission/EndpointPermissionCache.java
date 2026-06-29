@@ -73,6 +73,39 @@ public class EndpointPermissionCache {
         return found;
     }
 
+    public List<EndpointPermissionRule> resolveRules(String method, String normalizedPath) {
+        if (method == null || normalizedPath == null) {
+            return List.of();
+        }
+
+        String methodUpper = method.toUpperCase();
+        if (HttpMethod.OPTIONS.matches(methodUpper)) {
+            return List.of();
+        }
+
+        List<EndpointPermissionRule> matches = new ArrayList<>();
+        int bestSpecificity = -1;
+        List<EndpointPermissionRule> rules = getAllRules();
+        for (EndpointPermissionRule rule : rules) {
+            if (rule == null) continue;
+            if (!methodUpper.equalsIgnoreCase(rule.getHttpMethod())) continue;
+            if (rule.getEndpointPattern() == null) continue;
+
+            String pattern = normalizePattern(rule.getEndpointPattern());
+            if (matcher.match(pattern, normalizedPath)) {
+                int specificity = specificityScore(rule.getEndpointPattern());
+                if (specificity > bestSpecificity) {
+                    matches.clear();
+                    bestSpecificity = specificity;
+                }
+                if (specificity == bestSpecificity) {
+                    matches.add(rule);
+                }
+            }
+        }
+        return matches.isEmpty() ? List.of() : Collections.unmodifiableList(matches);
+    }
+
     public void clear() {
         cache.invalidateAll();
         synchronized (rulesLock) {
@@ -115,6 +148,13 @@ public class EndpointPermissionCache {
             p = p.substring(0, p.length() - 1) + "**";
         }
         return p;
+    }
+
+    private static int specificityScore(String pattern) {
+        if (pattern == null) {
+            return 0;
+        }
+        return pattern.replace("*", "").length();
     }
 
     private static EndpointPermissionRule buildNoRule() {

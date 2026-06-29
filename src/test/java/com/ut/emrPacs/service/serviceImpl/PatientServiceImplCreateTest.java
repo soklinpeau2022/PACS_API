@@ -1,6 +1,7 @@
 package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.authentication.principal.CurrentUserPrincipal;
+import com.ut.emrPacs.cache.permission.PermissionCacheService;
 import com.ut.emrPacs.helper.FunctionCodeGenerate;
 import com.ut.emrPacs.helper.security.PublicEntityKeyResolver;
 import com.ut.emrPacs.mapper.hospital.HospitalMapper;
@@ -24,13 +25,17 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -45,6 +50,8 @@ class PatientServiceImplCreateTest {
     private ActivityLogService activityLogService;
     @Mock
     private PublicEntityKeyResolver publicEntityKeyResolver;
+    @Mock
+    private PermissionCacheService permissionCacheService;
 
     private PatientServiceImpl patientService;
 
@@ -56,6 +63,7 @@ class PatientServiceImplCreateTest {
         ReflectionTestUtils.setField(patientService, "messageService", new MessageService());
         ReflectionTestUtils.setField(patientService, "activityLogService", activityLogService);
         ReflectionTestUtils.setField(patientService, "publicEntityKeyResolver", publicEntityKeyResolver);
+        ReflectionTestUtils.setField(patientService, "permissionCacheService", permissionCacheService);
 
         lenient().when(publicEntityKeyResolver.resolve(any(PublicEntityKeyResolver.Entity.class), any(), any()))
                 .thenAnswer(invocation -> invocation.getArgument(2));
@@ -72,7 +80,25 @@ class PatientServiceImplCreateTest {
     }
 
     @Test
+    void createShouldRejectWorklistHandoffWithoutShortcutPermission() throws Exception {
+        when(permissionCacheService.getPermissionCodes(99L, 11L, 1L))
+                .thenReturn(Set.of("pacs.patient.create", "pacs.worklist.assign"));
+
+        PatientCreateRequest request = new PatientCreateRequest();
+        request.setFirstName("Soklin");
+        request.setCreateWorklistIntent(true);
+
+        ResponseMessage<BaseResult> response = patientService.create(request, null);
+
+        assertFalse(response.isSuccess());
+        verify(patientMapper, never()).create(anyLong(), any(PatientCreateRequest.class));
+    }
+
+    @Test
     void createShouldReturnCreatedPatientForWorklistHandoff() throws Exception {
+        when(permissionCacheService.getPermissionCodes(99L, 11L, 1L))
+                .thenReturn(Set.of("pacs.patient.create_worklist"));
+
         String patientCode = FunctionCodeGenerate.buildPatientCode(
                 FunctionCodeGenerate.currentPatientYearPrefix(),
                 "KSFH",
@@ -106,6 +132,7 @@ class PatientServiceImplCreateTest {
         request.setLastName(" ");
         request.setPhoneNumber(" 012345678 ");
         request.setGender(" F ");
+        request.setCreateWorklistIntent(true);
 
         ResponseMessage<BaseResult> response = patientService.create(request, null);
 

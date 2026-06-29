@@ -30,4 +30,5 @@ public class PatientCreateRequest {
     private String gender;
     @JsonDeserialize(using = FlexibleLocalDateDeserializer.class)
     private LocalDate dateOfBirth;
+    private Boolean createWorklistIntent;
 }

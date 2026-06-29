@@ -1,6 +1,7 @@
 package com.ut.emrPacs.support;
 
 import com.ut.emrPacs.controller.AuthController;
+import com.ut.emrPacs.controller.ApplicationSettingsController;
 import com.ut.emrPacs.controller.DashboardController;
 import com.ut.emrPacs.controller.DicomChunkUploadController;
 import com.ut.emrPacs.controller.DicomMachineController;
@@ -55,6 +56,7 @@ public final class EndpointTestCatalog {
     private static final Pattern PATH_VAR_ANY_REGEX = Pattern.compile("\\{([^}]+)}");
 
     public static final List<Class<?>> CONTROLLER_CLASSES = List.of(
+            ApplicationSettingsController.class,
             AuthController.class,
             DashboardController.class,
             DicomChunkUploadController.class,

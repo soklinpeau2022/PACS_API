@@ -5,6 +5,7 @@ import com.ut.emrPacs.model.role.Role;
 import com.ut.emrPacs.model.role.RoleUser;
 import com.ut.emrPacs.model.base.filter.RoleListFilter;
 import com.ut.emrPacs.model.dto.response.authentication.role.RoleResponse;
+import com.ut.emrPacs.model.dto.response.authentication.role.UserGroupSummaryResponse;
 import com.ut.emrPacs.model.users.UserList;
 import org.apache.ibatis.annotations.Mapper;
 
@@ -69,6 +70,13 @@ public interface RoleMapper {
                          @Param("isSuperAdmin") boolean isSuperAdmin,
                          @Param("groupType") String groupType,
                          @Param("includeScopeGroup") boolean includeScopeGroup);
+
+    /**
+     * MyBatis statement id: {@code summarizeUserGroups}.
+     */
+    UserGroupSummaryResponse summarizeUserGroups(@Param("filter") RoleListFilter filter,
+                                                 @Param("visibleHospitalId") Long visibleHospitalId,
+                                                 @Param("includeScopeGroup") boolean includeScopeGroup);
 
     /**
      * MyBatis statement id: {@code checkDuplicate}.

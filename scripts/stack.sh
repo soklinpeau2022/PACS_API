@@ -1045,42 +1045,32 @@ start_api_container() {
   local key_path
   local image_path
   local image_container_path
+  local dicom_upload_container_path
+  local dicom_upload_temp_path
   local dicom_upload_mount
   local base_image_archive_host_path
   local base_image_archive_container_path
+  local brand_asset_root
   local port_spec
 
   remove_container_if_exists "$name"
 
   key_path="$(resolve_host_path "$(env_value KEY_PATH)" "./src/main/resources/key")"
   image_path="$(resolve_host_path "$(env_value HOSPITAL_IMAGE_HOST_PATH)" "./runtime-image")"
-  image_container_path="$(env_value_or_default HOSPITAL_IMAGE_ROOT_PATH /var/ut-image)"
+  image_container_path="$(env_value_or_default HOSPITAL_IMAGE_ROOT_PATH /home/Images)"
+  dicom_upload_container_path="$(env_value_or_default PACS_DICOM_UPLOAD_TEMP_DIR "${image_container_path}/tmp/dicom-upload")"
   mkdir -p "$image_path"
   if command -v chown >/dev/null 2>&1; then
     chown -R 10001:10001 "$image_path" 2>/dev/null || true
   fi
   chmod -R u+rwX "$image_path" 2>/dev/null || true
-  if [[ "$TARGET" == "local" ]]; then
-    local compose_project upload_volume
-    compose_project="$(env_value_or_default API_COMPOSE_PROJECT_NAME udaya_pacs_api)"
-    upload_volume="${compose_project}_udaya_pacs_local_dicom_upload_temp"
-    docker_cmd volume create "$upload_volume" >/dev/null
-    docker_cmd run --rm --user 0 \
-      -v "${upload_volume}:/var/ut-dicom-upload-temp" \
-      --entrypoint sh \
-      "$image_override" \
-      -c "chown -R 10001:10001 /var/ut-dicom-upload-temp" >/dev/null
-    dicom_upload_mount="${upload_volume}:/var/ut-dicom-upload-temp"
-  else
-    local dicom_upload_temp_path
-    dicom_upload_temp_path="$(resolve_host_path "$(env_value PACS_DICOM_UPLOAD_TEMP_HOST_PATH)" "../runtime-dicom-upload-temp")"
-    mkdir -p "$dicom_upload_temp_path"
-    if command -v chown >/dev/null 2>&1; then
-      chown -R 10001:10001 "$dicom_upload_temp_path" 2>/dev/null || true
-    fi
-    chmod -R u+rwX "$dicom_upload_temp_path" 2>/dev/null || true
-    dicom_upload_mount="${dicom_upload_temp_path}:/var/ut-dicom-upload-temp"
+  dicom_upload_temp_path="$(resolve_host_path "$(env_value PACS_DICOM_UPLOAD_TEMP_HOST_PATH)" "${image_path}/tmp/dicom-upload")"
+  mkdir -p "$dicom_upload_temp_path"
+  if command -v chown >/dev/null 2>&1; then
+    chown -R 10001:10001 "$dicom_upload_temp_path" 2>/dev/null || true
   fi
+  chmod -R u+rwX "$dicom_upload_temp_path" 2>/dev/null || true
+  dicom_upload_mount="${dicom_upload_temp_path}:${dicom_upload_container_path}"
   ensure_docker_network "$redis_network_name"
   if [[ "$public_bind" == "true" ]]; then
     port_spec="${api_bind_host}:${host_port}:8080"
@@ -1089,6 +1079,7 @@ start_api_container() {
   fi
   base_image_archive_host_path="$(resolve_host_path "$(env_value PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_HOST_PATH)" "./dicom-server-images/dicom_server_base.tar")"
   base_image_archive_container_path="$(env_value_or_default PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_CONTAINER_PATH /app/dicom-server-images/dicom_server_base.tar)"
+  brand_asset_root="$(env_value_or_default PACS_APPLICATION_BRAND_ASSET_ROOT "${image_container_path}/application-brand")"
 
   local env_pairs=(
     "SPRING_PROFILES_ACTIVE=$TARGET"
@@ -1112,8 +1103,9 @@ start_api_container() {
     "SECURITY_JWT_PUBLIC_KEY=$(env_value SECURITY_JWT_PUBLIC_KEY)"
     "SECURITY_JWT_KEY_ID=$(env_value SECURITY_JWT_KEY_ID)"
     "HOSPITAL_IMAGE_ROOT_PATH=$(env_value HOSPITAL_IMAGE_ROOT_PATH)"
-    "PACS_DICOM_UPLOAD_TEMP_DIR=$(env_value_or_default PACS_DICOM_UPLOAD_TEMP_DIR /var/ut-dicom-upload-temp)"
-    "SPRING_SERVLET_MULTIPART_LOCATION=$(env_value_or_default SPRING_SERVLET_MULTIPART_LOCATION /var/ut-dicom-upload-temp)"
+    "PACS_APPLICATION_BRAND_ASSET_ROOT=$brand_asset_root"
+    "PACS_DICOM_UPLOAD_TEMP_DIR=$dicom_upload_container_path"
+    "SPRING_SERVLET_MULTIPART_LOCATION=$(env_value_or_default SPRING_SERVLET_MULTIPART_LOCATION "$dicom_upload_container_path")"
     "PACS_DICOM_UPLOAD_INSTANCE_PARALLELISM=$(env_value_or_default PACS_DICOM_UPLOAD_INSTANCE_PARALLELISM 24)"
     "PACS_DICOM_UPLOAD_MAX_CONCURRENT_PROCESSING_JOBS=$(env_value_or_default PACS_DICOM_UPLOAD_MAX_CONCURRENT_PROCESSING_JOBS 1)"
     "PACS_DICOM_UPLOAD_INSTANCE_MAX_ATTEMPTS=$(env_value_or_default PACS_DICOM_UPLOAD_INSTANCE_MAX_ATTEMPTS 8)"
@@ -1124,11 +1116,12 @@ start_api_container() {
     "DICOM_SERVER_HEALTH_OFFLINE_GRACE_MS=$(env_value_or_default DICOM_SERVER_HEALTH_OFFLINE_GRACE_MS 180000)"
     "PACS_RESULT_STATIC_AUTH_ENABLED=$(env_value PACS_RESULT_STATIC_AUTH_ENABLED)"
     "PACS_RESULT_API_KEY=$(env_value PACS_RESULT_API_KEY)"
-    "PACS_RESULT_UPLOAD_ROOT=$(env_value_or_default PACS_RESULT_UPLOAD_ROOT /var/ut-image)"
+    "PACS_RESULT_UPLOAD_ROOT=$(env_value_or_default PACS_RESULT_UPLOAD_ROOT /home/Images)"
     "PACS_RESULT_MAX_IMAGE_BYTES=$(env_value_or_default PACS_RESULT_MAX_IMAGE_BYTES 10485760)"
     "PACS_DICOM_SERVER_PACKAGE_INCLUDE_BASE_IMAGE=$(env_value_or_default PACS_DICOM_SERVER_PACKAGE_INCLUDE_BASE_IMAGE false)"
     "PACS_DICOM_SERVER_PACKAGE_BASE_IMAGE_ARCHIVE_PATH=$(env_value_or_default PACS_DICOM_SERVER_PACKAGE_BASE_IMAGE_ARCHIVE_PATH "$base_image_archive_container_path")"
     "PACS_DICOM_SERVER_PACKAGE_MAX_EMBEDDED_BASE_IMAGE_BYTES=$(env_value_or_default PACS_DICOM_SERVER_PACKAGE_MAX_EMBEDDED_BASE_IMAGE_BYTES 67108864)"
+    "PACS_DICOM_SERVER_PACKAGE_DOWNLOAD_TEMP_DIR=$(env_value_or_default PACS_DICOM_SERVER_PACKAGE_DOWNLOAD_TEMP_DIR /home/Images/tmp/dicom-routing-downloads)"
     "SPRING_MAIL_USERNAME=$(target_env_value SPRING_MAIL_USERNAME)"
     "SPRING_MAIL_PASSWORD=$(target_env_value SPRING_MAIL_PASSWORD)"
     "API_AUTH_URL=$(target_env_value API_AUTH_URL API_AUTH_URL)"

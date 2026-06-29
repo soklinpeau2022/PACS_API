@@ -11,6 +11,7 @@ import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomChunkUploadInitRe
 import com.ut.emrPacs.model.dto.response.pacs.dicomUpload.DicomChunkUploadProgressResponse;
 import com.ut.emrPacs.service.service.DicomChunkUploadService;
 import com.ut.emrPacs.service.service.DicomUploadProgressListener;
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -56,6 +57,8 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
     private static final String STATE_PROCESSING = "PROCESSING";
     private static final String STATE_COMPLETED = "COMPLETED";
     private static final String STATE_FAILED = "FAILED";
+    private static final String STAGED_ZIP_ENTRY_PREFIX = "dicom-zip-entry-";
+    private static final String STAGED_DICOM_SUFFIX = ".dcm";
 
     private final ConcurrentMap<String, ChunkUploadSession> sessions = new ConcurrentHashMap<>();
 
@@ -78,6 +81,11 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
     private int maxConcurrentProcessingJobs;
 
     private volatile ExecutorService processingExecutor;
+
+    @PostConstruct
+    void cleanupStaleUploadFilesOnStartup() {
+        cleanupStaleSessions();
+    }
 
     @Override
     public ResponseMessage<BaseResult> init(DicomChunkUploadInitRequest request, HttpServletRequest httpServletRequest) {
@@ -295,7 +303,10 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
         }
     }
 
-    @Scheduled(fixedDelayString = "${pacs.dicom-upload.chunk-cleanup-delay-ms:300000}")
+    @Scheduled(
+            initialDelayString = "${pacs.dicom-upload.chunk-cleanup-initial-delay-ms:60000}",
+            fixedDelayString = "${pacs.dicom-upload.chunk-cleanup-delay-ms:300000}"
+    )
     public void cleanupStaleSessions() {
         Instant cutoff = Instant.now().minus(sessionTtl());
         sessions.forEach((uploadId, session) -> {
@@ -308,6 +319,7 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
             }
         });
         cleanupOrphanChunkFiles(cutoff);
+        cleanupOrphanStagedZipEntries(cutoff);
     }
 
     private void cleanupOrphanChunkFiles(Instant cutoff) {
@@ -329,6 +341,28 @@ public class DicomChunkUploadServiceImpl implements DicomChunkUploadService {
         } catch (IOException error) {
             LOGGER.warn("Unable to clean orphaned DICOM chunk files: {}", error.toString());
         }
+    }
+
+    private void cleanupOrphanStagedZipEntries(Instant cutoff) {
+        try {
+            Path tempDir = dicomUploadService.resolveUploadTempDir().normalize();
+            if (!Files.isDirectory(tempDir)) {
+                return;
+            }
+            try (var files = Files.list(tempDir)) {
+                files.filter(Files::isRegularFile)
+                        .filter(DicomChunkUploadServiceImpl::isStagedZipEntryFile)
+                        .filter(path -> isOlderThan(path, cutoff))
+                        .forEach(DicomChunkUploadServiceImpl::deleteQuietly);
+            }
+        } catch (IOException error) {
+            LOGGER.warn("Unable to clean staged DICOM upload files: {}", error.toString());
+        }
+    }
+
+    private static boolean isStagedZipEntryFile(Path path) {
+        String fileName = path.getFileName() == null ? "" : path.getFileName().toString();
+        return fileName.startsWith(STAGED_ZIP_ENTRY_PREFIX) && fileName.endsWith(STAGED_DICOM_SUFFIX);
     }
 
     private static boolean isOlderThan(Path path, Instant cutoff) {

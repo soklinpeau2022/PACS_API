@@ -21,6 +21,22 @@ public final class ApiConstants {
         }
     }
 
+    public static final class ApplicationSettings {
+        public static final String BASE_PATH = "/application-settings";
+        public static final String BRAND_PUBLIC_GET_PATH = "/application-brand-settings-public";
+        public static final String BRAND_UPDATE_PATH = "/application-brand-settings-update";
+        public static final String BRAND_LOGO_UPLOAD_PATH = "/application-brand-logo-upload";
+        public static final String BRAND_BACKGROUND_UPLOAD_PATH = "/application-login-background-upload";
+        public static final String BRAND_ASSET_PATH = "/application-brand-asset/{filename:.+}";
+        public static final String BRAND_ASSET_PREFIX = "/application-brand-asset/";
+
+        public static final String BRAND_PUBLIC_GET_FULL_PATH = BASE_PATH + BRAND_PUBLIC_GET_PATH;
+        public static final String BRAND_ASSET_FULL_PREFIX = BASE_PATH + BRAND_ASSET_PREFIX;
+
+        private ApplicationSettings() {
+        }
+    }
+
     public static final class User {
         public static final String BASE_PATH = "/user";
         public static final String LIST_PATH = "/user-list";
@@ -85,6 +101,7 @@ public final class ApiConstants {
         public static final String BASE_PATH = "/role";
         public static final String LIST_PATH = "/role-list";
         public static final String USER_GROUP_LIST_PATH = "/user-group-list";
+        public static final String USER_GROUP_SUMMARY_PATH = "/user-group-summary";
         public static final String FIND_PATH = "/role-find/{id}";
         public static final String CREATE_PATH = "/role-add";
         public static final String UPDATE_PATH = "/role-update";
@@ -322,6 +339,8 @@ public final class ApiConstants {
     public static final class Notification {
         public static final String BASE_PATH = "/notification";
         public static final String LIST_PATH = "/notification-list";
+        public static final String MARK_READ_PATH = "/notification-read";
+        public static final String CLEAR_PATH = "/notification-clear";
         public static final String STREAM_PATH = "/notification-stream";
 
         private Notification() {

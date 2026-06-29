@@ -9,6 +9,7 @@ import com.ut.emrPacs.authentication.util.JwtTokenService;
 import com.ut.emrPacs.authentication.util.PublicViewerAttemptGuard;
 import com.ut.emrPacs.authentication.util.ViewerAccessKeyService;
 import com.ut.emrPacs.authentication.util.ViewerAccessKeyService.ViewerAccessClaims;
+import com.ut.emrPacs.cache.permission.PermissionCacheService;
 import com.ut.emrPacs.config.ApiConstants;
 import com.ut.emrPacs.config.DicomTagConstants;
 import com.ut.emrPacs.config.WorklistConstants;
@@ -164,6 +165,8 @@ public class WorklistServiceImpl implements WorklistService {
     private static final String DEFAULT_VIEWER_STATE_TYPE = "OHIF_VIEWER_STATE";
     private static final String RESULT_STATUS_FINAL = "FINAL";
     private static final String LEGACY_RESULT_STATUS_COMPLETED = "COMPLETED";
+    private static final String WORKLIST_ASSIGN_PERMISSION = "pacs.worklist.assign";
+    private static final String PATIENT_CREATE_WORKLIST_PERMISSION = "pacs.patient.create_worklist";
     private static final Duration VIEWER_PROXY_TARGET_CACHE_TTL = Duration.ofMinutes(2);
     private static final long VIEWER_PROXY_TARGET_CACHE_MAX_ENTRIES = 20_000L;
 
@@ -203,6 +206,8 @@ public class WorklistServiceImpl implements WorklistService {
     private PublicEntityKeyResolver publicEntityKeyResolver;
     @Autowired
     private PublicViewerAttemptGuard publicViewerAttemptGuard;
+    @Autowired
+    private PermissionCacheService permissionCacheService;
     @Autowired(required = false)
     private RealtimeNotificationService realtimeNotificationService;
 
@@ -266,6 +271,9 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             }
             if (request == null || request.getPatientId() == null || request.getModalityId() == null) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("patientId and modalityId are required.", false));
+            }
+            if (!canAssignWorklistFromCurrentPermissions()) {
+                return ResponseMessageUtils.makeResponse(false, 403, "FORBIDDEN", "Forbidden");
             }
 
             Long requestedHospitalId = publicEntityKeyResolver.resolve(Entity.HOSPITAL, request.getHospitalKey(), request.getHospitalId());
@@ -5513,6 +5521,23 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
                 && !hasText(filter.getAccessionNumber())
                 && filter.getDateFrom() == null
                 && filter.getDateTo() == null;
+    }
+
+    private boolean canAssignWorklistFromCurrentPermissions() {
+        if (isAdminUser()) {
+            return true;
+        }
+        var principal = UserAuthSession.getCurrentUser();
+        if (principal == null || principal.userId() == null || principal.hospitalId() == null) {
+            return false;
+        }
+        Set<String> permissionCodes = permissionCacheService.getPermissionCodes(
+                principal.userId(),
+                principal.hospitalId(),
+                principal.permissionVersion()
+        );
+        return permissionCodes.contains(WORKLIST_ASSIGN_PERMISSION)
+                || permissionCodes.contains(PATIENT_CREATE_WORKLIST_PERMISSION);
     }
 
     private static Long currentHospitalId() {

@@ -6,6 +6,7 @@ import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import com.ut.emrPacs.model.base.filter.NotificationFilter;
+import com.ut.emrPacs.model.dto.request.notification.NotificationActionRequest;
 import com.ut.emrPacs.service.service.NotificationService;
 import com.ut.emrPacs.service.service.RealtimeNotificationService;
 import io.micrometer.core.annotation.Timed;
@@ -51,6 +52,32 @@ public class NotificationController {
             return ResponseMessageUtils.makeResponse(false, 401, "Unauthorized", "You must be logged in");
         }
         return notificationService.listNotifications(filter, request);
+    }
+
+    @PostMapping(ApiConstants.Notification.MARK_READ_PATH)
+    @Operation(
+            summary = "Mark notifications read",
+            description = "Mark explicit notification IDs as read for the logged-in user and hospital. Endpoint -> POST /notification/notification-read."
+    )
+    public ResponseMessage<BaseResult> markRead(@Valid @RequestBody(required = false) NotificationActionRequest actionRequest,
+                                                HttpServletRequest request) {
+        if (UserAuthSession.getCurrentUser() == null) {
+            return ResponseMessageUtils.makeResponse(false, 401, "Unauthorized", "You must be logged in");
+        }
+        return notificationService.markNotificationsRead(actionRequest, request);
+    }
+
+    @PostMapping(ApiConstants.Notification.CLEAR_PATH)
+    @Operation(
+            summary = "Clear notifications",
+            description = "Clear explicit notification IDs for the logged-in user and hospital. Endpoint -> POST /notification/notification-clear."
+    )
+    public ResponseMessage<BaseResult> clear(@Valid @RequestBody(required = false) NotificationActionRequest actionRequest,
+                                             HttpServletRequest request) {
+        if (UserAuthSession.getCurrentUser() == null) {
+            return ResponseMessageUtils.makeResponse(false, 401, "Unauthorized", "You must be logged in");
+        }
+        return notificationService.clearNotifications(actionRequest, request);
     }
 
     @GetMapping(value = ApiConstants.Notification.STREAM_PATH, produces = MediaType.TEXT_EVENT_STREAM_VALUE)

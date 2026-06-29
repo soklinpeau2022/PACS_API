@@ -81,6 +81,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -162,6 +163,9 @@ public class DicomServerServiceImpl implements DicomServerService {
 
     @Value("${pacs.dicom-server.package.max-embedded-base-image-bytes:67108864}")
     private long maxEmbeddedDicomServerBaseImageBytes = 67_108_864L;
+
+    @Value("${pacs.dicom-server.package.download-temp-dir:/home/Images/tmp/dicom-routing-downloads}")
+    private String dicomServerPackageDownloadTempDir;
 
     @Override
     public ResponseMessage<BaseResult> listDicomServers(DicomServerFilter filter, HttpServletRequest httpServletRequest) throws UnknownHostException {
@@ -986,6 +990,7 @@ public class DicomServerServiceImpl implements DicomServerService {
     @Transactional
     public ResponseEntity<StreamingResponseBody> downloadRoutingDicomServerConfigZip(Long id, HttpServletRequest httpServletRequest) throws UnknownHostException {
         LocalTime startDuration = LocalTime.now();
+        Path tempZipPath = null;
         try {
             DicomServerPackageBuild packageBuild = buildRoutingDicomServerPackage(id);
             lockRoutingConfigPackageBuilt(packageBuild.routeConfig());
@@ -994,14 +999,31 @@ public class DicomServerServiceImpl implements DicomServerService {
                     ? requireReadableDicomServerBaseImageArchivePath()
                     : null;
             String zipFileName = buildDicomServerPackageDownloadFileName(packageBuild);
-            StreamingResponseBody body = outputStream -> writeDicomServerProjectZip(packageBuild.responses(), outputStream, baseImageArchivePath);
+            tempZipPath = createDicomServerPackageTempZipPath();
+            try (OutputStream tempOutputStream = Files.newOutputStream(tempZipPath)) {
+                writeDicomServerProjectZip(packageBuild.responses(), tempOutputStream, baseImageArchivePath);
+            }
+            long contentLength = Files.size(tempZipPath);
+            Path responseZipPath = tempZipPath;
+            StreamingResponseBody body = outputStream -> {
+                try (InputStream inputStream = Files.newInputStream(responseZipPath)) {
+                    inputStream.transferTo(outputStream);
+                    outputStream.flush();
+                } finally {
+                    deleteQuietly(responseZipPath);
+                }
+            };
+            tempZipPath = null;
             LocalTime endDuration = LocalTime.now();
             activityLogService.insert(ApiConstants.DicomRouting.BASE_PATH + ApiConstants.DicomRouting.BUILD_CONFIG_DOWNLOAD_PATH, null, null, "DicomRouting", "DICOM Routing (Download Config)", "View", 1, "Success", startDuration, endDuration, httpServletRequest);
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + zipFileName + "\"")
+                    .header(HttpHeaders.CACHE_CONTROL, "no-store")
                     .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .contentLength(contentLength)
                     .body(body);
         } catch (IllegalArgumentException | IllegalStateException validationError) {
+            deleteQuietly(tempZipPath);
             LocalTime endDuration = LocalTime.now();
             Long errorLine = (validationError.getStackTrace() != null && validationError.getStackTrace().length > 0) ? (long) validationError.getStackTrace()[0].getLineNumber() : null;
             activityLogService.insert(ApiConstants.DicomRouting.BASE_PATH + ApiConstants.DicomRouting.BUILD_CONFIG_DOWNLOAD_PATH, errorLine, validationError.toString(), "DicomRouting", "DICOM Routing (Download Config)", "View", 2, "Error", startDuration, endDuration, httpServletRequest);
@@ -1009,6 +1031,7 @@ public class DicomServerServiceImpl implements DicomServerService {
                     .contentType(MediaType.TEXT_PLAIN)
                     .body(textResponseBody(validationError.getMessage()));
         } catch (Exception error) {
+            deleteQuietly(tempZipPath);
             LocalTime endDuration = LocalTime.now();
             Long errorLine = (error.getStackTrace() != null && error.getStackTrace().length > 0) ? (long) error.getStackTrace()[0].getLineNumber() : null;
             activityLogService.insert(ApiConstants.DicomRouting.BASE_PATH + ApiConstants.DicomRouting.BUILD_CONFIG_DOWNLOAD_PATH, errorLine, error.toString(), "DicomRouting", "DICOM Routing (Download Config)", "View", 2, "Error", startDuration, endDuration, httpServletRequest);
@@ -1016,6 +1039,24 @@ public class DicomServerServiceImpl implements DicomServerService {
             return ResponseEntity.internalServerError()
                     .contentType(MediaType.TEXT_PLAIN)
                     .body(textResponseBody("Unable to stream UDAYA_DICOM_SERVER deployment package."));
+        }
+    }
+
+    private Path createDicomServerPackageTempZipPath() throws IOException {
+        String configuredDir = trimToNull(dicomServerPackageDownloadTempDir);
+        Path tempDirectory = Paths.get(configuredDir == null ? "/home/Images/tmp/dicom-routing-downloads" : configuredDir);
+        Files.createDirectories(tempDirectory);
+        return Files.createTempFile(tempDirectory, "dicom-routing-package-", ".zip");
+    }
+
+    private void deleteQuietly(Path path) {
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException cleanupError) {
+            LOGGER.warn("Unable to delete temporary DICOM routing package {}.", path, cleanupError);
         }
     }
 
@@ -2085,7 +2126,7 @@ public class DicomServerServiceImpl implements DicomServerService {
         if (requiredArchivePath == null) {
             return;
         }
-        addZipFile(zip, name, requiredArchivePath);
+        addStoredZipFile(zip, name, requiredArchivePath);
     }
 
     private void addZipFile(ZipOutputStream zip, String name, Path filePath) throws IOException {
@@ -2095,6 +2136,34 @@ public class DicomServerServiceImpl implements DicomServerService {
             inputStream.transferTo(zip);
         }
         zip.closeEntry();
+    }
+
+    private void addStoredZipFile(ZipOutputStream zip, String name, Path filePath) throws IOException {
+        long size = Files.size(filePath);
+        ZipEntry entry = new ZipEntry(name);
+        entry.setMethod(ZipEntry.STORED);
+        entry.setSize(size);
+        entry.setCompressedSize(size);
+        entry.setCrc(computeCrc32(filePath));
+        zip.putNextEntry(entry);
+        try (InputStream inputStream = Files.newInputStream(filePath)) {
+            inputStream.transferTo(zip);
+        }
+        zip.closeEntry();
+    }
+
+    private long computeCrc32(Path filePath) throws IOException {
+        CRC32 crc32 = new CRC32();
+        byte[] buffer = new byte[1024 * 1024];
+        try (InputStream inputStream = Files.newInputStream(filePath)) {
+            int read;
+            while ((read = inputStream.read(buffer)) >= 0) {
+                if (read > 0) {
+                    crc32.update(buffer, 0, read);
+                }
+            }
+        }
+        return crc32.getValue();
     }
 
     private Path requireReadableDicomServerBaseImageArchivePath() {

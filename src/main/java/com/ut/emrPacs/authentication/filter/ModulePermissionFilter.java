@@ -35,6 +35,8 @@ public class ModulePermissionFilter extends OncePerRequestFilter {
 
     private static final Set<String> ALWAYS_SKIP_PREFIXES = Set.of(
             "/auth/",
+            ApiConstants.ApplicationSettings.BRAND_PUBLIC_GET_FULL_PATH,
+            ApiConstants.ApplicationSettings.BRAND_ASSET_FULL_PREFIX,
             "/actuator/",
             "/swagger-ui",
             "/api-docs",
@@ -52,7 +54,7 @@ public class ModulePermissionFilter extends OncePerRequestFilter {
     @Value("${app.security.permissions.skip-paths:" + ApiConstants.Role.MENU_FULL_PATH + "," + ApiConstants.User.ME_FULL_PATH + ",/role/role-menu,/user/me,/user-profile/**}")
     private String skipPathsCsv;
 
-    @Value("${app.security.admin.authorities:ROLE_ADMIN,ROLE_SUPER_ADMIN}")
+    @Value("${app.security.admin.authorities:ROLE_SUPER_ADMIN,ROLE_SYSTEM_ADMIN}")
     private String adminAuthoritiesCsv;
 
     @Value("${app.security.permissions.client-allow-paths:" + ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH + "}")
@@ -105,8 +107,8 @@ public class ModulePermissionFilter extends OncePerRequestFilter {
             return;
         }
 
-        EndpointPermissionRule endpointRule = endpointPermissionCache.resolveRule(request.getMethod(), path);
-        if (endpointRule == null) {
+        List<EndpointPermissionRule> endpointRules = endpointPermissionCache.resolveRules(request.getMethod(), path);
+        if (endpointRules.isEmpty()) {
             if (denyWhenUnknown) {
                 writeForbidden(response, "Forbidden");
                 return;
@@ -115,8 +117,10 @@ public class ModulePermissionFilter extends OncePerRequestFilter {
             return;
         }
 
-        String requiredScope = endpointRule.getRequiredScope();
-        if (requiredScope != null && !requiredScope.isBlank() && !hasScopeAuthority(auth, requiredScope)) {
+        List<EndpointPermissionRule> scopedRules = endpointRules.stream()
+                .filter(rule -> hasRequiredScope(auth, rule))
+                .toList();
+        if (scopedRules.isEmpty()) {
             writeForbidden(response, "Forbidden");
             return;
         }
@@ -141,24 +145,29 @@ public class ModulePermissionFilter extends OncePerRequestFilter {
             return;
         }
 
-        String permissionCode = endpointRule.getPermissionCode();
-        if (permissionCode == null || permissionCode.isBlank()) {
-            filterChain.doFilter(request, response);
-            return;
-        }
-
         Set<String> permissionCodes = permissionCacheService.getPermissionCodes(
                 principal.userId,
                 principal.hospitalId,
                 principal.permissionVersion
         );
 
-        if (permissionCodes.contains(permissionCode)) {
-            filterChain.doFilter(request, response);
-            return;
+        for (EndpointPermissionRule endpointRule : scopedRules) {
+            String permissionCode = endpointRule.getPermissionCode();
+            if (permissionCode == null || permissionCode.isBlank() || permissionCodes.contains(permissionCode)) {
+                filterChain.doFilter(request, response);
+                return;
+            }
         }
 
         writeForbidden(response, "Forbidden");
+    }
+
+    private static boolean hasRequiredScope(Authentication auth, EndpointPermissionRule rule) {
+        if (rule == null) {
+            return false;
+        }
+        String requiredScope = rule.getRequiredScope();
+        return requiredScope == null || requiredScope.isBlank() || hasScopeAuthority(auth, requiredScope);
     }
 
     private boolean shouldSkipPath(String path) {
