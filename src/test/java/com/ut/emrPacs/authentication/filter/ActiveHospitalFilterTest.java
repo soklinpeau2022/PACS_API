@@ -86,6 +86,29 @@ class ActiveHospitalFilterTest {
     }
 
     @Test
+    void shouldSkipPrefixedAuthPathEvenWhenJwtHasNoHospital() throws Exception {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "RS256")
+                .subject("100")
+                .claim("principalType", "USER")
+                .build();
+        JwtAuthenticationToken authenticationToken = new JwtAuthenticationToken(jwt);
+        authenticationToken.setAuthenticated(true);
+        SecurityContextHolder.getContext().setAuthentication(authenticationToken);
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setMethod("POST");
+        request.setRequestURI("/pacsApi/auth/auth-login");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain).doFilter(request, response);
+        verify(hospitalSecurityMapper, never()).countActiveHospitalById(Mockito.anyLong());
+        assertEquals(200, response.getStatus());
+    }
+
+    @Test
     void shouldAllowClientCallbackWithoutHospitalClaim() throws Exception {
         Jwt jwt = Jwt.withTokenValue("token")
                 .header("alg", "RS256")

@@ -4,12 +4,16 @@ import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 
+import java.time.LocalDate;
+
 @Data
 public class DashboardOverviewRequest {
     @JsonIgnore
     private Long hospitalId;
     @JsonAlias({"hospitalPublicKey", "hospitalUuid", "hospitalUUID"})
     private String hospitalKey;
+    private LocalDate dateFrom;
+    private LocalDate dateTo;
     private Integer snapshotLimit;
     private Integer waitingThresholdMinutes;
     /**

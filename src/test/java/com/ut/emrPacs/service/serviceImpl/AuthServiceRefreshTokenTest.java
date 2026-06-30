@@ -17,6 +17,7 @@ import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.dto.request.authentication.token.RefreshTokenRequest;
 import com.ut.emrPacs.model.dto.response.authentication.token.AccessTokenResponse;
 import com.ut.emrPacs.model.users.User;
+import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -34,6 +35,7 @@ import java.util.Collections;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -91,9 +93,12 @@ class AuthServiceRefreshTokenTest {
         ReflectionTestUtils.setField(authService, "passwordEncoder", passwordEncoder);
 
         ReflectionTestUtils.setField(authService, "refreshTokenExpirationMs", 2_592_000_000L);
-        ReflectionTestUtils.setField(authService, "allowRefreshTokenInBody", true);
-        ReflectionTestUtils.setField(authService, "returnRefreshTokenInBody", true);
+        ReflectionTestUtils.setField(authService, "allowRefreshTokenInBody", false);
+        ReflectionTestUtils.setField(authService, "returnRefreshTokenInBody", false);
         ReflectionTestUtils.setField(authService, "returnAccessTokenInBody", true);
+        ReflectionTestUtils.setField(authService, "refreshTokenCookieName", "refreshToken");
+        ReflectionTestUtils.setField(authService, "refreshTokenCookieSameSite", "Lax");
+        ReflectionTestUtils.setField(authService, "refreshTokenCookieSecure", false);
     }
 
     @Test
@@ -105,33 +110,34 @@ class AuthServiceRefreshTokenTest {
 
         assertFalse(result.getHeader().getResult());
         assertEquals(401, result.getHeader().getStatusCode());
-        assertTrue(response.getHeaders("Set-Cookie").isEmpty());
+        assertTrue(response.getHeaders("Set-Cookie").stream().anyMatch(cookie -> cookie.contains("refreshToken=") && cookie.contains("Max-Age=0")));
     }
 
     @Test
     void refreshShouldReturnUnauthorizedWhenRefreshTokenInvalid() {
         MockHttpServletRequest request = new MockHttpServletRequest();
         MockHttpServletResponse response = new MockHttpServletResponse();
-        RefreshTokenRequest refreshTokenRequest = new RefreshTokenRequest();
-        refreshTokenRequest.setRefreshToken("invalid-token");
+        request.setCookies(new Cookie("refreshToken", "invalid-token"));
 
         when(refreshTokenCryptoService.decrypt("invalid-token")).thenReturn(null);
         when(refreshTokenService.validate("invalid-token")).thenReturn(null);
 
-        ResponseMessage<BaseResult> result = authService.refreshAccessToken(refreshTokenRequest, request, response);
+        ResponseMessage<BaseResult> result = authService.refreshAccessToken(null, request, response);
 
         assertFalse(result.getHeader().getResult());
         assertEquals(401, result.getHeader().getStatusCode());
+        assertTrue(response.getHeaders("Set-Cookie").stream().anyMatch(cookie -> cookie.contains("refreshToken=") && cookie.contains("Max-Age=0")));
     }
 
     @Test
-    void refreshShouldRotateRefreshTokenAndReturnBearerTokensInBody() {
+    void refreshShouldRotateRefreshTokenAndSetHttpOnlyCookie() {
         MockHttpServletRequest request = new MockHttpServletRequest();
         MockHttpServletResponse response = new MockHttpServletResponse();
+        request.setContextPath("/pacsApi");
+        request.setCookies(new Cookie("refreshToken", "old-refresh-token"));
 
         RefreshTokenRequest refreshTokenRequest = new RefreshTokenRequest();
         refreshTokenRequest.setClientId("web-client");
-        refreshTokenRequest.setRefreshToken("old-refresh-token");
 
         RefreshTokenRow refreshTokenRow = new RefreshTokenRow();
         refreshTokenRow.setId(77L);
@@ -164,6 +170,7 @@ class AuthServiceRefreshTokenTest {
                 .thenReturn(new AccessTokenResponse("Bearer", "new-access-token", null, 900L, "pacs.api"));
         when(refreshTokenService.issue(eq(10L), eq(20L), eq("web-client"), eq("PACS Web"), eq(77L), anyString(), anyString(), any()))
                 .thenReturn("rotated-refresh-token");
+        when(refreshTokenCryptoService.encrypt("rotated-refresh-token")).thenReturn("encrypted-rotated-refresh-token");
 
         ResponseMessage<BaseResult> result = authService.refreshAccessToken(refreshTokenRequest, request, response);
 
@@ -175,10 +182,19 @@ class AuthServiceRefreshTokenTest {
 
         AccessTokenResponse tokenResponse = (AccessTokenResponse) result.getBody().getData().get(0);
         assertEquals("new-access-token", tokenResponse.getAccessToken());
-        assertEquals("rotated-refresh-token", tokenResponse.getRefreshToken());
-        assertEquals(1_800L, tokenResponse.getRefreshExpiresIn());
+        assertNull(tokenResponse.getRefreshToken());
+        assertNull(tokenResponse.getRefreshExpiresIn());
 
         verify(refreshTokenService).revoke(77L, "ROTATED");
-        assertTrue(response.getHeaders("Set-Cookie").isEmpty());
+        String setCookie = response.getHeaders("Set-Cookie").stream()
+                .filter(cookie -> cookie.startsWith("refreshToken="))
+                .findFirst()
+                .orElse("");
+        assertTrue(setCookie.contains("encrypted-rotated-refresh-token"));
+        assertTrue(setCookie.contains("Path=/pacsApi"));
+        assertTrue(setCookie.contains("Max-Age=1800"));
+        assertTrue(setCookie.contains("HttpOnly"));
+        assertTrue(setCookie.contains("SameSite=Lax"));
+        assertFalse(setCookie.contains("Secure"));
     }
 }

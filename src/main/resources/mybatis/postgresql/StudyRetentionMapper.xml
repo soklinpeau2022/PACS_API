@@ -371,6 +371,15 @@
         </choose>
     </sql>
 
+    <sql id="RETENTION_EXPIRY_DATE_FILTER">
+        <if test="filter != null and filter.startDate != null and filter.startDate != ''">
+            AND CAST(expires_at_value AS DATE) &gt;= CAST(#{filter.startDate} AS DATE)
+        </if>
+        <if test="filter != null and filter.endDate != null and filter.endDate != ''">
+            AND CAST(expires_at_value AS DATE) &lt;= CAST(#{filter.endDate} AS DATE)
+        </if>
+    </sql>
+
     <sql id="RETENTION_REVIEW_COLUMNS">
         studyId,
         studyPublicKey,
@@ -536,6 +545,7 @@
         FROM retention_rows
         WHERE status != 'DELETED'
           AND status IN ('DELETE_FAILED', 'EXPIRED_WAITING_APPROVAL', 'AUTO_DELETE_READY', 'PENDING_APPROVAL', 'NEAR_EXPIRY')
+          <include refid="RETENTION_EXPIRY_DATE_FILTER"/>
         ORDER BY
             CASE status
                 WHEN 'DELETE_FAILED' THEN 0
@@ -565,6 +575,7 @@
             COALESCE(SUM(CASE WHEN status IN ('NEAR_EXPIRY', 'EXPIRED_WAITING_APPROVAL', 'AUTO_DELETE_READY', 'PENDING_APPROVAL', 'DELETE_FAILED') THEN 1 ELSE 0 END), 0)::BIGINT AS totalOpen
         FROM retention_rows
         WHERE status != 'DELETED'
+        <include refid="RETENTION_EXPIRY_DATE_FILTER"/>
     </select>
 
     <select id="createDeleteRequest" resultType="java.lang.Long">

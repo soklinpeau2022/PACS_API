@@ -4,7 +4,7 @@ Spring Boot API for UDAYA_PACS. The current deploy flow is intentionally small:
 
 - `scripts/package-deploy.sh` builds an API deploy bundle.
 - `scripts/package-db-deploy.sh` builds a DB deploy bundle.
-- `scripts/stack.sh` starts, health-checks, promotes, stops, and logs containers.
+- `scripts/stack.sh` starts, health-checks, stops, and logs the live containers directly.
 - `scripts/test-gate.sh` is used internally by `package-deploy.sh` unless the skip flag is passed.
 
 Older API-only wrapper scripts were removed. Use `stack` for local, QA, and prod.
@@ -38,7 +38,7 @@ SECURITY_JWT_PUBLIC_KEY=file:/app/config/key/public_key.pem
 
 ## Redis Cache
 
-Redis is enabled for local, QA, and prod through the API stack scripts. The scripts start a target-specific Redis container before the API tmp container, attach both containers to the same Docker network, health-check Redis, then health-check and promote the API.
+Redis is enabled for local, QA, and prod through the API stack scripts. The scripts start a target-specific Redis container, attach the API container to the same Docker network, health-check Redis, then health-check the live API container.
 
 Runtime keys:
 
@@ -127,7 +127,7 @@ sudo bash ./scripts/stack.sh qa deploy --no-build
 sudo bash ./scripts/stack.sh qa health
 ```
 
-`deploy` starts `udaya_pacs_qa_api_tmp`, health-checks it, promotes it to `udaya_pacs_qa_api`, and removes tmp/rollback containers after success.
+`deploy` loads or builds the image, restarts `udaya_pacs_qa_api` directly, health-checks it, and removes old helper containers left by previous deploy styles.
 
 The same command also keeps `udaya_pacs_qa_redis` running for API cache. `down` removes the API and Redis containers but keeps the Redis Docker volume.
 

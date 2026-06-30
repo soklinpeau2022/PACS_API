@@ -86,14 +86,23 @@ public class AuthServiceImpl implements AuthService {
     @Value("${security.jwt.refresh-token-ms}")
     private long refreshTokenExpirationMs;
 
-    @Value("${security.jwt.refresh-token-allow-body:true}")
+    @Value("${security.jwt.refresh-token-allow-body:false}")
     private boolean allowRefreshTokenInBody;
 
-    @Value("${security.jwt.refresh-token-return-in-body:true}")
+    @Value("${security.jwt.refresh-token-return-in-body:false}")
     private boolean returnRefreshTokenInBody;
 
     @Value("${security.jwt.access-token-return-in-body:true}")
     private boolean returnAccessTokenInBody;
+
+    @Value("${security.jwt.refresh-token-cookie-name:refreshToken}")
+    private String refreshTokenCookieName;
+
+    @Value("${security.jwt.refresh-token-cookie-same-site:Lax}")
+    private String refreshTokenCookieSameSite;
+
+    @Value("${security.jwt.refresh-token-cookie-secure:false}")
+    private boolean refreshTokenCookieSecure;
 
     /** {@inheritDoc} */
     @Override
@@ -183,7 +192,7 @@ public class AuthServiceImpl implements AuthService {
                     scopeResolution.grantedScope(), permissionVersion, rolesCsv, accessTokenLifetimeMs);
             List<AccessTokenResponse> tokens = new ArrayList<>();
             tokens.add(accessTokenResponse);
-            replaceWithOpaqueRefreshToken(tokens, userId, hospitalId, clientId, loginRequest.getClientName(), httpServletRequest, null, refreshTokenLifetimeMs);
+            replaceWithOpaqueRefreshToken(tokens, userId, hospitalId, clientId, loginRequest.getClientName(), httpServletRequest, httpServletResponse, null, refreshTokenLifetimeMs);
             String tokenJti = extractAccessTokenJti(tokens);
             stripBrowserTokensFromResponse(tokens);
             setNoStoreHeaders(httpServletResponse);
@@ -282,6 +291,9 @@ public class AuthServiceImpl implements AuthService {
                 logger.warn("Activity log insert failed (logout success): {}", ex.getMessage());
             }
 
+            setNoStoreHeaders(httpServletResponse);
+            setClearSiteDataHeader(httpServletResponse);
+            deleteRefreshTokenCookie(httpServletRequest, httpServletResponse);
             return ResponseMessageUtils.makeResponse(true, messageService.message("Logout successful. You need to log in again.", true));
         } catch (Exception e) {
             auditAuthEvent("logout", false, userId, null, PRINCIPAL_TYPE_USER, null, httpServletRequest, "internal_error");
@@ -309,12 +321,14 @@ public class AuthServiceImpl implements AuthService {
         String refreshToken = resolveRefreshToken(refreshTokenRequest, request);
         if (refreshToken == null || refreshToken.isBlank()) {
             auditAuthEvent("refresh_failure", false, null, requestedClientId, PRINCIPAL_TYPE_USER, null, request, "missing_refresh_token");
+            deleteRefreshTokenCookie(request, response);
             return ResponseMessageUtils.makeResponse(false, 401, messageService.message("Invalid or expired token", false));
         }
 
         RefreshTokenRow refreshTokenRow = refreshTokenService.validate(refreshToken);
         if (refreshTokenRow == null) {
             auditAuthEvent("refresh_failure", false, null, requestedClientId, PRINCIPAL_TYPE_USER, null, request, "invalid_refresh_token");
+            deleteRefreshTokenCookie(request, response);
             return ResponseMessageUtils.makeResponse(false, 401, messageService.message("Invalid or expired token", false));
         }
 
@@ -372,6 +386,7 @@ public class AuthServiceImpl implements AuthService {
                 refreshClientId,
                 refreshTokenRow.getClientName(),
                 request,
+                response,
                 refreshTokenRow.getId(),
                 refreshTokenLifetimeMs
         );
@@ -404,6 +419,7 @@ public class AuthServiceImpl implements AuthService {
                                                String clientId,
                                                String clientName,
                                                HttpServletRequest request,
+                                               HttpServletResponse response,
                                                Long rotatedFromId,
                                                Long refreshTokenLifetimeMs) {
         if (tokens == null || tokens.isEmpty() || tokens.getFirst() == null) {
@@ -419,13 +435,20 @@ public class AuthServiceImpl implements AuthService {
                 RequestClientInfoHelper.formatUserAgent(request),
                 refreshTokenLifetimeMs
         );
+        String browserRefresh = refreshTokenCryptoService.encrypt(rawRefresh);
+        if (browserRefresh == null || browserRefresh.isBlank()) {
+            browserRefresh = rawRefresh;
+        }
+
         AccessTokenResponse tokenResponse = tokens.getFirst();
-        tokenResponse.setRefreshToken(rawRefresh);
+        tokenResponse.setRefreshToken(browserRefresh);
 
         long resolvedRefreshMs = refreshTokenLifetimeMs != null && refreshTokenLifetimeMs > 0
                 ? refreshTokenLifetimeMs
                 : refreshTokenExpirationMs;
-        tokenResponse.setRefreshExpiresIn((long) toSecondsFromMillis(resolvedRefreshMs));
+        int maxAgeSeconds = toSecondsFromMillis(resolvedRefreshMs);
+        tokenResponse.setRefreshExpiresIn((long) maxAgeSeconds);
+        setRefreshTokenCookie(request, response, browserRefresh, maxAgeSeconds);
     }
 
     private Long resolveHospitalIdForUser(Long userId) {
@@ -491,6 +514,14 @@ public class AuthServiceImpl implements AuthService {
                 }
             }
         }
+        String cookieToken = CookieUtils.getCookie(request, normalizedRefreshTokenCookieName())
+                .map(jakarta.servlet.http.Cookie::getValue)
+                .map(String::trim)
+                .filter(value -> !value.isEmpty() && !AuthTokenHelper.isNullLike(value))
+                .orElse(null);
+        if (cookieToken != null) {
+            return decryptOrOriginal(cookieToken);
+        }
         return null;
     }
 
@@ -526,12 +557,48 @@ public class AuthServiceImpl implements AuthService {
         }
     }
 
+    private void setRefreshTokenCookie(HttpServletRequest request, HttpServletResponse response, String token, int maxAgeSeconds) {
+        CookieUtils.addOrUpdateCookie(
+                request,
+                response,
+                normalizedRefreshTokenCookieName(),
+                token,
+                maxAgeSeconds,
+                true,
+                refreshTokenCookieSameSite,
+                refreshTokenCookieSecure
+        );
+    }
+
+    private void deleteRefreshTokenCookie(HttpServletRequest request, HttpServletResponse response) {
+        CookieUtils.deleteCookie(
+                request,
+                response,
+                normalizedRefreshTokenCookieName(),
+                true,
+                refreshTokenCookieSameSite,
+                refreshTokenCookieSecure
+        );
+    }
+
+    private String normalizedRefreshTokenCookieName() {
+        String value = trimToNull(refreshTokenCookieName);
+        return value == null ? "refreshToken" : value;
+    }
+
     private static void setNoStoreHeaders(HttpServletResponse response) {
         if (response == null) {
             return;
         }
         response.setHeader("Cache-Control", "no-store");
         response.setHeader("Pragma", "no-cache");
+    }
+
+    private static void setClearSiteDataHeader(HttpServletResponse response) {
+        if (response == null) {
+            return;
+        }
+        response.setHeader("Clear-Site-Data", "\"cache\", \"cookies\", \"storage\", \"executionContexts\"");
     }
 
     private static Long extractUserId(Authentication authentication) {

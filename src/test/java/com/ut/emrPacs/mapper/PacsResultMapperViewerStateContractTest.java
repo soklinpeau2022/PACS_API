@@ -1,4 +1,4 @@
-package com.ut.emr.mapper;
+package com.ut.emrPacs.mapper;
 
 import org.junit.jupiter.api.Test;
 

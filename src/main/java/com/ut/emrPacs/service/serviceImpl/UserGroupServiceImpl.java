@@ -489,8 +489,13 @@ public class UserGroupServiceImpl implements UserGroupService {
         for (ModuleType source : moduleTypeTemplate) {
             ModuleType target = new ModuleType();
             target.setId(source.getId());
+            target.setPublicKey(source.getPublicKey());
+            target.setCode(source.getCode());
             target.setName(source.getName());
             target.setNameOther(source.getNameOther());
+            target.setGroupCode(source.getGroupCode());
+            target.setGroupName(source.getGroupName());
+            target.setGroupOrderNo(source.getGroupOrderNo());
             target.setModuleList(moduleMapper.getOneByRoleId(source.getId(), roleId));
             clones.add(target);
         }

@@ -242,7 +242,7 @@ public class StudyRetentionServiceImpl implements StudyRetentionService {
         try {
             StudyRetentionReviewFilter safeFilter = filter == null ? new StudyRetentionReviewFilter() : filter;
             Long hospitalId = resolveScopedHospitalId(safeFilter.getHospitalKey(), safeFilter.getHospitalId(), true);
-            StudyRetentionSummaryResponse summary = studyRetentionMapper.summary(hospitalId);
+            StudyRetentionSummaryResponse summary = studyRetentionMapper.summary(hospitalId, safeFilter);
 
             logSuccess(ApiConstants.StudyRetention.SUMMARY_PATH, "Study Retention Summary", "View", startDuration, httpServletRequest);
             return ResponseMessageUtils.makeResponse(true, messageService.message("Success", List.of(summary), true));

@@ -126,6 +126,9 @@ public class DicomServerServiceImpl implements DicomServerService {
     private static final String VIEWER_DICOMWEB_PROFILE_PATH =
             ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.VIEWER_DICOMWEB_PROFILE_PATH;
     private static final String CALLBACK_SCRIPT_RESOURCE = "dicom_server/" + CALLBACK_SCRIPT_FILE_NAME;
+    private static final String DEFAULT_PACS_API_DOCKER_NETWORK = "udaya_pacs_local_network";
+    private static final String DEFAULT_PACS_DOCKER_SUBNET_PREFIX = "192.168.192.";
+    private static final int DEFAULT_DICOM_SERVER_DOCKER_IP_START_OCTET = 30;
     private static final int PACS_RESULT_API_KEY_BYTES = 32;
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -248,8 +251,8 @@ public class DicomServerServiceImpl implements DicomServerService {
         LocalTime startDuration = LocalTime.now();
         try {
             var principal = UserAuthSession.getCurrentUser();
-            if (principal == null || !isSuperAdmin(principal.userId())) {
-                return ResponseMessageUtils.makeResponse(false, 403, "Forbidden", "Only SuperAdmin can update DICOM server health settings.");
+            if (principal == null || principal.userId() == null) {
+                return ResponseMessageUtils.makeResponse(false, 401, "Unauthorized", "You must be logged in.");
             }
             var safeRequest = request == null ? new DicomServerHealthSettingsRequest() : request;
             var settings = dicomServerHealthService.updateSettings(
@@ -1112,11 +1115,14 @@ public class DicomServerServiceImpl implements DicomServerService {
             response.setFileName(buildDicomServerConfigFileName(routeConfig, serverRoute));
             response.setConfig(buildDicomServerConfig(routeConfig, serverRoute, serverRoutes));
             response.setProjectName(buildDicomServerProjectName(routeConfig, serverRoute, true));
+            response.setDockerPrivateIp(resolveDicomServerDockerPrivateIp(serverRoute));
+            response.setDockerNetworkName(DEFAULT_PACS_API_DOCKER_NETWORK);
+            response.setDockerNetworkAlias(response.getProjectName());
             DicomServerCallbackCredential callbackCredential = provisionDicomServerCallbackCredential(serverRoute, response.getProjectName());
             String pacsResultApiKey = provisionPacsResultApiKey(serverRoute);
             String artifactStem = response.getFileName().replaceFirst("(?i)\\.json$", "");
             response.setEnvironmentFileName(artifactStem + ".env");
-            response.setEnvironmentContent(buildCallbackEnvironmentContent(serverRoute, callbackCredential, pacsResultApiKey, response.getProjectName()));
+            response.setEnvironmentContent(buildCallbackEnvironmentContent(serverRoute, callbackCredential, pacsResultApiKey, response));
             response.setCallbackScriptFileName(artifactStem + "-" + CALLBACK_SCRIPT_FILE_NAME);
             response.setCallbackScriptContent(callbackScriptContent);
             response.setSetupFileName(artifactStem + "-setup.txt");
@@ -1348,7 +1354,7 @@ public class DicomServerServiceImpl implements DicomServerService {
                 ? firstNonNull(requestUpdate.getPort(), existing == null ? null : existing.getPort())
                 : firstNonNull(existing == null ? null : existing.getPort(), requestUpdate.getPort());
         if (ipAddress == null) {
-            throw new IllegalArgumentException("DICOM server IP / host is required.");
+            throw new IllegalArgumentException("Public DICOM server IP/domain/hostname is required.");
         }
         if (dicomWebPort == null || dicomWebPort <= 0) {
             throw new IllegalArgumentException("DICOMweb port is required.");
@@ -1356,9 +1362,9 @@ public class DicomServerServiceImpl implements DicomServerService {
 
         String host = stripUrlScheme(ipAddress);
         if (!hasText(host)) {
-            throw new IllegalArgumentException("DICOM server IP / host is required.");
+            throw new IllegalArgumentException("Public DICOM server IP/domain/hostname is required.");
         }
-        assertSplitServerHostAllowed(host, "DICOM server IP / host");
+        assertSplitServerHostAllowed(host, "Public DICOM server IP/domain/hostname");
         Boolean sslEnabled = firstNonNull(requestUpdate.getSslEnabled(), existing == null ? null : existing.getSslEnabled());
         String scheme = Boolean.TRUE.equals(sslEnabled) ? "https" : "http";
         return new ResolvedDicomEndpoint(host, dicomWebPort, dicomPort, scheme + "://" + host + ":" + dicomWebPort);
@@ -1404,7 +1410,7 @@ public class DicomServerServiceImpl implements DicomServerService {
     private static ResolvedDicomEndpoint parseHttpBaseUrl(String rawBaseUrl, Integer dicomPort, String label) {
         String value = trimToNull(rawBaseUrl);
         if (value == null) {
-            throw new IllegalArgumentException("DICOM server IP / host is required.");
+            throw new IllegalArgumentException("Public DICOM server IP/domain/hostname is required.");
         }
 
         String valueWithScheme = value.matches("(?i)^[a-z][a-z0-9+.-]*://.*") ? value : "http://" + value;
@@ -1451,7 +1457,7 @@ public class DicomServerServiceImpl implements DicomServerService {
             return;
         }
         if (isDockerOnlyHost(normalized)) {
-            throw new IllegalArgumentException(label + " must use a fixed server IP or DNS name, not a Docker-only host like " + normalized + ".");
+            throw new IllegalArgumentException(label + " must use a public IP address, domain, or hostname, not a Docker-only host like " + normalized + ".");
         }
     }
 
@@ -2003,7 +2009,7 @@ public class DicomServerServiceImpl implements DicomServerService {
             HospitalModalityServerRouteResponse serverRoute,
             DicomServerCallbackCredential credential,
             String pacsResultApiKey,
-            String projectName
+            DicomServerConfigBuildResponse response
     ) {
         String callbackApiBaseUrl = resolveCallbackApiBaseUrl(serverRoute);
         return String.join("\n",
@@ -2014,6 +2020,13 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "UDAYA_DICOM_SERVER_BIND_HOST=" + resolveDicomServerBindHost(serverRoute),
                 "UDAYA_DICOM_SERVER_HTTP_PORT=" + resolveDicomServerHttpPublishPort(serverRoute),
                 "UDAYA_DICOM_SERVER_DICOM_PORT=" + resolveDicomServerDicomPublishPort(serverRoute),
+                "",
+                "# Docker-private address used when this DICOM routing zip runs beside the local PACS stack.",
+                "UDAYA_DICOM_SERVER_DOCKER_IP=" + escapeEnvironmentValue(response.getDockerPrivateIp()),
+                "UDAYA_DICOM_SERVER_NETWORK_ALIAS=" + escapeEnvironmentValue(response.getDockerNetworkAlias()),
+                "UDAYA_PACS_API_NETWORK_NAME=" + escapeEnvironmentValue(response.getDockerNetworkName()),
+                "UDAYA_PACS_API_NETWORK_SUBNET=" + DEFAULT_PACS_DOCKER_SUBNET_PREFIX + "0/20",
+                "",
                 "UDAYA_DICOM_SERVER_HTTP_USERNAME=" + escapeEnvironmentValue(requireDicomServerHttpUsername(serverRoute)),
                 "UDAYA_DICOM_SERVER_HTTP_PASSWORD=" + escapeEnvironmentValue(requireDicomServerHttpPassword(serverRoute)),
                 "",
@@ -2118,6 +2131,7 @@ public class DicomServerServiceImpl implements DicomServerService {
         addDicomServerBaseImageArchive(zip, root + "images/dicom_server_base.tar", requiredBaseImageArchivePath);
         addZipFile(zip, root + "scripts/deploy.sh", buildDicomServerDeployScriptContent());
         addZipFile(zip, root + "scripts/cache-base-image.sh", buildDicomServerCacheBaseImageScriptContent());
+        addZipFile(zip, root + "scripts/healthcheck.py", buildDicomServerHealthcheckScriptContent());
         addZipFile(zip, root + "scripts/" + CALLBACK_SCRIPT_FILE_NAME, response.getCallbackScriptContent());
         addZipFile(zip, root + "worklists/.gitkeep", "\n");
     }
@@ -2242,7 +2256,9 @@ public class DicomServerServiceImpl implements DicomServerService {
         String projectName = response.getProjectName().replace('-', '_');
         String volumeName = projectName + "_data";
         String imageName = projectName + ":latest";
-        String healthcheckCommand = buildDicomServerHealthcheckCommand(response.getConfig());
+        String dockerPrivateIp = defaultString(response.getDockerPrivateIp(), defaultDicomServerDockerPrivateIp(response.getDicomServerId()));
+        String dockerNetworkName = defaultString(response.getDockerNetworkName(), DEFAULT_PACS_API_DOCKER_NETWORK);
+        String dockerNetworkAlias = defaultString(response.getDockerNetworkAlias(), projectName);
         return String.join("\n",
                 "name: " + projectName,
                 "",
@@ -2256,7 +2272,9 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "    image: ${UDAYA_DICOM_SERVER_IMAGE:-" + imageName + "}",
                 "    command: [\"" + DICOM_SERVER_CONFIG_CONTAINER_PATH + "\"]",
                 "    container_name: ${UDAYA_DICOM_SERVER_CONTAINER_NAME:-" + projectName + "}",
-                "    restart: unless-stopped",
+                "    restart: always",
+                "    init: true",
+                "    stop_grace_period: 60s",
                 "    env_file:",
                 "      - ./.env",
                 "    environment:",
@@ -2267,6 +2285,12 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "    ports:",
                 "      - \"${UDAYA_DICOM_SERVER_BIND_HOST:-127.0.0.1}:${UDAYA_DICOM_SERVER_HTTP_PORT:-8042}:8042\"",
                 "      - \"${UDAYA_DICOM_SERVER_BIND_HOST:-127.0.0.1}:${UDAYA_DICOM_SERVER_DICOM_PORT:-4242}:4242\"",
+                "    networks:",
+                "      default:",
+                "      pacs_api:",
+                "        ipv4_address: ${UDAYA_DICOM_SERVER_DOCKER_IP:-" + dockerPrivateIp + "}",
+                "        aliases:",
+                "          - ${UDAYA_DICOM_SERVER_NETWORK_ALIAS:-" + dockerNetworkAlias + "}",
                 "    volumes:",
                 "      - ./brand:" + DICOM_SERVER_BRAND_CONTAINER_DIRECTORY + ":ro",
                 "      - " + DICOM_SERVER_RUNTIME_CONFIG_HOST_PATH + ":" + DICOM_SERVER_CONFIG_CONTAINER_PATH + ":ro",
@@ -2274,7 +2298,7 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "      - ./worklists:" + DEFAULT_WORKLISTS_DATABASE,
                 "      - " + volumeName + ":" + DEFAULT_STORAGE_DIRECTORY,
                 "    healthcheck:",
-                "      test: [\"CMD-SHELL\", \"" + healthcheckCommand + "\"]",
+                "      test: [\"CMD\", \"python3\", \"" + DICOM_SERVER_SCRIPT_CONTAINER_DIRECTORY + "/healthcheck.py\"]",
                 "      interval: 15s",
                 "      timeout: 10s",
                 "      retries: 10",
@@ -2288,6 +2312,11 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "volumes:",
                 "  " + volumeName + ":",
                 "    name: " + volumeName,
+                "",
+                "networks:",
+                "  pacs_api:",
+                "    name: ${UDAYA_PACS_API_NETWORK_NAME:-" + dockerNetworkName + "}",
+                "    external: true",
                 ""
         );
     }
@@ -2396,6 +2425,8 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "  UDAYA_DICOM_SERVER_UPSTREAM_IMAGE=orthancteam/orthanc:latest",
                 "  UDAYA_DICOM_SERVER_BASE_IMAGE_ARCHIVE=./images/dicom_server_base.tar",
                 "  UDAYA_DICOM_SERVER_ALLOW_PULL=true",
+                "  UDAYA_DICOM_SERVER_DOCKER_IP=192.168.192.x",
+                "  UDAYA_PACS_API_NETWORK_NAME=udaya_pacs_local_network",
                 "",
                 "Examples:",
                 "  bash ./scripts/cache-base-image.sh",
@@ -2413,11 +2444,38 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "UPSTREAM_IMAGE=\"${UDAYA_DICOM_SERVER_UPSTREAM_IMAGE:-" + DICOM_SERVER_UPSTREAM_DOCKER_IMAGE + "}\"",
                 "IMAGE_ARCHIVE=\"${UDAYA_DICOM_SERVER_BASE_IMAGE_ARCHIVE:-${PROJECT_ROOT}/images/dicom_server_base.tar}\"",
                 "ALLOW_PULL=\"${UDAYA_DICOM_SERVER_ALLOW_PULL:-false}\"",
+                "PYTHON_BIN=\"${UDAYA_DICOM_SERVER_PYTHON_BIN:-}\"",
+                "if [[ -z \"${PYTHON_BIN}\" ]]; then",
+                "  if command -v python3 >/dev/null 2>&1; then",
+                "    PYTHON_BIN=\"python3\"",
+                "  elif command -v python >/dev/null 2>&1; then",
+                "    PYTHON_BIN=\"python\"",
+                "  else",
+                "    echo \"Missing Python. Install Python 3 or set UDAYA_DICOM_SERVER_PYTHON_BIN.\" >&2",
+                "    exit 1",
+                "  fi",
+                "fi",
+                "",
+                "read_env_value() {",
+                "  local wanted=\"$1\"",
+                "  local fallback=\"${2:-}\"",
+                "  local value=\"\"",
+                "  if [[ -n \"${!wanted:-}\" ]]; then",
+                "    printf '%s\\n' \"${!wanted}\"",
+                "    return 0",
+                "  fi",
+                "  value=\"$(awk -F= -v key=\"${wanted}\" '$1 == key { value = substr($0, index($0, \"=\") + 1) } END { print value }' \"${PROJECT_ROOT}/.env\" 2>/dev/null || true)\"",
+                "  if [[ -n \"${value}\" ]]; then",
+                "    printf '%s\\n' \"${value}\"",
+                "  else",
+                "    printf '%s\\n' \"${fallback}\"",
+                "  fi",
+                "}",
                 "",
                 "render_runtime_config() {",
                 "  local template_path=\"${PROJECT_ROOT}/config/dicom_server.json\"",
                 "  local output_path=\"${PROJECT_ROOT}/runtime/config/dicom_server.json\"",
-                "  python3 - \"${template_path}\" \"${PROJECT_ROOT}/.env\" \"${output_path}\" <<'PY'",
+                "  \"${PYTHON_BIN}\" - \"${template_path}\" \"${PROJECT_ROOT}/.env\" \"${output_path}\" <<'PY'",
                 "import json",
                 "import os",
                 "import re",
@@ -2533,6 +2591,18 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "  docker save -o \"${IMAGE_ARCHIVE}\" \"${BASE_IMAGE}\"",
                 "}",
                 "",
+                "ensure_docker_network() {",
+                "  local network_name",
+                "  local network_subnet",
+                "  network_name=\"$(read_env_value UDAYA_PACS_API_NETWORK_NAME \"" + DEFAULT_PACS_API_DOCKER_NETWORK + ")\"",
+                "  network_subnet=\"$(read_env_value UDAYA_PACS_API_NETWORK_SUBNET \"" + DEFAULT_PACS_DOCKER_SUBNET_PREFIX + "0/20\")\"",
+                "  if docker network inspect \"${network_name}\" >/dev/null 2>&1; then",
+                "    return 0",
+                "  fi",
+                "  echo \"Creating local PACS Docker network: ${network_name} (${network_subnet})\"",
+                "  docker network create --subnet \"${network_subnet}\" \"${network_name}\" >/dev/null",
+                "}",
+                "",
                 "echo \"Preparing UDAYA_DICOM_SERVER base image: ${BASE_IMAGE}\"",
                 "if ! image_exists; then",
                 "  load_base_image_archive || true",
@@ -2552,6 +2622,7 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "  fi",
                 "fi",
                 "",
+                "ensure_docker_network",
                 "render_runtime_config",
                 "docker compose build --pull=false",
                 "docker compose up -d --force-recreate --no-build",
@@ -2595,22 +2666,68 @@ public class DicomServerServiceImpl implements DicomServerService {
         );
     }
 
-    private String buildDicomServerHealthcheckCommand(Map<String, Object> config) {
-        String fallback = "python3 -c \\\"import urllib.request; urllib.request.urlopen('http://localhost:8042/system', timeout=5).read()\\\" >/dev/null || exit 1";
-        if (config == null || !Boolean.TRUE.equals(config.get("AuthenticationEnabled"))) {
-            return fallback;
-        }
-        Object usersObject = config.get("RegisteredUsers");
-        if (!(usersObject instanceof Map<?, ?> users) || users.isEmpty()) {
-            return fallback;
-        }
-        Map.Entry<?, ?> firstUser = users.entrySet().iterator().next();
-        String username = trimToNull(firstUser.getKey() == null ? null : String.valueOf(firstUser.getKey()));
-        String password = trimToNull(firstUser.getValue() == null ? null : String.valueOf(firstUser.getValue()));
-        if (username == null || password == null) {
-            return fallback;
-        }
-        return "python3 -c \\\"import base64,json,urllib.request; c=json.load(open('" + DICOM_SERVER_CONFIG_CONTAINER_PATH + "')); users=c.get('RegisteredUsers') or {}; u=next(iter(users)); p=users[u]; req=urllib.request.Request('http://localhost:8042/system'); req.add_header('Authorization','Basic '+base64.b64encode((str(u)+':'+str(p)).encode()).decode()); urllib.request.urlopen(req, timeout=5).read()\\\" >/dev/null || exit 1";
+    private String buildDicomServerHealthcheckScriptContent() {
+        return String.join("\n",
+                "import base64",
+                "import json",
+                "import os",
+                "import signal",
+                "import socket",
+                "import sys",
+                "import urllib.request",
+                "",
+                "",
+                "STATE_PATH = \"/tmp/dicom-server-hard-health-failures\"",
+                "RESTART_AFTER_HARD_FAILURES = 8",
+                "",
+                "",
+                "def write_failures(value):",
+                "    with open(STATE_PATH, \"w\", encoding=\"ascii\") as state_file:",
+                "        state_file.write(str(value))",
+                "",
+                "",
+                "try:",
+                "    # A saturated HTTP worker pool can make /system slow during a large import even",
+                "    # though the DICOM server is alive and actively storing images. Only restart",
+                "    # when the local service port itself is repeatedly unreachable.",
+                "    with socket.create_connection((\"127.0.0.1\", 8042), timeout=3):",
+                "        pass",
+                "except Exception as error:",
+                "    try:",
+                "        with open(STATE_PATH, encoding=\"ascii\") as state_file:",
+                "            failures = int(state_file.read().strip() or \"0\") + 1",
+                "    except Exception:",
+                "        failures = 1",
+                "    write_failures(failures)",
+                "    print(",
+                "        f\"DICOM server port is unreachable ({failures}/{RESTART_AFTER_HARD_FAILURES}): {error}\",",
+                "        file=sys.stderr,",
+                "    )",
+                "    if failures >= RESTART_AFTER_HARD_FAILURES:",
+                "        os.kill(1, signal.SIGTERM)",
+                "    sys.exit(1)",
+                "",
+                "try:",
+                "    with open(\"/etc/dicom_server/config.json\", encoding=\"utf-8\") as config_file:",
+                "        config = json.load(config_file)",
+                "    users = config.get(\"RegisteredUsers\") or {}",
+                "    username = next(iter(users))",
+                "    password = users[username]",
+                "    request = urllib.request.Request(\"http://localhost:8042/system\")",
+                "    credentials = base64.b64encode(f\"{username}:{password}\".encode()).decode()",
+                "    request.add_header(\"Authorization\", f\"Basic {credentials}\")",
+                "    urllib.request.urlopen(request, timeout=5).read()",
+                "    write_failures(0)",
+                "    sys.exit(0)",
+                "except Exception as error:",
+                "    write_failures(0)",
+                "    print(f\"DICOM server is busy but its service port is reachable: {error}\", file=sys.stderr)",
+                "    # During large imports, the archive can keep accepting STORE/HTTP uploads while",
+                "    # /system is temporarily slow. Reporting unhealthy here makes Docker mark a",
+                "    # working archive as down.",
+                "    sys.exit(0)",
+                ""
+        );
     }
 
     private String buildDicomServerProjectReadme(DicomServerConfigBuildResponse response) {
@@ -2632,10 +2749,12 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "",
                 "The deploy script loads `images/dicom_server_base.tar` when the shared base image `dicom_server_base:latest` is missing, then builds and starts this server-specific image.",
                 "Before Docker starts, it renders `runtime/config/dicom_server.json` from `config/dicom_server.json` and the private `.env` values.",
+                "This zip contains only the generated DICOM Routing archive deployment for this DICOM Server.",
                 "It does not pull from Docker Hub by default. To prepare the offline image once, run `bash ./scripts/cache-base-image.sh` on a machine with internet access and keep `images/dicom_server_base.tar` with this folder.",
                 "For a one-time online deploy only, run `UDAYA_DICOM_SERVER_ALLOW_PULL=true sudo bash ./scripts/deploy.sh`.",
                 "Use the PACS API callback base URL configured in DICOM Server Management for `UDAYA_PACS_API_AUTH_CALLBACK`. It can be an IP or domain reachable from this hospital install; localhost, wildcard binds, Docker host aliases, and local/reserved addresses are rejected by deploy.",
-                "The PACS API and DICOM server can run on different servers. The DICOM container does not join the PACS API Docker network; it calls the API through `UDAYA_PACS_API_AUTH_CALLBACK`.",
+                "When deployed on the local PACS host, Docker Compose joins `${UDAYA_PACS_API_NETWORK_NAME}` and assigns `${UDAYA_DICOM_SERVER_DOCKER_IP}` so the API, Frontend, Viewer, and DICOM archive share the local private network.",
+                "If that Docker network is missing, `scripts/deploy.sh` creates it with `${UDAYA_PACS_API_NETWORK_SUBNET}` before starting the archive.",
                 "",
                 "After startup, configure DICOM Server Management with the real archive server URL:",
                 "`http://<archive-server-ip>:" + defaultPositiveInteger(response.getConfig() == null ? null : (Integer) response.getConfig().get("HttpPort"), DICOM_SERVER_CONTAINER_HTTP_PORT, "HTTP port") + "` or `http://localhost:${UDAYA_DICOM_SERVER_HTTP_PORT}` when API and the archive run on the same host.",
@@ -2654,6 +2773,7 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "- `images/`: optional offline Docker base image archive (`dicom_server_base.tar`).",
                 "- `scripts/deploy.sh`: prepares the base image and runs Docker Compose.",
                 "- `scripts/cache-base-image.sh`: downloads and saves the base image once for offline deployments.",
+                "- `scripts/healthcheck.py`: Docker healthcheck tuned for large DICOM imports.",
                 "- `scripts/notify-emr.lua`: stable-study callback script.",
                 "- `Dockerfile`: server-specific deploy image built from the shared DICOM server base image.",
                 "- `.env`: generated ports and callback credentials.",
@@ -2729,6 +2849,61 @@ public class DicomServerServiceImpl implements DicomServerService {
             return "127.0.0.1";
         }
         return escapeEnvironmentValue(bindHost);
+    }
+
+    private String resolveDicomServerDockerPrivateIp(HospitalModalityServerRouteResponse serverRoute) {
+        String configuredHost = trimToNull(stripUrlScheme(serverRoute == null ? null : serverRoute.getIpAddress()));
+        if (configuredHost != null && isUsableLocalPacsDockerIp(configuredHost)) {
+            return configuredHost;
+        }
+        return defaultDicomServerDockerPrivateIp(serverRoute == null ? null : serverRoute.getDicomServerId());
+    }
+
+    private static String defaultDicomServerDockerPrivateIp(Long dicomServerId) {
+        int octet = DEFAULT_DICOM_SERVER_DOCKER_IP_START_OCTET;
+        if (dicomServerId != null && dicomServerId > 0) {
+            long offset = Math.floorMod(dicomServerId, 180L);
+            octet = DEFAULT_DICOM_SERVER_DOCKER_IP_START_OCTET + (int) offset;
+            while (!isUsableGeneratedLocalPacsDockerOctet(octet)) {
+                octet++;
+                if (octet > 254) {
+                    octet = DEFAULT_DICOM_SERVER_DOCKER_IP_START_OCTET;
+                }
+            }
+        }
+        return DEFAULT_PACS_DOCKER_SUBNET_PREFIX + octet;
+    }
+
+    private static boolean isUsableLocalPacsDockerIp(String host) {
+        String value = trimToNull(host);
+        if (value == null) {
+            return false;
+        }
+        String[] octets = value.split("\\.");
+        if (octets.length != 4) {
+            return false;
+        }
+        try {
+            int first = Integer.parseInt(octets[0]);
+            int second = Integer.parseInt(octets[1]);
+            int third = Integer.parseInt(octets[2]);
+            int fourth = Integer.parseInt(octets[3]);
+            return first == 192
+                    && second == 168
+                    && third >= 192
+                    && third <= 207
+                    && isUsableConfiguredLocalPacsDockerOctet(fourth);
+        } catch (NumberFormatException ex) {
+            return false;
+        }
+    }
+
+    private static boolean isUsableConfiguredLocalPacsDockerOctet(int octet) {
+        return octet >= 4 && octet <= 254 && octet != 20;
+    }
+
+    private static boolean isUsableGeneratedLocalPacsDockerOctet(int octet) {
+        return octet >= DEFAULT_DICOM_SERVER_DOCKER_IP_START_OCTET && octet <= 254;
     }
 
     private Integer extractHttpUrlPort(String rawUrl) {

@@ -28,6 +28,42 @@
           )
     </sql>
 
+    <sql id="PATIENT_DATE_FILTER">
+        <if test="dateFrom != null">
+            AND CAST(COALESCE(p.created, NOW()) AS DATE) &gt;= #{dateFrom}
+        </if>
+        <if test="dateTo != null">
+            AND CAST(COALESCE(p.created, NOW()) AS DATE) &lt;= #{dateTo}
+        </if>
+    </sql>
+
+    <sql id="WORKLIST_DATE_FILTER">
+        <if test="dateFrom != null">
+            AND CAST(COALESCE(q.created_at, q.created, NOW()) AS DATE) &gt;= #{dateFrom}
+        </if>
+        <if test="dateTo != null">
+            AND CAST(COALESCE(q.created_at, q.created, NOW()) AS DATE) &lt;= #{dateTo}
+        </if>
+    </sql>
+
+    <sql id="STUDY_DATE_FILTER">
+        <if test="dateFrom != null">
+            AND COALESCE(CAST(s.image_received_at AS DATE), CAST(s.received_at AS DATE), s.study_date, CAST(s.created AS DATE)) &gt;= #{dateFrom}
+        </if>
+        <if test="dateTo != null">
+            AND COALESCE(CAST(s.image_received_at AS DATE), CAST(s.received_at AS DATE), s.study_date, CAST(s.created AS DATE)) &lt;= #{dateTo}
+        </if>
+    </sql>
+
+    <sql id="DAILY_STATS_DATE_FILTER">
+        <if test="dateFrom != null">
+            AND stat_date &gt;= #{dateFrom}
+        </if>
+        <if test="dateTo != null">
+            AND stat_date &lt;= #{dateTo}
+        </if>
+    </sql>
+
     <select id="countRecentPatients" resultType="java.lang.Long">
         SELECT COUNT(1)
         FROM patients p
@@ -36,7 +72,7 @@
               AND p.hospital_id = #{hospitalId}
           </if>
           AND p.is_active = 1
-          AND COALESCE(p.created, NOW()) >= (NOW() - INTERVAL '30 days')
+          <include refid="PATIENT_DATE_FILTER"/>
     </select>
 
     <select id="countWorklistItems" resultType="java.lang.Long">
@@ -47,6 +83,7 @@
           <if test="hospitalId != null and hospitalId > 0">
               AND q.hospital_id = #{hospitalId}
           </if>
+          <include refid="WORKLIST_DATE_FILTER"/>
     </select>
 
     <select id="countStudies" resultType="java.lang.Long">
@@ -57,6 +94,7 @@
               AND s.hospital_id = #{hospitalId}
           </if>
           AND s.is_active = 1
+          <include refid="STUDY_DATE_FILTER"/>
     </select>
 
     <select id="sumReceivedStudies" resultType="java.lang.Long">
@@ -66,6 +104,7 @@
           <if test="hospitalId != null and hospitalId > 0">
               AND hospital_id = #{hospitalId}
           </if>
+          <include refid="DAILY_STATS_DATE_FILTER"/>
     </select>
 
     <select id="countTotalDicomServers" resultType="java.lang.Long">
@@ -153,6 +192,7 @@
           <if test="hospitalId != null and hospitalId > 0">
               AND q.hospital_id = #{hospitalId}
           </if>
+          <include refid="WORKLIST_DATE_FILTER"/>
         GROUP BY
             CASE UPPER(CAST(q.status AS TEXT))
                 WHEN '1' THEN 1
@@ -175,6 +215,7 @@
           <if test="hospitalId != null and hospitalId > 0">
               AND q.hospital_id = #{hospitalId}
           </if>
+          <include refid="WORKLIST_DATE_FILTER"/>
           AND UPPER(CAST(q.status AS TEXT)) IN ('1', 'WAITING')
           AND COALESCE(q.created_at, q.created, NOW()) &lt;= (NOW() - (#{thresholdMinutes} * INTERVAL '1 minute'))
     </select>
@@ -214,6 +255,7 @@
           <if test="hospitalId != null and hospitalId > 0">
               AND q.hospital_id = #{hospitalId}
           </if>
+          <include refid="WORKLIST_DATE_FILTER"/>
         ORDER BY COALESCE(q.modified_at, q.created_at, q.created) DESC, q.id DESC
         LIMIT #{limit}
     </select>

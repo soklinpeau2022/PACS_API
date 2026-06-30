@@ -4,6 +4,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
+import java.time.LocalDate;
+
 @EqualsAndHashCode(callSuper = true)
 @Data
 public class PatientListFilter extends Filter {
@@ -28,6 +30,12 @@ public class PatientListFilter extends Filter {
 
     @Schema(description = "Gender filter.", example = "M")
     private String gender;
+
+    @Schema(description = "Filter by created date from (YYYY-MM-DD).", example = "2026-06-29")
+    private LocalDate dateFrom;
+
+    @Schema(description = "Filter by created date to (YYYY-MM-DD).", example = "2026-06-29")
+    private LocalDate dateTo;
 
     public void setPatientCode(String patientCode) {
         this.patientCode = trimToNull(patientCode);

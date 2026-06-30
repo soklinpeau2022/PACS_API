@@ -174,6 +174,9 @@ public class ModulePermissionFilter extends OncePerRequestFilter {
         if (path.equals("/error")) {
             return true;
         }
+        if (isAuthPath(path)) {
+            return true;
+        }
         for (String prefix : ALWAYS_SKIP_PREFIXES) {
             if (path.startsWith(prefix)) {
                 return true;
@@ -185,6 +188,12 @@ public class ModulePermissionFilter extends OncePerRequestFilter {
             }
         }
         return false;
+    }
+
+    private static boolean isAuthPath(String path) {
+        return path != null
+                && (path.startsWith(ApiConstants.Auth.BASE_PATH + "/")
+                || path.contains(ApiConstants.Auth.BASE_PATH + "/"));
     }
 
     private List<String> getSkipPatterns() {

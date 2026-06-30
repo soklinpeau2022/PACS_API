@@ -12,7 +12,7 @@ Targets:
   local | qa | prod
 
 Actions:
-  deploy                    Build or load API image, start tmp, health-check, promote.
+  deploy                    Build or load API image, restart the live API container directly.
   up                        Start API container directly.
   down                      Stop/remove API and Redis containers.
   restart                   Restart API container.
@@ -614,15 +614,10 @@ service_name="$(env_value "$CONTAINER_KEY")"
 service_name="${service_name:-udaya_pacs_${TARGET}_api}"
 image_name="$(env_value APP_IMAGE)"
 image_name="${image_name:-udaya_pacs_${TARGET}_api:latest}"
-candidate_port="$(env_value "${TARGET^^}_API_CANDIDATE_PORT")"
-candidate_port="${candidate_port:-$(env_value API_CANDIDATE_PORT)}"
-if [[ -z "$candidate_port" ]]; then
-  if [[ "$health_port" =~ ^[0-9]+$ ]]; then
-    candidate_port="$((health_port + 1000))"
-  else
-    candidate_port="9080"
-  fi
-fi
+deploy_stop_timeout="$(env_value API_DEPLOY_STOP_TIMEOUT_SECONDS)"
+deploy_stop_timeout="${deploy_stop_timeout:-$(env_value DEPLOY_STOP_TIMEOUT_SECONDS)}"
+deploy_stop_timeout="${deploy_stop_timeout:-210}"
+proxy_name="${service_name}_proxy"
 api_bind_host="$(env_value "${TARGET^^}_API_BIND_HOST")"
 api_bind_host="${api_bind_host:-$(env_value API_BIND_HOST)}"
 api_bind_host="$(resolve_bind_host "$api_bind_host")"
@@ -920,6 +915,28 @@ remove_container_if_exists() {
   fi
 }
 
+active_api_containers() {
+  docker_cmd ps -a --format '{{.Names}}' | grep -E "^${service_name}_active_[0-9]+$" || true
+}
+
+candidate_api_containers() {
+  docker_cmd ps -a --format '{{.Names}}' | grep -E "^${service_name}_candidate_[0-9]+$" || true
+}
+
+current_api_container() {
+  local active
+  if container_exists "$service_name"; then
+    printf '%s' "$service_name"
+    return 0
+  fi
+  active="$(active_api_containers | sort | tail -1)"
+  if [[ -n "$active" ]]; then
+    printf '%s' "$active"
+    return 0
+  fi
+  return 1
+}
+
 remove_legacy_live_alias_if_needed() {
   for name in udaya_pacs_api_local udaya_pacs_api; do
     if [[ "$name" != "$service_name" ]]; then
@@ -1051,7 +1068,7 @@ start_api_container() {
   local base_image_archive_host_path
   local base_image_archive_container_path
   local brand_asset_root
-  local port_spec
+  local port_spec=""
 
   remove_container_if_exists "$name"
 
@@ -1072,10 +1089,12 @@ start_api_container() {
   chmod -R u+rwX "$dicom_upload_temp_path" 2>/dev/null || true
   dicom_upload_mount="${dicom_upload_temp_path}:${dicom_upload_container_path}"
   ensure_docker_network "$redis_network_name"
-  if [[ "$public_bind" == "true" ]]; then
-    port_spec="${api_bind_host}:${host_port}:8080"
-  else
-    port_spec="127.0.0.1:${host_port}:8080"
+  if [[ -n "$host_port" ]]; then
+    if [[ "$public_bind" == "true" ]]; then
+      port_spec="${api_bind_host}:${host_port}:8080"
+    else
+      port_spec="127.0.0.1:${host_port}:8080"
+    fi
   fi
   base_image_archive_host_path="$(resolve_host_path "$(env_value PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_HOST_PATH)" "./dicom-server-images/dicom_server_base.tar")"
   base_image_archive_container_path="$(env_value_or_default PACS_DICOM_SERVER_BASE_IMAGE_ARCHIVE_CONTAINER_PATH /app/dicom-server-images/dicom_server_base.tar)"
@@ -1083,6 +1102,7 @@ start_api_container() {
 
   local env_pairs=(
     "SPRING_PROFILES_ACTIVE=$TARGET"
+    "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE=$(env_value_or_default SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE 180s)"
     "APP_CACHE_PROVIDER=$(env_value_or_default APP_CACHE_PROVIDER redis)"
     "APP_CACHE_TTL_SECONDS=$(env_value_or_default APP_CACHE_TTL_SECONDS 600)"
     "APP_CACHE_MAX_ENTRIES=$(env_value_or_default APP_CACHE_MAX_ENTRIES 5000)"
@@ -1099,6 +1119,9 @@ start_api_container() {
     "SPRING_DATASOURCE_USERNAME=$(target_env_value SPRING_DATASOURCE_USERNAME SPRING_DATASOURCE_USERNAME)"
     "SPRING_DATASOURCE_PASSWORD=$(target_env_value SPRING_DATASOURCE_PASSWORD SPRING_DATASOURCE_PASSWORD)"
     "SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY=$(target_env_value SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY SECURITY_JWT_REFRESH_TOKEN_ENCRYPTION_KEY)"
+    "SECURITY_JWT_REFRESH_TOKEN_COOKIE_SECURE=$(env_value_or_default SECURITY_JWT_REFRESH_TOKEN_COOKIE_SECURE false)"
+    "SECURITY_JWT_REFRESH_TOKEN_COOKIE_SAME_SITE=$(env_value_or_default SECURITY_JWT_REFRESH_TOKEN_COOKIE_SAME_SITE Lax)"
+    "SECURITY_JWT_REFRESH_TOKEN_COOKIE_NAME=$(env_value_or_default SECURITY_JWT_REFRESH_TOKEN_COOKIE_NAME refreshToken)"
     "SECURITY_JWT_PRIVATE_KEY=$(env_value SECURITY_JWT_PRIVATE_KEY)"
     "SECURITY_JWT_PUBLIC_KEY=$(env_value SECURITY_JWT_PUBLIC_KEY)"
     "SECURITY_JWT_KEY_ID=$(env_value SECURITY_JWT_KEY_ID)"
@@ -1140,11 +1163,14 @@ start_api_container() {
 
   local host_alias_args=()
   mapfile -d '' -t host_alias_args < <(docker_host_alias_args)
-  local args=(run -d --name "$name" "${host_alias_args[@]}" -p "$port_spec")
-  if [[ "$public_bind" == "true" && "$api_bind_host" != "127.0.0.1" && "$api_bind_host" != "localhost" ]]; then
+  local args=(run -d --name "$name" "${host_alias_args[@]}")
+  if [[ -n "$port_spec" ]]; then
+    args+=(-p "$port_spec")
+  fi
+  if [[ -n "$host_port" && "$public_bind" == "true" && "$api_bind_host" != "127.0.0.1" && "$api_bind_host" != "localhost" ]]; then
     args+=(-p "127.0.0.1:${host_port}:8080")
   fi
-  args+=(--restart "$restart_policy" --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --network "$redis_network_name" --tmpfs /tmp:size=64m,mode=1777 -v "${key_path}:/app/config/key:ro" -v "${image_path}:${image_container_path}" -v "$dicom_upload_mount")
+  args+=(--restart "$restart_policy" --stop-timeout "$deploy_stop_timeout" --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --network "$redis_network_name" --tmpfs /tmp:size=64m,mode=1777 -v "${key_path}:/app/config/key:ro" -v "${image_path}:${image_container_path}" -v "$dicom_upload_mount")
   if [[ -f "$base_image_archive_host_path" ]]; then
     args+=(-v "${base_image_archive_host_path}:${base_image_archive_container_path}:ro")
   fi
@@ -1161,6 +1187,31 @@ start_api_container() {
   done
   args+=("$image_override")
   docker_cmd "${args[@]}" >/dev/null
+}
+
+container_api_health() {
+  local name="$1"
+  local attempts="${2:-60}"
+  local delay="${3:-1}"
+  local attempt
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if docker_cmd exec "$name" curl -fsS "http://127.0.0.1:8080/pacsApi/actuator/health" >/dev/null 2>&1; then
+      echo "API container OK: $name"
+      return 0
+    fi
+    sleep "$delay"
+  done
+  echo "API container health check failed: $name" >&2
+  return 1
+}
+
+cleanup_old_api_containers() {
+  local keep_name="$1"
+  local name
+  while IFS= read -r name; do
+    [[ -z "$name" || "$name" == "$keep_name" ]] && continue
+    remove_container_if_exists "$name"
+  done < <(active_api_containers)
 }
 
 api_health() {
@@ -1258,6 +1309,13 @@ case "$ACTION" in
   down)
     remove_container_if_exists "$service_name"
     remove_container_if_exists "${service_name}_tmp"
+    remove_container_if_exists "$proxy_name"
+    while IFS= read -r active_name; do
+      [[ -n "$active_name" ]] && remove_container_if_exists "$active_name"
+    done < <(active_api_containers)
+    while IFS= read -r candidate_name; do
+      [[ -n "$candidate_name" ]] && remove_container_if_exists "$candidate_name"
+    done < <(candidate_api_containers)
     remove_container_if_exists "$redis_container_name"
     while IFS= read -r rollback_name; do
       [[ -n "$rollback_name" ]] && remove_container_if_exists "$rollback_name"
@@ -1274,7 +1332,6 @@ case "$ACTION" in
     database_preflight
     ensure_redis_container
     normalize_hospital_image_folders
-    tmp_name="${service_name}_tmp"
     if [[ "$BUILD" == "true" && "$NO_BUILD" == "false" ]]; then
       endpoint_gate
       compose build
@@ -1282,63 +1339,43 @@ case "$ACTION" in
       load_bundle_image
     fi
     database_container_preflight
-    echo "Testing API tmp container $tmp_name on 127.0.0.1:${candidate_port}..."
-    start_api_container "$tmp_name" "$candidate_port"
-    saved_port="$health_port"
-    health_port="$candidate_port"
-    if ! api_health; then
-      show_container_failure "$tmp_name"
-      health_port="$saved_port"
-      notify_deploy "FAILED" "Temporary API container failed its health check." "tmp-health" "$tmp_name"
+
+    echo "Deploying API directly as $service_name..."
+    remove_legacy_live_alias_if_needed
+    remove_container_if_exists "$proxy_name"
+    remove_container_if_exists "${service_name}_tmp"
+    while IFS= read -r active_name; do
+      [[ -n "$active_name" ]] && remove_container_if_exists "$active_name"
+    done < <(active_api_containers)
+    while IFS= read -r candidate_name; do
+      [[ -n "$candidate_name" ]] && remove_container_if_exists "$candidate_name"
+    done < <(candidate_api_containers)
+    while IFS= read -r rollback_name; do
+      [[ -n "$rollback_name" ]] && remove_container_if_exists "$rollback_name"
+    done < <(docker_cmd ps -a --format '{{.Names}}' | grep "^${service_name}_rollback_" || true)
+
+    start_api_container "$service_name" "$health_port" "unless-stopped" "true" "$image_name"
+    if ! container_api_health "$service_name" || ! api_health 60 1; then
+      show_container_failure "$service_name"
+      notify_deploy "FAILED" "API direct deploy failed its health check." "health" "$service_name"
       deploy_error_notified=true
       exit 1
     fi
-    health_port="$saved_port"
-    echo "Tmp is healthy. Promoting $service_name..."
-    remove_legacy_live_alias_if_needed
-    backup_name="${service_name}_rollback_$(date +%Y%m%d%H%M%S)"
-    had_live=false
-    if container_exists "$service_name"; then
-      had_live=true
-      docker_cmd stop "$service_name" >/dev/null 2>&1 || true
-      docker_cmd rename "$service_name" "$backup_name"
+    if ! public_api_health 10 1; then
+      echo "Warning: API is healthy on 127.0.0.1:${health_port}, but the configured public health URL did not answer yet: $(public_api_health_url)" >&2
     fi
-
-    promotion_error_log="$(mktemp "/tmp/udaya_pacs_api_${TARGET}_promotion_XXXXXX.log")"
-    if start_api_container "$service_name" "$health_port" "unless-stopped" "true" "$image_name" 2>"$promotion_error_log" && api_health 60 1; then
-      if ! public_api_health 10 1; then
-        echo "Warning: API is healthy on 127.0.0.1:${health_port}, but the configured public health URL did not answer yet: $(public_api_health_url)" >&2
-      fi
-      rm -f "$promotion_error_log"
-      remove_container_if_exists "$tmp_name"
-      if [[ "$had_live" == "true" ]]; then
-        remove_container_if_exists "$backup_name"
-      fi
-      echo "API deployed: live=${service_name}, tmp removed, url=$(public_api_health_url)"
-      notify_deploy "SUCCESS" "API deployed and health check passed."
-      exit 0
-    fi
-
-    deploy_report_extra="$(cat "$promotion_error_log" 2>/dev/null || true)"
-    rm -f "$promotion_error_log"
-    show_container_failure "$service_name"
-    echo "Promotion failed. Attempting rollback to previous API container." >&2
-    notify_deploy "FAILED" "API promotion failed. Rollback was attempted." "promotion" "$service_name"
-    deploy_error_notified=true
-    remove_container_if_exists "$service_name"
-    if [[ "$had_live" == "true" ]]; then
-      docker_cmd rename "$backup_name" "$service_name"
-      docker_cmd start "$service_name" >/dev/null
-      public_api_health 30 1
-    fi
-    remove_container_if_exists "$tmp_name"
-    exit 1
+    echo "API deployed directly: container=${service_name}, url=$(public_api_health_url)"
+    notify_deploy "SUCCESS" "API deployed directly and health check passed."
     ;;
   logs)
-    docker_cmd logs -f --tail 200 "$service_name"
+    log_name="$(current_api_container || printf '%s' "$service_name")"
+    docker_cmd logs -f --tail 200 "$log_name"
     ;;
   ps)
-    compose ps
+    docker_cmd ps -a --filter "name=^/${service_name}(_proxy|_active_[0-9]+|_candidate_[0-9]+)?$" \
+      --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+    docker_cmd ps -a --filter "name=^/${redis_container_name}$" \
+      --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
     ;;
   health)
     if ! redis_health 5 1; then

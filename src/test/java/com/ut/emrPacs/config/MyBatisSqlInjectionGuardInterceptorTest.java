@@ -9,6 +9,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -41,5 +42,38 @@ class MyBatisSqlInjectionGuardInterceptorTest {
                 contains("StudyMapper.list")
         );
         verify(invocation, never()).proceed();
+    }
+
+    @Test
+    void allowsSafeDynamicOrderByParameter() throws Throwable {
+        MyBatisSqlInjectionGuardInterceptor interceptor = new MyBatisSqlInjectionGuardInterceptor(null);
+        Invocation invocation = mock(Invocation.class);
+        MappedStatement mappedStatement = mock(MappedStatement.class);
+        when(mappedStatement.getId()).thenReturn("StudyMapper.list");
+        when(invocation.getArgs()).thenReturn(new Object[]{
+                mappedStatement,
+                Map.of("orderBy", "created_at DESC, id ASC")
+        });
+        when(invocation.proceed()).thenReturn("ok");
+
+        Object result = interceptor.intercept(invocation);
+
+        assertEquals("ok", result);
+    }
+
+    @Test
+    void rejectsNonStringDynamicSqlParameter() {
+        MyBatisSqlInjectionGuardInterceptor interceptor = new MyBatisSqlInjectionGuardInterceptor(null);
+        Invocation invocation = mock(Invocation.class);
+        MappedStatement mappedStatement = mock(MappedStatement.class);
+        when(mappedStatement.getId()).thenReturn("StudyMapper.list");
+        when(invocation.getArgs()).thenReturn(new Object[]{
+                mappedStatement,
+                Map.of("orderBy", 10)
+        });
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> interceptor.intercept(invocation));
+
+        assertTrue(error.getMessage().contains("orderBy"));
     }
 }

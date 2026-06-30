@@ -51,6 +51,7 @@ class EndpointContractCoverageTest {
                 "POST /pacs-result/pacs-result-template-find/{templateKey}",
                 "POST /pacs-result-api/public-viewer-authorize",
                 "POST /pacs-result-template/pacs-result-template-list",
+                "POST /security/csp-report",
                 "POST /study/study-list",
                 "GET /study/{studyId}/viewer-info",
                 "POST /worklist/worklist-find",

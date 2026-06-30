@@ -1,6 +1,7 @@
 package com.ut.emrPacs.authentication.filter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ut.emrPacs.config.ApiConstants;
 import com.ut.emrPacs.mapper.auth.HospitalSecurityMapper;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
 import jakarta.servlet.FilterChain;
@@ -108,12 +109,20 @@ public class ActiveHospitalFilter extends OncePerRequestFilter {
         if (path == null || path.isBlank()) {
             return true;
         }
+        if (isAuthPath(path)) {
+            return true;
+        }
         for (String prefix : SKIP_PREFIXES) {
             if (path.startsWith(prefix)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static boolean isAuthPath(String path) {
+        return path.startsWith(ApiConstants.Auth.BASE_PATH + "/")
+                || path.contains(ApiConstants.Auth.BASE_PATH + "/");
     }
 
     private static String normalizePath(HttpServletRequest request) {

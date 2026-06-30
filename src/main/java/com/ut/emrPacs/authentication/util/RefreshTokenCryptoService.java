@@ -150,7 +150,7 @@ public class RefreshTokenCryptoService {
 
     private void logEncryptionDisabled(String reason, boolean strictProfile) {
         if (strictProfile) {
-            LOGGER.info("{} Refresh token encryption disabled; bearer refresh tokens are returned in response bodies.", reason);
+            LOGGER.info("{} Refresh token encryption disabled; HttpOnly refresh cookies will contain opaque bearer values.", reason);
             return;
         }
         LOGGER.info("{} Refresh token encryption disabled for non-production profile.", reason);

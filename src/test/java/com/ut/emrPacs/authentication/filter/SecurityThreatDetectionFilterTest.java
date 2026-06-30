@@ -128,6 +128,27 @@ class SecurityThreatDetectionFilterTest {
     }
 
     @Test
+    void shouldAllowCspReportsWithDangerousLookingUrls() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/pacsApi/security/csp-report");
+        request.setContentType("application/csp-report");
+        request.setContent(("""
+                {
+                  "csp-report": {
+                    "document-uri": "http://127.0.0.1:8080/pacsApi/",
+                    "violated-directive": "default-src"
+                  }
+                }
+                """).getBytes(StandardCharsets.UTF_8));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        assertEquals(200, response.getStatus());
+        verify(filterChain).doFilter(request, response);
+        verify(securityIncidentReporter, never()).reportBlockedRequest(Mockito.any(), Mockito.anyString(), Mockito.anyString(), Mockito.any());
+    }
+
+    @Test
     void shouldAllowDicomServerCallbackUrlConfigFields() throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/pacsApi/dicom-server/dicom-server-update");
         request.setContentType("application/json");

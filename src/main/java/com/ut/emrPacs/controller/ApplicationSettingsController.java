@@ -109,4 +109,5 @@ public class ApplicationSettingsController {
     private static boolean isSuperAdmin(Long userId) {
         return Long.valueOf(1L).equals(userId) || AuthorityUtils.isCrossHospitalAdminUser();
     }
+
 }

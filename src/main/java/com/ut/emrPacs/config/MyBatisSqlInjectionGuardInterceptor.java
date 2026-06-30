@@ -160,15 +160,6 @@ public class MyBatisSqlInjectionGuardInterceptor implements Interceptor {
     }
 
     private void validateByKey(String key, Object value, String statementId) {
-        if (!(value instanceof String stringValue)) {
-            return;
-        }
-
-        String trimmed = stringValue.trim();
-        if (trimmed.isEmpty()) {
-            return;
-        }
-
         String normalizedKey = normalizeKey(key);
         if (!dynamicKeys.contains(normalizedKey)) {
             return;
@@ -177,6 +168,19 @@ public class MyBatisSqlInjectionGuardInterceptor implements Interceptor {
         DynamicKeyRule rule = DYNAMIC_KEY_RULES.get(normalizedKey);
         if (rule == null) {
             throw reject(statementId, key);
+        }
+
+        if (value == null) {
+            return;
+        }
+
+        if (!(value instanceof CharSequence stringValue)) {
+            throw reject(statementId, key);
+        }
+
+        String trimmed = stringValue.toString().trim();
+        if (trimmed.isEmpty()) {
+            return;
         }
 
         if (trimmed.length() > MAX_ID_LIST_LENGTH) {
@@ -280,7 +284,7 @@ public class MyBatisSqlInjectionGuardInterceptor implements Interceptor {
             }
         }
         if (!unknown.isEmpty()) {
-            LOGGER.error("MyBatis ${} placeholders without allowlist rules: {}", PLACEHOLDER_PATTERN.pattern(), unknown);
+            throw new IllegalStateException("MyBatis ${} placeholders without allowlist rules: " + unknown);
         }
 
         return Collections.unmodifiableSet(keys);

@@ -31,6 +31,9 @@ public class SecurityProfileHardeningValidator implements InitializingBean {
     @Value("${cors.allowedOrigins:}")
     private String corsAllowedOrigins;
 
+    @Value("${cors.allowCredentials:false}")
+    private boolean corsAllowCredentials;
+
     @Value("${api.authUrl:}")
     private String apiAuthUrl;
 
@@ -48,6 +51,15 @@ public class SecurityProfileHardeningValidator implements InitializingBean {
 
     @Value("${security.jwt.access-token-return-in-body:false}")
     private boolean accessTokenReturnInBody;
+
+    @Value("${security.jwt.refresh-token-cookie-name:}")
+    private String refreshTokenCookieName;
+
+    @Value("${security.jwt.refresh-token-cookie-same-site:}")
+    private String refreshTokenCookieSameSite;
+
+    @Value("${security.jwt.refresh-token-cookie-secure:false}")
+    private boolean refreshTokenCookieSecure;
 
     @Value("${app.security.permissions.deny-when-unknown:false}")
     private boolean denyWhenUnknownPermission;
@@ -99,20 +111,37 @@ public class SecurityProfileHardeningValidator implements InitializingBean {
         if (isMissingOrPlaceholder(corsAllowedOrigins) || isLocalUrl(corsAllowedOrigins)) {
             throw new IllegalStateException("CORS_ALLOWED_ORIGINS must be set and must not use localhost or Docker hostnames.");
         }
+        if (corsAllowCredentials && containsWildcardOrigin(corsAllowedOrigins)) {
+            throw new IllegalStateException(
+                    "CORS_ALLOW_CREDENTIALS must not be combined with a wildcard '*' origin in qa/prod "
+                            + "(reflecting any origin with credentials defeats CORS). List explicit origins instead.");
+        }
         if (isMissingOrPlaceholder(apiAuthUrl) || isLocalUrl(apiAuthUrl)) {
             throw new IllegalStateException("API_AUTH_URL must be set to the public API server URL in qa/prod.");
         }
         if (pacsResultStaticAuthEnabled && isMissingOrPlaceholder(pacsResultApiKey)) {
             throw new IllegalStateException("PACS_RESULT_API_KEY must be set when PACS result static auth is enabled in qa/prod.");
         }
-        if (!refreshTokenAllowBody) {
-            throw new IllegalStateException("security.jwt.refresh-token-allow-body must be true in qa/prod for Bearer-only auth.");
+        if (refreshTokenAllowBody) {
+            throw new IllegalStateException("security.jwt.refresh-token-allow-body must be false in qa/prod; use the HttpOnly refresh cookie.");
         }
-        if (!refreshTokenReturnInBody) {
-            throw new IllegalStateException("security.jwt.refresh-token-return-in-body must be true in qa/prod for Bearer-only auth.");
+        if (refreshTokenReturnInBody) {
+            throw new IllegalStateException("security.jwt.refresh-token-return-in-body must be false in qa/prod; refresh tokens must not be readable by browser JavaScript.");
         }
         if (!accessTokenReturnInBody) {
-            throw new IllegalStateException("security.jwt.access-token-return-in-body must be true in qa/prod for Bearer-only auth.");
+            throw new IllegalStateException("security.jwt.access-token-return-in-body must stay true until access-token cookie auth is implemented.");
+        }
+        if (isMissingOrPlaceholder(refreshTokenCookieName)) {
+            throw new IllegalStateException("security.jwt.refresh-token-cookie-name must be set in qa/prod.");
+        }
+        if (!isSupportedSameSite(refreshTokenCookieSameSite)) {
+            throw new IllegalStateException("security.jwt.refresh-token-cookie-same-site must be Strict, Lax, or None.");
+        }
+        if ("none".equalsIgnoreCase(refreshTokenCookieSameSite) && !refreshTokenCookieSecure) {
+            throw new IllegalStateException("security.jwt.refresh-token-cookie-secure must be true when SameSite=None.");
+        }
+        if (!refreshTokenCookieSecure && !isPrivateLanHttpUrl(apiAuthUrl)) {
+            throw new IllegalStateException("security.jwt.refresh-token-cookie-secure must be true outside private .lan HTTP deployments.");
         }
         if (!denyWhenUnknownPermission) {
             throw new IllegalStateException("app.security.permissions.deny-when-unknown must be true in qa/prod.");
@@ -166,6 +195,15 @@ public class SecurityProfileHardeningValidator implements InitializingBean {
                 || "change".equals(normalized);
     }
 
+    private static boolean containsWildcardOrigin(String value) {
+        if (value == null) {
+            return false;
+        }
+        return Arrays.stream(value.split(","))
+                .map(entry -> entry == null ? "" : entry.trim())
+                .anyMatch("*"::equals);
+    }
+
     private static boolean isLocalUrl(String value) {
         String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         return normalized.contains("localhost")
@@ -175,5 +213,15 @@ public class SecurityProfileHardeningValidator implements InitializingBean {
                 || normalized.contains("dicom_server_nmchc")
                 || normalized.contains("udaya_dicom_server_ksfh")
                 || normalized.contains("udaya_dicom_server_nmchc");
+    }
+
+    private static boolean isSupportedSameSite(String value) {
+        String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        return "strict".equals(normalized) || "lax".equals(normalized) || "none".equals(normalized);
+    }
+
+    private static boolean isPrivateLanHttpUrl(String value) {
+        String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        return normalized.startsWith("http://") && normalized.contains(".lan");
     }
 }

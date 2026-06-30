@@ -317,6 +317,7 @@ public class UserServiceImpl implements UserService {
                 }
                 userList.getFirst().setModuleTypeList(moduleTypeList);
                 userList.getFirst().setHospitalList(userMapper.getHospitalIdByUserId(userId));
+                userList.getFirst().setUserRoleList(userMapper.getOneUserGroupList(userId));
             }
             if (userList == null || userList.isEmpty()) {
                 LocalTime endDuration = LocalTime.now();
@@ -608,6 +609,7 @@ public class UserServiceImpl implements UserService {
             }
 
             // Update user
+            userUpdateRequest.setModifiedBy(actorUserId);
             Boolean result = userMapper.updateUser(userUpdateRequest);
             if (result) {
                 if (hasHospitalSelection) {
@@ -853,7 +855,7 @@ public class UserServiceImpl implements UserService {
             }
 
             // Delete user
-            Boolean result = userMapper.deleteUser(id);
+            Boolean result = userMapper.deleteUser(id, actorUserId);
             if (result) {
                 LocalTime endDuration = LocalTime.now();
                 activityLogService.insert(ApiConstants.User.BASE_PATH + ApiConstants.User.DELETE_PATH,null,null,"User","User (Delete)","Delete",1,"Success",startDuration,endDuration, httpServletRequest);

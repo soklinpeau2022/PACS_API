@@ -12,6 +12,9 @@ public class RolePermissionTreeResponse {
     private String moduleTypeName;
     private String moduleTypeNameOther;
     private Integer moduleTypeOrder;
+    private String groupCode;
+    private String groupName;
+    private Integer groupOrderNo;
     @JsonIgnore
     private Long moduleId;
     private String modulePublicKey;

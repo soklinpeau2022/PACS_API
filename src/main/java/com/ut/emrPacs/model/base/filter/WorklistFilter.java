@@ -40,6 +40,10 @@ public class WorklistFilter extends Filter {
     private List<Integer> statusCodes;
     private LocalDate dateFrom;
     private LocalDate dateTo;
+    @Schema(description = "When true, only WAITING worklists older than overdueMinutes are returned.")
+    private Boolean overdueOnly;
+    @Schema(description = "Age threshold used with overdueOnly.", example = "30")
+    private Integer overdueMinutes;
     @Schema(description = "Exact patient code / MRN filter for large-data searches.", example = "2026-KSFH-P0000001")
     private String patientCode;
     @Schema(description = "Patient name contains filter.", example = "Sok")

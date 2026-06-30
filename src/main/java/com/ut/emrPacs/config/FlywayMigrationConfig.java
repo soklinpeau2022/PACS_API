@@ -1,6 +1,10 @@
 package com.ut.emrPacs.config;
 
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.FlywayException;
+import org.flywaydb.core.api.callback.Callback;
+import org.flywaydb.core.api.callback.Context;
+import org.flywaydb.core.api.callback.Event;
 import org.flywaydb.core.api.configuration.FluentConfiguration;
 import org.flywaydb.database.postgresql.PostgreSQLConfigurationExtension;
 import org.springframework.beans.factory.annotation.Value;
@@ -10,6 +14,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.Arrays;
 
 @Configuration
@@ -23,7 +29,6 @@ public class FlywayMigrationConfig {
             @Value("${spring.flyway.locations:classpath:db/migration}") String locations,
             @Value("${spring.flyway.baseline-on-migrate:false}") boolean baselineOnMigrate,
             @Value("${spring.flyway.clean-disabled:true}") boolean cleanDisabled,
-            @Value("${spring.flyway.clean-on-validation-error:false}") boolean cleanOnValidationError,
             @Value("${spring.flyway.validate-on-migrate:true}") boolean validateOnMigrate,
             @Value("${spring.flyway.out-of-order:false}") boolean outOfOrder,
             @Value("${spring.flyway.fail-on-missing-locations:true}") boolean failOnMissingLocations,
@@ -35,13 +40,13 @@ public class FlywayMigrationConfig {
                 .locations(parseLocations(locations))
                 .baselineOnMigrate(baselineOnMigrate)
                 .cleanDisabled(cleanDisabled)
-                .cleanOnValidationError(cleanOnValidationError)
                 .validateOnMigrate(validateOnMigrate)
                 .outOfOrder(outOfOrder)
                 .failOnMissingLocations(failOnMissingLocations);
 
-        if (initSql != null && !initSql.trim().isEmpty()) {
-            configuration.initSql(initSql.trim());
+        String afterConnectSql = initSql == null ? "" : initSql.trim();
+        if (!afterConnectSql.isEmpty()) {
+            configuration.callbacks(new AfterConnectSqlCallback(afterConnectSql));
         }
 
         PostgreSQLConfigurationExtension postgresql =
@@ -59,5 +64,31 @@ public class FlywayMigrationConfig {
                 .map(String::trim)
                 .filter(location -> !location.isEmpty())
                 .toArray(String[]::new);
+    }
+
+    private record AfterConnectSqlCallback(String sql) implements Callback {
+        @Override
+        public boolean supports(Event event, Context context) {
+            return Event.AFTER_CONNECT.equals(event);
+        }
+
+        @Override
+        public boolean canHandleInTransaction(Event event, Context context) {
+            return false;
+        }
+
+        @Override
+        public void handle(Event event, Context context) {
+            try (Statement statement = context.getConnection().createStatement()) {
+                statement.execute(sql);
+            } catch (SQLException exception) {
+                throw new FlywayException("Failed to execute Flyway after-connect SQL", exception);
+            }
+        }
+
+        @Override
+        public String getCallbackName() {
+            return "after-connect-sql";
+        }
     }
 }

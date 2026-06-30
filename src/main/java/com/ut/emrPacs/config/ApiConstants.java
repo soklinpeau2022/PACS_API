@@ -21,7 +21,7 @@ public final class ApiConstants {
         }
     }
 
-    public static final class ApplicationSettings {
+        public static final class ApplicationSettings {
         public static final String BASE_PATH = "/application-settings";
         public static final String BRAND_PUBLIC_GET_PATH = "/application-brand-settings-public";
         public static final String BRAND_UPDATE_PATH = "/application-brand-settings-update";
@@ -399,6 +399,9 @@ public final class ApiConstants {
     }
 
     public static final class Security {
+        public static final String BASE_PATH = "/security";
+        public static final String CSP_REPORT_PATH = "/csp-report";
+        public static final String CSP_REPORT_FULL_PATH = BASE_PATH + CSP_REPORT_PATH;
         public static final String PRINCIPAL_TYPE_USER = "USER";
         public static final String PRINCIPAL_TYPE_CLIENT = "CLIENT";
 

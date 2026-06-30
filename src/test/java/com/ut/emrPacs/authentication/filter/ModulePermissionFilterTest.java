@@ -66,6 +66,28 @@ class ModulePermissionFilterTest {
     }
 
     @Test
+    void shouldSkipPrefixedAuthPathEvenWhenAuthenticated() throws Exception {
+        ReflectionTestUtils.setField(filter, "denyWhenUnknown", true);
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "RS256")
+                .subject("100")
+                .claim("principalType", "USER")
+                .build();
+        JwtAuthenticationToken authenticationToken = new JwtAuthenticationToken(jwt, List.of());
+        authenticationToken.setDetails(new CurrentUserPrincipal(100L, "admin", null, null, "pacs-web", "j1", 1L));
+        SecurityContextHolder.getContext().setAuthentication(authenticationToken);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/pacsApi/auth/auth-login");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain).doFilter(request, response);
+        verify(endpointPermissionCache, never()).resolveRules("POST", "/pacsApi/auth/auth-login");
+        assertEquals(200, response.getStatus());
+    }
+
+    @Test
     void shouldReturnForbiddenWhenPermissionMissing() throws Exception {
         Jwt jwt = Jwt.withTokenValue("token")
                 .header("alg", "RS256")

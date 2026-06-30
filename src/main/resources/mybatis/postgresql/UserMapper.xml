@@ -147,7 +147,7 @@
         <if test="isActive != null">is_active = #{isActive},</if>
         modified = NOW(),
         modified_at = NOW(),
-        modified_by = 1
+        modified_by = COALESCE(#{modifiedBy}, 1)
         WHERE id = #{id}
     </update>
 
@@ -275,7 +275,7 @@
         UPDATE users SET
                         modified = NOW(),
                         modified_at = NOW(),
-                        modified_by = 1,
+                        modified_by = COALESCE(#{modifiedBy}, 1),
                         is_active = 2
         WHERE id = #{id}
     </delete>

@@ -73,7 +73,7 @@ public interface UserMapper {
     /**
      * MyBatis statement id: {@code delete}.
      */
-    Boolean deleteUser(Long id);
+    Boolean deleteUser(@Param("id") Long id, @Param("modifiedBy") Long modifiedBy);
 
     /**
      * MyBatis statement id: {@code getOneUserGroupList}.

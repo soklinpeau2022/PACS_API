@@ -27,6 +27,12 @@ public class DicomServerConfigBuildResponse {
     private String setupContent;
     private String callbackClientId;
     private String projectName;
+    @JsonIgnore
+    private String dockerPrivateIp;
+    @JsonIgnore
+    private String dockerNetworkName;
+    @JsonIgnore
+    private String dockerNetworkAlias;
     private String zipFileName;
     private String zipContentBase64;
 }

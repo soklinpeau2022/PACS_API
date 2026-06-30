@@ -10,6 +10,7 @@ import com.ut.emrPacs.model.base.BaseResult;
 import com.ut.emrPacs.model.base.MessageService;
 import com.ut.emrPacs.model.base.ResponseMessage;
 import com.ut.emrPacs.model.base.ResponseMessageUtils;
+import com.ut.emrPacs.model.base.filter.StudyRetentionReviewFilter;
 import com.ut.emrPacs.model.components.pacs.dashboard.WorklistStatusCountRow;
 import com.ut.emrPacs.model.dto.request.dashboard.DashboardOverviewRequest;
 import com.ut.emrPacs.model.dto.response.dashboard.DashboardActionAlertResponse;
@@ -27,6 +28,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.net.UnknownHostException;
+import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -74,13 +76,21 @@ public class DashboardServiceImpl implements DashboardService {
             int snapshotLimit = sanitizeLimit(request == null ? null : request.getSnapshotLimit(), 8, 1, 20);
             int waitingThresholdMinutes = sanitizeLimit(request == null ? null : request.getWaitingThresholdMinutes(), 30, 5, 240);
             boolean includeTodayMetrics = request != null && Boolean.TRUE.equals(request.getIncludeTodayMetrics());
+            LocalDate dateFrom = request == null ? null : request.getDateFrom();
+            LocalDate dateTo = request == null ? null : request.getDateTo();
+            if (dateFrom != null && dateTo != null && dateFrom.isAfter(dateTo)) {
+                LocalDate swap = dateFrom;
+                dateFrom = dateTo;
+                dateTo = swap;
+            }
 
             DashboardOverviewResponse response = new DashboardOverviewResponse();
-            response.setRecentPatients(nullSafeLong(dashboardMapper.countRecentPatients(hospitalId)));
-            response.setWorklistItems(nullSafeLong(dashboardMapper.countWorklistItems(hospitalId)));
-            response.setStudies("summary".equalsIgnoreCase(studiesCountSource)
-                    ? nullSafeLong(dashboardMapper.sumReceivedStudies(hospitalId))
-                    : nullSafeLong(dashboardMapper.countStudies(hospitalId)));
+            response.setRecentPatients(nullSafeLong(dashboardMapper.countRecentPatients(hospitalId, dateFrom, dateTo)));
+            response.setWorklistItems(nullSafeLong(dashboardMapper.countWorklistItems(hospitalId, dateFrom, dateTo)));
+            boolean hasStudyDateFilter = dateFrom != null || dateTo != null;
+            response.setStudies(!hasStudyDateFilter && "summary".equalsIgnoreCase(studiesCountSource)
+                    ? nullSafeLong(dashboardMapper.sumReceivedStudies(hospitalId, null, null))
+                    : nullSafeLong(dashboardMapper.countStudies(hospitalId, dateFrom, dateTo)));
 
             response.setTotalDicomServers(nullSafeLong(dashboardMapper.countTotalDicomServers(hospitalId)));
             response.setActiveDicomServers(nullSafeLong(dashboardMapper.countActiveDicomServers(hospitalId)));
@@ -101,14 +111,14 @@ public class DashboardServiceImpl implements DashboardService {
             response.setUnmappedModalities(nullSafeLong(dashboardMapper.countUnmappedModalities(hospitalId)));
 
             EnumMap<WorklistStatus, Long> worklistStatusMap = buildworklistStatusMap(
-                    dashboardMapper.listWorklistStatusCounts(hospitalId)
+                    dashboardMapper.listWorklistStatusCounts(hospitalId, dateFrom, dateTo)
             );
             response.setWorklistWaiting(worklistStatusMap.getOrDefault(WorklistStatus.WAITING, 0L));
             response.setWorklistInProgress(worklistStatusMap.getOrDefault(WorklistStatus.IN_PROGRESS, 0L));
             response.setWorklistCancelled(worklistStatusMap.getOrDefault(WorklistStatus.CANCELLED, 0L));
             response.setWorklistFailed(worklistStatusMap.getOrDefault(WorklistStatus.FAILED, 0L));
 
-            response.setLongWaitingWorklists(nullSafeLong(dashboardMapper.countLongWaitingWorklists(hospitalId, waitingThresholdMinutes)));
+            response.setLongWaitingWorklists(nullSafeLong(dashboardMapper.countLongWaitingWorklists(hospitalId, waitingThresholdMinutes, dateFrom, dateTo)));
             if (includeTodayMetrics) {
                 response.setTodayAssignedWorklists(nullSafeLong(dashboardMapper.countTodayAssignedWorklists(hospitalId)));
                 response.setTodayCancelledWorklists(nullSafeLong(dashboardMapper.countTodayCancelledWorklists(hospitalId)));
@@ -117,15 +127,16 @@ public class DashboardServiceImpl implements DashboardService {
                 response.setTodayCancelledWorklists(0L);
             }
 
-            StudyRetentionSummaryResponse retentionSummary = studyRetentionMapper.summary(hospitalId);
+            StudyRetentionReviewFilter retentionFilter = buildRetentionDateFilter(dateFrom, dateTo);
+            StudyRetentionSummaryResponse retentionSummary = studyRetentionMapper.summary(hospitalId, retentionFilter);
             response.setRetentionNearExpiry(nullSafeLong(retentionSummary == null ? null : retentionSummary.getNearExpiry()));
             response.setRetentionExpiredWaitingApproval(nullSafeLong(retentionSummary == null ? null : retentionSummary.getExpiredWaitingApproval()));
             response.setRetentionPendingApproval(nullSafeLong(retentionSummary == null ? null : retentionSummary.getPendingApproval()));
             response.setRetentionAutoDeleteReady(nullSafeLong(retentionSummary == null ? null : retentionSummary.getAutoDeleteReady()));
             response.setRetentionDeleteFailed(nullSafeLong(retentionSummary == null ? null : retentionSummary.getDeleteFailed()));
-            response.setRetentionAlerts(studyRetentionMapper.listDashboardRetentionAlerts(hospitalId, 8));
+            response.setRetentionAlerts(studyRetentionMapper.listDashboardRetentionAlerts(hospitalId, 8, retentionFilter));
 
-            response.setWorklistSnapshot(dashboardMapper.listWorklistSnapshot(hospitalId, snapshotLimit));
+            response.setWorklistSnapshot(dashboardMapper.listWorklistSnapshot(hospitalId, snapshotLimit, dateFrom, dateTo));
             response.setActionAlerts(buildActionAlerts(response, waitingThresholdMinutes, includeTodayMetrics));
 
             LocalTime endDuration = LocalTime.now();
@@ -196,6 +207,17 @@ public class DashboardServiceImpl implements DashboardService {
 
     private static long nullSafeLong(Long value) {
         return value == null ? 0L : value;
+    }
+
+    private static StudyRetentionReviewFilter buildRetentionDateFilter(LocalDate dateFrom, LocalDate dateTo) {
+        StudyRetentionReviewFilter filter = new StudyRetentionReviewFilter();
+        if (dateFrom != null) {
+            filter.setStartDate(dateFrom.toString());
+        }
+        if (dateTo != null) {
+            filter.setEndDate(dateTo.toString());
+        }
+        return filter;
     }
 
     private static String resolveSystemPulse(long activeServers, long onlineServers, long offlineServers) {

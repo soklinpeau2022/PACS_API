@@ -47,9 +47,12 @@ public interface StudyRetentionMapper {
 
     List<StudyRetentionReviewResponse> listAutoDeleteCandidates(@Param("hospitalId") Long hospitalId, @Param("limit") Integer limit);
 
-    List<StudyRetentionReviewResponse> listDashboardRetentionAlerts(@Param("hospitalId") Long hospitalId, @Param("limit") Integer limit);
+    List<StudyRetentionReviewResponse> listDashboardRetentionAlerts(@Param("hospitalId") Long hospitalId,
+                                                                    @Param("limit") Integer limit,
+                                                                    @Param("filter") StudyRetentionReviewFilter filter);
 
-    StudyRetentionSummaryResponse summary(@Param("hospitalId") Long hospitalId);
+    StudyRetentionSummaryResponse summary(@Param("hospitalId") Long hospitalId,
+                                          @Param("filter") StudyRetentionReviewFilter filter);
 
     Long createDeleteRequest(@Param("candidate") StudyRetentionReviewResponse candidate, @Param("userId") Long userId);
 

@@ -180,6 +180,12 @@
           <if test="filter != null and filter.dateTo != null">
               AND COALESCE(q.scheduled_date, CAST(q.created_at AS DATE), CAST(q.created AS DATE)) &lt;= CAST(#{filter.dateTo} AS DATE)
           </if>
+          <if test="filter != null and filter.overdueOnly == true">
+              AND q.status = 1
+              AND COALESCE(q.created_at, q.created, NOW()) &lt;= (
+                  NOW() - (COALESCE(#{filter.overdueMinutes}, 30) * INTERVAL '1 minute')
+              )
+          </if>
     </sql>
 
     <select id="countList" resultType="java.lang.Long">

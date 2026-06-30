@@ -61,4 +61,7 @@ public class UserUpdateRequest {
     private List<@Positive Long> userGroupIds;
     @JsonAlias({"userGroupPublicKeys", "roleKeys", "rolePublicKeys", "roleUuids"})
     private List<String> userGroupKeys;
+
+    @JsonIgnore
+    private Long modifiedBy;
 }

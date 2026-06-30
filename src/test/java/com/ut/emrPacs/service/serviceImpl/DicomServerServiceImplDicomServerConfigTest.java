@@ -106,17 +106,15 @@ class DicomServerServiceImplDicomServerConfigTest {
     @Test
     void healthcheckShouldUseBasicAuthWithoutRawPassword() {
         DicomServerServiceImpl service = new DicomServerServiceImpl();
-        Map<String, Object> config = new LinkedHashMap<>();
-        config.put("AuthenticationEnabled", true);
-        config.put("RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")));
 
-        String command = ReflectionTestUtils.invokeMethod(service, "buildDicomServerHealthcheckCommand", config);
+        String script = ReflectionTestUtils.invokeMethod(service, "buildDicomServerHealthcheckScriptContent");
 
-        assertTrue(command.contains("Authorization"));
-        assertTrue(command.contains("Basic "));
-        assertTrue(command.contains("/etc/dicom_server/config.json"));
-        assertFalse(command.contains("secret-123"));
-        assertFalse(command.contains("b3J0aGFuYzpzZWNyZXQtMTIz"));
+        assertTrue(script.contains("Authorization"));
+        assertTrue(script.contains("Basic {credentials}"));
+        assertTrue(script.contains("/etc/dicom_server/config.json"));
+        assertTrue(script.contains("socket.create_connection"));
+        assertFalse(script.contains("secret-123"));
+        assertFalse(script.contains("b3J0aGFuYzpzZWNyZXQtMTIz"));
     }
 
     @Test
@@ -350,8 +348,11 @@ class DicomServerServiceImplDicomServerConfigTest {
         assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("pull_policy: never"));
         assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("pull: false"));
         assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("./runtime/config/dicom_server.json:/etc/dicom_server/config.json:ro"));
-        assertFalse(files.get("dicom_server_ksfh/docker-compose.yml").contains("UDAYA_PACS_API_NETWORK_NAME"));
-        assertFalse(files.get("dicom_server_ksfh/docker-compose.yml").contains("pacs_api"));
+        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("UDAYA_PACS_API_NETWORK_NAME"));
+        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("UDAYA_DICOM_SERVER_DOCKER_IP"));
+        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("pacs_api"));
+        assertTrue(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("ensure_docker_network"));
+        assertTrue(files.get("dicom_server_ksfh/scripts/healthcheck.py").contains("socket.create_connection"));
         assertTrue(files.get("dicom_server_ksfh/config/dicom_server.json").contains("${UDAYA_DICOM_SERVER_HTTP_USERNAME}"));
         assertTrue(files.get("dicom_server_ksfh/config/dicom_server.json").contains("${UDAYA_DICOM_SERVER_HTTP_PASSWORD}"));
         assertTrue(files.get("dicom_server_ksfh/config/dicom_server.json").contains("${UDAYA_PACS_API_AUTH_CALLBACK}/worklist/viewer-dicom-web-authorize"));

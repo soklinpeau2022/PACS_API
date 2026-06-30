@@ -3,6 +3,7 @@ package com.ut.emrPacs.authentication.filter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.ut.emrPacs.config.ApiConstants;
 import com.ut.emrPacs.helper.security.SecurityAuditLogger;
 import com.ut.emrPacs.helper.security.SecurityIncidentReporter;
 import com.ut.emrPacs.helper.security.UnicodeGuard;
@@ -176,6 +177,11 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
             return;
         }
 
+        if (isCspReportPath(request)) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
         if (shouldEnforceSameOrigin(request) && !isSameOrigin(request)) {
             SecurityAuditLogger.logBlocked(LOGGER, request, "csrf_same_origin", "origin_mismatch", null);
             reportBlocked(request, "csrf_same_origin", "origin_mismatch", request.getHeader("Origin"));
@@ -302,6 +308,18 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
         String path = request.getRequestURI();
         return path.endsWith("/dicom-server/dicom-server-create")
                 || path.endsWith("/dicom-server/dicom-server-update");
+    }
+
+    private static boolean isCspReportPath(HttpServletRequest request) {
+        if (request == null) {
+            return false;
+        }
+        String servletPath = request.getServletPath();
+        if (ApiConstants.Security.CSP_REPORT_FULL_PATH.equals(servletPath)) {
+            return true;
+        }
+        String path = request.getRequestURI();
+        return path != null && path.endsWith(ApiConstants.Security.CSP_REPORT_FULL_PATH);
     }
 
     private static boolean isDicomServerViewerAuthorizationPath(HttpServletRequest request) {
@@ -530,6 +548,9 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
         if (request == null) {
             return false;
         }
+        if (isLoginPath(request)) {
+            return false;
+        }
         String method = request.getMethod();
         if (method == null) {
             return false;
@@ -539,6 +560,15 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
             return false;
         }
         return hasAuthCookies(request);
+    }
+
+    private static boolean isLoginPath(HttpServletRequest request) {
+        String servletPath = request.getServletPath();
+        if (ApiConstants.Auth.LOGIN_FULL_PATH.equals(servletPath)) {
+            return true;
+        }
+        String path = request.getRequestURI();
+        return path != null && path.endsWith(ApiConstants.Auth.LOGIN_FULL_PATH);
     }
 
     private static boolean hasAuthCookies(HttpServletRequest request) {
@@ -660,6 +690,12 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
     }
 
     private static int resolveRequestPort(HttpServletRequest request, String scheme) {
+        String forwardedHost = request.getHeader("X-Forwarded-Host");
+        Integer forwardedHostPort = parsePortFromHost(forwardedHost);
+        if (forwardedHostPort != null) {
+            return forwardedHostPort;
+        }
+
         String forwardedPort = request.getHeader("X-Forwarded-Port");
         if (forwardedPort != null && !forwardedPort.isBlank()) {
             try {
@@ -687,5 +723,33 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
             return request.getServerPort() > 0 ? request.getServerPort() : 80;
         }
         return request.getServerPort();
+    }
+
+    private static Integer parsePortFromHost(String hostHeader) {
+        if (hostHeader == null || hostHeader.isBlank()) {
+            return null;
+        }
+        String hostPart = hostHeader.split(",")[0].trim();
+        if (hostPart.startsWith("[")) {
+            int end = hostPart.indexOf(']');
+            if (end >= 0 && hostPart.length() > end + 2 && hostPart.charAt(end + 1) == ':') {
+                return parsePositivePort(hostPart.substring(end + 2));
+            }
+            return null;
+        }
+        int colon = hostPart.lastIndexOf(':');
+        if (colon <= 0 || colon == hostPart.length() - 1 || hostPart.indexOf(':') != colon) {
+            return null;
+        }
+        return parsePositivePort(hostPart.substring(colon + 1));
+    }
+
+    private static Integer parsePositivePort(String rawPort) {
+        try {
+            int port = Integer.parseInt(rawPort.trim());
+            return port > 0 && port <= 65535 ? port : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 }

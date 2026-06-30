@@ -79,6 +79,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class ApiSecurityConfig {
 
     private static final List<String> DEFAULT_ALLOWED_METHODS = List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD");
+    private static final String API_CSP_REPORT_DIRECTIVES = "report-to csp-endpoint; report-uri /pacsApi/security/csp-report";
+    private static final String API_REPORTING_ENDPOINTS = "csp-endpoint=\"/pacsApi/security/csp-report\"";
+    private static final String API_REPORT_TO = "{\"group\":\"csp-endpoint\",\"max_age\":10886400,\"endpoints\":[{\"url\":\"/pacsApi/security/csp-report\"}],\"include_subdomains\":true}";
+    private static final String API_SWAGGER_CSP_POLICY = "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; " + API_CSP_REPORT_DIRECTIVES;
+    private static final String API_STRICT_CSP_POLICY = "default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; " + API_CSP_REPORT_DIRECTIVES;
+    private static final String API_PERMISSIONS_POLICY = "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), usb=(), xr-spatial-tracking=()";
     private static final List<String> DEFAULT_ALLOWED_HEADERS = List.of(
             "Origin",
             "Content-Type",
@@ -117,6 +123,7 @@ public class ApiSecurityConfig {
             "/error",
             "/actuator/health",
             "/actuator/info",
+            ApiConstants.Security.CSP_REPORT_FULL_PATH,
             ApiConstants.ApplicationSettings.BRAND_PUBLIC_GET_FULL_PATH,
             ApiConstants.ApplicationSettings.BRAND_ASSET_FULL_PREFIX + "**",
             ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.RECEIVED_STUDY_PATH,
@@ -283,6 +290,8 @@ public class ApiSecurityConfig {
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        String apiCspPolicy = swaggerPublic ? API_SWAGGER_CSP_POLICY : API_STRICT_CSP_POLICY;
+
         if (requireHttps) {
             http.redirectToHttps(Customizer.withDefaults());
         }
@@ -364,14 +373,20 @@ public class ApiSecurityConfig {
                         .contentTypeOptions(Customizer.withDefaults())
                         .cacheControl(Customizer.withDefaults())
                         .frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
-                        .contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"))
-                        .httpStrictTransportSecurity(hsts -> hsts.includeSubDomains(true).maxAgeInSeconds(31536000))
+                        .contentSecurityPolicy(csp -> csp.policyDirectives(apiCspPolicy))
                         .referrerPolicy(referrer -> referrer.policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER))
+                        .addHeaderWriter(new StaticHeadersWriter("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload"))
                         .addHeaderWriter(new StaticHeadersWriter("X-DNS-Prefetch-Control", "off"))
                         .addHeaderWriter(new StaticHeadersWriter("Cross-Origin-Opener-Policy", "same-origin"))
                         .addHeaderWriter(new StaticHeadersWriter("Cross-Origin-Resource-Policy", "same-origin"))
-                        .addHeaderWriter(new StaticHeadersWriter("Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=(), usb=()"))
+                        .addHeaderWriter(new StaticHeadersWriter("Permissions-Policy", API_PERMISSIONS_POLICY))
+                        .addHeaderWriter(new StaticHeadersWriter("X-Download-Options", "noopen"))
                         .addHeaderWriter(new StaticHeadersWriter("X-Permitted-Cross-Domain-Policies", "none"))
+                        .addHeaderWriter(new StaticHeadersWriter("X-XSS-Protection", "0"))
+                        .addHeaderWriter(new StaticHeadersWriter("Origin-Agent-Cluster", "?1"))
+                        .addHeaderWriter(new StaticHeadersWriter("X-Robots-Tag", "noindex, nofollow, nosnippet, noarchive"))
+                        .addHeaderWriter(new StaticHeadersWriter("Reporting-Endpoints", API_REPORTING_ENDPOINTS))
+                        .addHeaderWriter(new StaticHeadersWriter("Report-To", API_REPORT_TO))
                 )
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 // Filter order: CorsFilter → GlobalRequestSizeLimit → ThreatDetection → RateLimit

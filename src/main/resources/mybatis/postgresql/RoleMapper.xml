@@ -308,6 +308,13 @@
             mt.menu_group_order AS "groupOrderNo",
             mt.display_order AS "displayOrder"
         FROM user_groups ug
+        JOIN users u ON u.id = ug.user_id AND u.is_active = 1
+        <if test="hospitalId != null">
+            JOIN user_hospitals uh
+              ON uh.user_id = u.id
+             AND uh.hospital_id = #{hospitalId}
+             AND uh.is_active = 1
+        </if>
         JOIN roles r ON r.id = ug.role_id
         JOIN role_module_details rmd ON rmd.role_id = r.id
         JOIN module_details md ON md.id = rmd.module_detail_id AND md.is_active = 1
