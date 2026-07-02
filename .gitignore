@@ -65,7 +65,12 @@ udaya_dicom_server-*/worklists/*.wl
 dicom-server-images/
 **/images/dicom_server_base.tar
 runtime-image/
+runtime/
+runtime-key/
 runtime-dicom-upload-temp/
+db/exports/*.dump
+db/exports/*.bak
+db/exports/*.backup
 tools/.cache/
 tools/generated-dicom/
 tools/dicom_modality_simulator/.venv/
