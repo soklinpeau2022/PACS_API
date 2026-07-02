@@ -1,6 +1,7 @@
 package com.ut.emrPacs.service.serviceImpl;
 
 import com.ut.emrPacs.mapper.pacs.DicomServerMapper;
+import com.ut.emrPacs.model.dto.response.pacs.dicom.HospitalDicomServerResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -9,6 +10,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -73,6 +75,27 @@ class DicomServerHealthServiceImplTest {
         );
 
         assertEquals(original, rewritten);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void healthUrlsShouldIncludeGeneratedDockerAliasFallback() {
+        HospitalDicomServerResponse server = new HospitalDicomServerResponse();
+        server.setId(4L);
+        server.setHospitalName("KSFH Hospital");
+        server.setName("UDAYA_DICOM_SERVER KSFH");
+        server.setIpAddress("192.168.192.4");
+        server.setPort(8042);
+        server.setPublicHealthCheckUrl("http://192.168.192.4:8042/system");
+
+        List<String> urls = ReflectionTestUtils.invokeMethod(
+                DicomServerHealthServiceImpl.class,
+                "buildHealthUrls",
+                server
+        );
+
+        assertEquals("http://192.168.192.4:8042/system", urls.get(0));
+        assertTrue(urls.contains("http://dicom-server-ksfh:8042/system"));
     }
 
     private DicomServerHealthServiceImpl serviceWithOfflinePolicy(int threshold, long graceMs) {

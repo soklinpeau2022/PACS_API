@@ -85,10 +85,12 @@
             h.name AS hospitalName,
             s.ip_address AS ipAddress,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
+            s.dicom_host AS dicomHost,
             s.dicom_port AS dicomPort,
-            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) AS dicomServerBaseUrl,
-            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) AS dicomServerUiBaseUrl,
-            ((CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) || COALESCE(NULLIF(BTRIM(s.dicomweb_path), ''), '/dicom-web')) AS dicomwebBaseUrl,
+            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || CASE WHEN COALESCE(s.public_endpoint_include_port, TRUE) THEN ':' || s.port ELSE '' END) AS dicomServerBaseUrl,
+            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || CASE WHEN COALESCE(s.public_endpoint_include_port, TRUE) THEN ':' || s.port ELSE '' END) AS dicomServerUiBaseUrl,
+            ((CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || CASE WHEN COALESCE(s.public_endpoint_include_port, TRUE) THEN ':' || s.port ELSE '' END) || COALESCE(NULLIF(BTRIM(s.dicomweb_path), ''), '/dicom-web')) AS dicomwebBaseUrl,
             COALESCE(NULLIF(BTRIM(s.dicomweb_path), ''), '/dicom-web') AS dicomwebPath,
             s.viewer_base_url AS viewerBaseUrl,
             s.ae_title AS aeTitle,
@@ -116,6 +118,7 @@
             AND (
                 s.name ILIKE CONCAT('%', #{filter.searchText}, '%')
                 OR COALESCE(s.ip_address, '') ILIKE CONCAT('%', #{filter.searchText}, '%')
+                OR COALESCE(s.dicom_host, '') ILIKE CONCAT('%', #{filter.searchText}, '%')
                 OR s.port::text ILIKE CONCAT('%', #{filter.searchText}, '%')
                 OR COALESCE(s.dicom_port, 4242)::text ILIKE CONCAT('%', #{filter.searchText}, '%')
                 OR COALESCE(s.viewer_base_url, '') ILIKE CONCAT('%', #{filter.searchText}, '%')

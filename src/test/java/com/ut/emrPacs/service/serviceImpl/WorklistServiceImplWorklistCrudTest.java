@@ -1205,7 +1205,7 @@ class WorklistServiceImplWorklistCrudTest {
         createResponse.setId("wl-2201");
         createResponse.setPath("/worklists/wl-2201");
         when(dicomServerClientService.postToDicomServerWorklist(
-                eq("http://localhost:8042/worklists/create"),
+                eq("http://localhost:8042"),
                 eq("dicom_server"),
                 eq("dicom_server"),
                 any(DicomServerWorklistCreateRequest.class)
@@ -1309,7 +1309,7 @@ class WorklistServiceImplWorklistCrudTest {
         assertTrue(cancelResponse.isSuccess(), cancelResponse.getHeader() != null ? String.valueOf(cancelResponse.getHeader().getErrorText()) : "Unknown error");
 
         verify(dicomServerClientService).postToDicomServerWorklist(
-                eq("http://localhost:8042/worklists/create"),
+                eq("http://localhost:8042"),
                 eq("dicom_server"),
                 eq("dicom_server"),
                 argThat(payload -> payload != null

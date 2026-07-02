@@ -19,6 +19,8 @@ public class DicomServerDropDownResponse {
     private String hospitalName;
     private String ipAddress;
     private Integer port;
+    private Boolean publicEndpointIncludePort;
+    private String dicomHost;
     private Integer dicomPort;
     private String dicomServerBaseUrl;
     private String dicomServerUiBaseUrl;

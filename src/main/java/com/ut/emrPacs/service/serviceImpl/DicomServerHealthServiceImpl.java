@@ -27,11 +27,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
@@ -48,6 +51,8 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
     private static final String SUMMARY_CHECKING = "CHECKING";
     private static final String SETTING_HEALTH_ENABLED = "dicom.server.health.enabled";
     private static final String SETTING_HEALTH_INTERVAL = "dicom.server.health.poll_interval_seconds";
+    private static final String DICOM_SERVER_PREFIX = "dicom_server";
+    private static final String LEGACY_DICOM_SERVER_PREFIX = "udaya_dicom_server";
     private static final int DEFAULT_POLL_INTERVAL_SECONDS = 5;
     private static final int MIN_POLL_INTERVAL_SECONDS = 5;
     private static final int MAX_POLL_INTERVAL_SECONDS = 300;
@@ -233,24 +238,37 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
         Instant checkedAt = Instant.now();
         long started = System.nanoTime();
         try {
-            String healthUrl = buildHealthUrl(server);
-            healthUrl = rewriteHealthLoopbackUrlIfNeeded(healthUrl);
-            HttpRequest.Builder builder = HttpRequest.newBuilder()
-                    .uri(URI.create(healthUrl))
-                    .timeout(Duration.ofMillis(Math.max(300L, timeoutMs)))
-                    .GET()
-                    .header("Accept", "application/json");
-            String username = trimToNull(server.getUsername());
-            String password = trimToNull(server.getPassword());
-            if (username != null && password != null) {
-                String token = Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
-                builder.header("Authorization", "Basic " + token);
+            List<String> healthUrls = buildHealthUrls(server);
+            Exception lastError = null;
+            for (String candidateUrl : healthUrls) {
+                try {
+                    String healthUrl = rewriteHealthLoopbackUrlIfNeeded(candidateUrl);
+                    HttpRequest.Builder builder = HttpRequest.newBuilder()
+                            .uri(URI.create(healthUrl))
+                            .timeout(Duration.ofMillis(Math.max(300L, timeoutMs)))
+                            .GET()
+                            .header("Accept", "application/json");
+                    String username = trimToNull(server.getUsername());
+                    String password = trimToNull(server.getPassword());
+                    if (username != null && password != null) {
+                        String token = Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
+                        builder.header("Authorization", "Basic " + token);
+                    }
+                    HttpResponse<Void> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.discarding());
+                    int statusCode = response.statusCode();
+                    if (isReachableStatus(statusCode)) {
+                        return buildSnapshot(true, checkedAt, previous, elapsedMs(started));
+                    }
+                    LOGGER.debug("DICOM server health probe returned {} for {} via {}", statusCode, server.getName(), healthUrl);
+                } catch (Exception error) {
+                    lastError = error;
+                    LOGGER.debug("DICOM server health probe failed for {} via {}: {}", server.getName(), candidateUrl, error.getMessage());
+                }
             }
-            HttpResponse<Void> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.discarding());
-            long responseTimeMs = elapsedMs(started);
-            int statusCode = response.statusCode();
-            boolean online = isReachableStatus(statusCode);
-            return buildSnapshot(online, checkedAt, previous, responseTimeMs);
+            if (lastError != null) {
+                LOGGER.debug("All DICOM server health probe URLs failed for {}: {}", server.getName(), lastError.getMessage());
+            }
+            return buildSnapshot(false, checkedAt, previous, elapsedMs(started));
         } catch (Exception error) {
             long responseTimeMs = elapsedMs(started);
             LOGGER.debug("DICOM server health probe failed for {}: {}", server.getName(), error.getMessage());
@@ -449,9 +467,19 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
     }
 
     private static String buildHealthUrl(HospitalDicomServerResponse server) {
+        return buildHealthUrls(server).get(0);
+    }
+
+    private static List<String> buildHealthUrls(HospitalDicomServerResponse server) {
+        Set<String> urls = new LinkedHashSet<>();
+        String dockerAliasHealthUrl = buildDockerAliasHealthUrl(server);
+        if (isRunningInContainer()) {
+            addHealthUrl(urls, dockerAliasHealthUrl);
+        }
+
         String configuredHealthUrl = trimToNull(server.getPublicHealthCheckUrl());
         if (configuredHealthUrl != null) {
-            return normalizeHealthUrl(configuredHealthUrl);
+            addHealthUrl(urls, configuredHealthUrl);
         }
 
         String baseUrl = trimToNull(server.getBaseUrl());
@@ -464,7 +492,86 @@ public class DicomServerHealthServiceImpl implements DicomServerHealthService {
             int port = server.getPort() == null || server.getPort() <= 0 ? 8042 : server.getPort();
             baseUrl = scheme + "://" + host + ":" + port;
         }
-        return normalizeHealthUrl(baseUrl);
+        addHealthUrl(urls, baseUrl);
+        if (!isRunningInContainer()) {
+            addHealthUrl(urls, dockerAliasHealthUrl);
+        }
+        if (urls.isEmpty()) {
+            throw new IllegalArgumentException("DICOM server host is not configured.");
+        }
+        return new ArrayList<>(urls);
+    }
+
+    private static void addHealthUrl(Set<String> urls, String value) {
+        String trimmed = trimToNull(value);
+        if (trimmed != null) {
+            urls.add(normalizeHealthUrl(trimmed));
+        }
+    }
+
+    private static String buildDockerAliasHealthUrl(HospitalDicomServerResponse server) {
+        String alias = buildDockerNetworkAlias(server);
+        if (alias == null) {
+            return null;
+        }
+        String scheme = Boolean.TRUE.equals(server.getSslEnabled()) ? "https" : "http";
+        int port = server.getPort() == null || server.getPort() <= 0 ? 8042 : server.getPort();
+        return scheme + "://" + alias + ":" + port;
+    }
+
+    private static String buildDockerNetworkAlias(HospitalDicomServerResponse server) {
+        String hospitalSlug = compactHospitalSlug(server == null ? null : server.getHospitalName());
+        String fallbackId = server == null || server.getId() == null ? "" : server.getId().toString();
+        String serverText = firstNonBlank(
+                server == null ? null : server.getName(),
+                "server-" + fallbackId
+        ).replaceAll("(?i)\\b(?:udaya[\\s_-]*)?dicom[\\s_-]*server\\b", " ");
+        String serverSlug = toSlug(serverText);
+        if (DICOM_SERVER_PREFIX.equals(serverSlug) || LEGACY_DICOM_SERVER_PREFIX.equals(serverSlug)) {
+            serverSlug = "server-" + fallbackId;
+        }
+        if (serverSlug.startsWith(hospitalSlug)) {
+            return toDockerDnsAlias(DICOM_SERVER_PREFIX + "_" + serverSlug);
+        }
+        return toDockerDnsAlias(DICOM_SERVER_PREFIX + "_" + hospitalSlug + "_" + serverSlug);
+    }
+
+    private static String compactHospitalSlug(String hospitalName) {
+        String text = firstNonBlank(hospitalName, "hospital");
+        String[] split = text.split("\\s+-\\s+|\\s+/\\s+");
+        if (split.length > 0 && trimToNull(split[0]) != null) {
+            text = split[0];
+        }
+        text = text.replaceAll("(?i)\\b(hospital|clinic|medical|center|centre)\\b", " ");
+        String slug = toSlug(text);
+        return trimToNull(slug) == null ? "hospital" : slug;
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            String trimmed = trimToNull(value);
+            if (trimmed != null) {
+                return trimmed;
+            }
+        }
+        return null;
+    }
+
+    private static String toSlug(String value) {
+        String normalized = (value == null ? DICOM_SERVER_PREFIX : value)
+                .trim()
+                .replaceAll("[^A-Za-z0-9]+", "-")
+                .replaceAll("^-+|-+$", "")
+                .replaceAll("-{2,}", "-")
+                .toLowerCase(Locale.ROOT);
+        return normalized.isBlank() ? DICOM_SERVER_PREFIX : normalized;
+    }
+
+    private static String toDockerDnsAlias(String value) {
+        return toSlug(value == null ? DICOM_SERVER_PREFIX : value.replace('_', '-'));
     }
 
     private static String normalizeHealthUrl(String value) {

@@ -48,9 +48,9 @@
     </sql>
 
     <sql id="DICOM_SERVER_URL_COLUMNS">
-            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) AS baseUrl,
-            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) AS dicomServerUiBaseUrl,
-            ((CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || ':' || s.port) || COALESCE(NULLIF(BTRIM(s.dicomweb_path), ''), '/dicom-web')) AS dicomwebBaseUrl,
+            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || CASE WHEN COALESCE(s.public_endpoint_include_port, TRUE) THEN ':' || s.port ELSE '' END) AS baseUrl,
+            (CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || CASE WHEN COALESCE(s.public_endpoint_include_port, TRUE) THEN ':' || s.port ELSE '' END) AS dicomServerUiBaseUrl,
+            ((CASE WHEN s.ssl_enabled IS TRUE THEN 'https' ELSE 'http' END || '://' || s.ip_address || CASE WHEN COALESCE(s.public_endpoint_include_port, TRUE) THEN ':' || s.port ELSE '' END) || COALESCE(NULLIF(BTRIM(s.dicomweb_path), ''), '/dicom-web')) AS dicomwebBaseUrl,
             COALESCE(NULLIF(BTRIM(s.dicomweb_path), ''), '/dicom-web') AS dicomwebPath,
     </sql>
 
@@ -92,6 +92,7 @@
               AND (
                   s.name ILIKE '%' || #{filter.searchText} || '%'
                   OR s.ip_address ILIKE '%' || #{filter.searchText} || '%'
+                  OR COALESCE(s.dicom_host, '') ILIKE '%' || #{filter.searchText} || '%'
                   OR s.port::text ILIKE '%' || #{filter.searchText} || '%'
                   OR COALESCE(s.dicom_port, 4242)::text ILIKE '%' || #{filter.searchText} || '%'
                   OR COALESCE(s.viewer_base_url, '') ILIKE '%' || #{filter.searchText} || '%'
@@ -130,7 +131,9 @@
             h.name AS hospitalName,
             s.name AS name,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -168,7 +171,9 @@
             h.name AS hospitalName,
             s.name AS name,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -206,7 +211,9 @@
             h.name AS hospitalName,
             s.name AS name,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -259,6 +266,7 @@
           AND is_active = 1
           AND LOWER(ip_address) = LOWER(#{ipAddress})
           AND port = #{port}
+          AND LOWER(COALESCE(dicom_host, ip_address)) = LOWER(COALESCE(#{dicomHost}, #{ipAddress}))
           AND COALESCE(dicom_port, 4242) = COALESCE(#{dicomPort}, 4242)
           AND LOWER(COALESCE(ae_title, '')) = LOWER(COALESCE(#{aeTitle}, ''))
         <if test="excludeId != null">
@@ -272,6 +280,8 @@
             name,
             ip_address,
             port,
+            public_endpoint_include_port,
+            dicom_host,
             dicom_port,
             ae_title,
             dicomweb_path,
@@ -315,6 +325,8 @@
             #{name},
             #{ipAddress},
             #{port},
+            #{publicEndpointIncludePort},
+            #{dicomHost},
             #{dicomPort},
             #{aeTitle},
             #{dicomwebPath},
@@ -362,6 +374,8 @@
             name = #{name},
             ip_address = #{ipAddress},
             port = #{port},
+            public_endpoint_include_port = #{publicEndpointIncludePort},
+            dicom_host = #{dicomHost},
             dicom_port = #{dicomPort},
             ae_title = #{aeTitle},
             dicomweb_path = #{dicomwebPath},
@@ -729,7 +743,9 @@
             machine.machine_host AS machineHost,
             machine.machine_port AS machinePort,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -969,7 +985,9 @@
             machine.machine_host AS machineHost,
             machine.machine_port AS machinePort,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -1026,7 +1044,9 @@
             machine.machine_host AS machineHost,
             machine.machine_port AS machinePort,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -1075,7 +1095,9 @@
             machine.machine_host AS machineHost,
             machine.machine_port AS machinePort,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -1211,7 +1233,9 @@
             h.name AS hospitalName,
             s.name AS name,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -1277,7 +1301,9 @@
             h.name AS hospitalName,
             s.name AS name,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -1326,7 +1352,9 @@
             h.name AS hospitalName,
             s.name AS name,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -1357,7 +1385,9 @@
             h.name AS hospitalName,
             s.name AS name,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>
@@ -1386,7 +1416,9 @@
             h.name AS hospitalName,
             s.name AS name,
             s.ip_address AS ipAddress,
+            s.dicom_host AS dicomHost,
             s.port AS port,
+            s.public_endpoint_include_port AS publicEndpointIncludePort,
             s.dicom_port AS dicomPort,
             s.ae_title AS aeTitle,
             <include refid="DICOM_SERVER_URL_COLUMNS"><property name="alias" value="s"/></include>

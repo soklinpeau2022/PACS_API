@@ -32,6 +32,7 @@ public interface DicomServerMapper {
             @Param("hospitalId") Long hospitalId,
             @Param("ipAddress") String ipAddress,
             @Param("port") Integer port,
+            @Param("dicomHost") String dicomHost,
             @Param("dicomPort") Integer dicomPort,
             @Param("aeTitle") String aeTitle,
             @Param("excludeId") Long excludeId

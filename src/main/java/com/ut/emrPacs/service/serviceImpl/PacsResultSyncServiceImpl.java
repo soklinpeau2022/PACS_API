@@ -33,8 +33,12 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.net.InetAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @Service
@@ -42,6 +46,8 @@ public class PacsResultSyncServiceImpl implements PacsResultSyncService {
     private static final Logger LOGGER = LoggerFactory.getLogger(PacsResultSyncServiceImpl.class);
     private static final int DEFAULT_AUTO_SEND_BATCH_SIZE = 100;
     private static final String DEFAULT_DICOM_AE_TITLE = "UDAYA";
+    private static final String DICOM_SERVER_DOCKER_PREFIX = "dicom-server";
+    private static final String LEGACY_DICOM_SERVER_DOCKER_PREFIX = "dicomserver";
 
     private final WorklistMapper WorklistMapper;
     private final StudyMapper studyMapper;
@@ -169,7 +175,7 @@ public class PacsResultSyncServiceImpl implements PacsResultSyncService {
 
             String studyId = studyIds.get(0);
             DicomServerStudyResponse studyResponse = dicomServerClientService.getStudyById(
-                    resolveDicomServerBaseUrl(server),
+                    resolveInternalDicomServerBaseUrl(server),
                     server.getUsername(),
                     server.getPassword(),
                     studyId
@@ -255,7 +261,7 @@ public class PacsResultSyncServiceImpl implements PacsResultSyncService {
         query.put("AccessionNumber", accessionNumber);
         findRequest.setQuery(query);
         return dicomServerClientService.findStudyIdsByAccessionNumber(
-                resolveDicomServerBaseUrl(server),
+                resolveInternalDicomServerBaseUrl(server),
                 server.getUsername(),
                 server.getPassword(),
                 findRequest
@@ -304,7 +310,7 @@ public class PacsResultSyncServiceImpl implements PacsResultSyncService {
                 machineAeTitle
         );
         var worklistResponse = dicomServerClientService.postToDicomServerWorklist(
-                resolveDicomServerBaseUrl(server) + "/worklists/create",
+                resolveInternalDicomServerBaseUrl(server),
                 server.getUsername(),
                 server.getPassword(),
                 payload
@@ -570,6 +576,96 @@ public class PacsResultSyncServiceImpl implements PacsResultSyncService {
         String host = ipAddress.replaceFirst("^https?://", "");
         Integer port = server.getPort();
         return protocol + host + (port != null && port > 0 ? ":" + port : "");
+    }
+
+    private String resolveInternalDicomServerBaseUrl(HospitalDicomServerResponse server) {
+        String containerBaseUrl = resolveContainerDicomServerBaseUrl(server);
+        if (hasText(containerBaseUrl)) {
+            return containerBaseUrl;
+        }
+        return resolveDicomServerBaseUrl(server);
+    }
+
+    private static String resolveContainerDicomServerBaseUrl(HospitalDicomServerResponse server) {
+        if (!isRunningInContainer()) {
+            return null;
+        }
+        String alias = buildDockerNetworkAlias(server);
+        if (!hasText(alias) || !canResolveHost(alias)) {
+            return null;
+        }
+        String scheme = Boolean.TRUE.equals(server == null ? null : server.getSslEnabled()) ? "https" : "http";
+        int port = server == null || server.getPort() == null || server.getPort() <= 0 ? 8042 : server.getPort();
+        return scheme + "://" + alias + ":" + port;
+    }
+
+    private static String buildDockerNetworkAlias(HospitalDicomServerResponse server) {
+        String hospitalSlug = compactHospitalSlug(server == null ? null : server.getHospitalName());
+        String fallbackId = server == null || server.getId() == null ? "" : server.getId().toString();
+        String serverText = firstNonBlank(
+                server == null ? null : server.getName(),
+                "server-" + fallbackId
+        ).replaceAll("(?i)\\b(?:udaya[\\s_-]*)?dicom[\\s_-]*server\\b", " ");
+        String serverSlug = toSlug(serverText);
+        if (DICOM_SERVER_DOCKER_PREFIX.equals(serverSlug) || LEGACY_DICOM_SERVER_DOCKER_PREFIX.equals(serverSlug)) {
+            serverSlug = "server-" + fallbackId;
+        }
+        if (serverSlug.startsWith(hospitalSlug)) {
+            return toDockerDnsAlias(DICOM_SERVER_DOCKER_PREFIX + "_" + serverSlug);
+        }
+        return toDockerDnsAlias(DICOM_SERVER_DOCKER_PREFIX + "_" + hospitalSlug + "_" + serverSlug);
+    }
+
+    private static String compactHospitalSlug(String hospitalName) {
+        String text = firstNonBlank(hospitalName, "hospital");
+        String[] split = text.split("\\s+-\\s+|\\s+/\\s+");
+        if (split.length > 0 && hasText(split[0])) {
+            text = split[0];
+        }
+        text = text.replaceAll("(?i)\\b(hospital|clinic|medical|center|centre)\\b", " ");
+        String slug = toSlug(text);
+        return hasText(slug) ? slug : "hospital";
+    }
+
+    private static String toDockerDnsAlias(String value) {
+        return toSlug(value == null ? DICOM_SERVER_DOCKER_PREFIX : value.replace('_', '-'));
+    }
+
+    private static String toSlug(String value) {
+        String normalized = (value == null ? DICOM_SERVER_DOCKER_PREFIX : value)
+                .trim()
+                .replaceAll("[^A-Za-z0-9]+", "-")
+                .replaceAll("^-+|-+$", "")
+                .replaceAll("-{2,}", "-")
+                .toLowerCase(Locale.ROOT);
+        return normalized.isBlank() ? DICOM_SERVER_DOCKER_PREFIX : normalized;
+    }
+
+    private static boolean canResolveHost(String host) {
+        try {
+            InetAddress.getByName(host);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isRunningInContainer() {
+        try {
+            if (Files.exists(Path.of("/.dockerenv"))) {
+                return true;
+            }
+            try (var lines = Files.lines(Path.of("/proc/1/cgroup"))) {
+                return lines.anyMatch(line -> {
+                    String normalized = line.toLowerCase(Locale.ROOT);
+                    return normalized.contains("docker")
+                            || normalized.contains("kubepods")
+                            || normalized.contains("containerd");
+                });
+            }
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private String normalizeBaseUrl(String value) {

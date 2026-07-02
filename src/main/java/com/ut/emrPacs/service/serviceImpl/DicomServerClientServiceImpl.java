@@ -163,6 +163,10 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
         }
 
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            DicomServerInstanceUploadResponse alreadyStoredResponse = readAlreadyStoredUploadResponse(response.body());
+            if (alreadyStoredResponse != null) {
+                return alreadyStoredResponse;
+            }
             throw new IllegalStateException("DICOM server upload failed with HTTP " + response.statusCode() + uploadErrorBodySuffix(response.body()) + ".");
         }
         try {
@@ -823,6 +827,24 @@ public class DicomServerClientServiceImpl implements DicomServerClientService {
             normalized = normalized.substring(0, UPLOAD_ERROR_BODY_MAX_CHARS) + "...";
         }
         return ": " + normalized;
+    }
+
+    private DicomServerInstanceUploadResponse readAlreadyStoredUploadResponse(String body) {
+        String normalized = body == null ? "" : body.toLowerCase(Locale.ROOT);
+        if (!normalized.contains("alreadystored") && !normalized.contains("already stored")) {
+            return null;
+        }
+        try {
+            DicomServerInstanceUploadResponse response = objectMapper.readValue(body, DicomServerInstanceUploadResponse.class);
+            if (response.getStatus() == null || response.getStatus().isBlank()) {
+                response.setStatus("AlreadyStored");
+            }
+            return response;
+        } catch (Exception ignored) {
+            DicomServerInstanceUploadResponse response = new DicomServerInstanceUploadResponse();
+            response.setStatus("AlreadyStored");
+            return response;
+        }
     }
 
     private record KnownLengthBodyPublisher(HttpRequest.BodyPublisher delegate, long contentLength)

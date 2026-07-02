@@ -133,9 +133,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.lang.reflect.Method;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
@@ -150,6 +153,8 @@ public class WorklistServiceImpl implements WorklistService {
     private static final String BASIC_AUTH_PREFIX = "Basic ";
     private static final String PARAM_TOKEN = "token";
     private static final Set<String> VIEWER_TOKEN_QUERY_NAMES = Set.of(PARAM_TOKEN, "viewerToken", "dicomwebToken");
+    private static final String DICOM_SERVER_DOCKER_PREFIX = "dicom-server";
+    private static final String LEGACY_DICOM_SERVER_DOCKER_PREFIX = "dicomserver";
     /** JSON fields of the UDAYA_DICOM_SERVER auth-callback contract. */
     private static final String AUTH_FIELD_TOKEN_VALUE_KEBAB = "token-value";
     private static final String AUTH_FIELD_TOKEN_VALUE = "tokenValue";
@@ -2375,7 +2380,7 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         if (server == null) {
             throw new IllegalArgumentException("Active DICOM server routing is not configured for this Worklist.");
         }
-        String worklistUrl = buildDicomServerWorklistUrl(server);
+        String worklistUrl = resolveDicomServerBaseUrl(server);
         return dicomServerClientService.postToDicomServerWorklist(worklistUrl, server.getUsername(), server.getPassword(), payload);
     }
 
@@ -2615,6 +2620,10 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
     }
 
     private String resolveInternalDicomServerBaseUrl(HospitalDicomServerResponse server, String baseUrl) {
+        String containerBaseUrl = resolveContainerDicomServerBaseUrl(server);
+        if (hasText(containerBaseUrl)) {
+            return containerBaseUrl;
+        }
         return normalizePublicBaseUrl(baseUrl);
     }
 
@@ -2734,6 +2743,10 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
         if (server == null) {
             return null;
         }
+        String containerServerBaseUrl = resolveContainerDicomServerBaseUrl(server);
+        if (hasText(containerServerBaseUrl)) {
+            return appendPublicPath(containerServerBaseUrl, DEFAULT_DICOMWEB_PATH);
+        }
         String internalServerBaseUrl = resolveDicomServerBaseUrl(server);
         if (hasText(internalServerBaseUrl)) {
             return appendPublicPath(internalServerBaseUrl, DEFAULT_DICOMWEB_PATH);
@@ -2748,6 +2761,78 @@ WorklistItemRefResponse modality = new WorklistItemRefResponse();
             return configuredDicomwebBaseUrl;
         }
         return null;
+    }
+
+    private static String resolveContainerDicomServerBaseUrl(HospitalDicomServerResponse server) {
+        if (!isRunningInContainer()) {
+            return null;
+        }
+        String alias = buildDockerNetworkAlias(server);
+        if (!hasText(alias) || !canResolveHost(alias)) {
+            return null;
+        }
+        String scheme = Boolean.TRUE.equals(server == null ? null : server.getSslEnabled()) ? "https" : "http";
+        int port = server == null || server.getPort() == null || server.getPort() <= 0 ? 8042 : server.getPort();
+        return scheme + "://" + alias + ":" + port;
+    }
+
+    private static String buildDockerNetworkAlias(HospitalDicomServerResponse server) {
+        String hospitalSlug = compactHospitalSlug(server == null ? null : server.getHospitalName());
+        String fallbackId = server == null || server.getId() == null ? "" : server.getId().toString();
+        String serverText = firstNonBlank(
+                server == null ? null : server.getName(),
+                "server-" + fallbackId
+        ).replaceAll("(?i)\\b(?:udaya[\\s_-]*)?dicom[\\s_-]*server\\b", " ");
+        String serverSlug = toSlug(serverText);
+        if (DICOM_SERVER_DOCKER_PREFIX.equals(serverSlug) || LEGACY_DICOM_SERVER_DOCKER_PREFIX.equals(serverSlug)) {
+            serverSlug = "server-" + fallbackId;
+        }
+        if (serverSlug.startsWith(hospitalSlug)) {
+            return toDockerDnsAlias(DICOM_SERVER_DOCKER_PREFIX + "_" + serverSlug);
+        }
+        return toDockerDnsAlias(DICOM_SERVER_DOCKER_PREFIX + "_" + hospitalSlug + "_" + serverSlug);
+    }
+
+    private static String compactHospitalSlug(String hospitalName) {
+        String text = firstNonBlank(hospitalName, "hospital");
+        String[] split = text.split("\\s+-\\s+|\\s+/\\s+");
+        if (split.length > 0 && hasText(split[0])) {
+            text = split[0];
+        }
+        text = text.replaceAll("(?i)\\b(hospital|clinic|medical|center|centre)\\b", " ");
+        String slug = toSlug(text);
+        return hasText(slug) ? slug : "hospital";
+    }
+
+    private static String toDockerDnsAlias(String value) {
+        return toSlug(value == null ? DICOM_SERVER_DOCKER_PREFIX : value.replace('_', '-'));
+    }
+
+    private static boolean canResolveHost(String host) {
+        try {
+            InetAddress.getByName(host);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isRunningInContainer() {
+        try {
+            if (Files.exists(Path.of("/.dockerenv"))) {
+                return true;
+            }
+            try (var lines = Files.lines(Path.of("/proc/1/cgroup"))) {
+                return lines.anyMatch(line -> {
+                    String normalized = line.toLowerCase(Locale.ROOT);
+                    return normalized.contains("docker")
+                            || normalized.contains("kubepods")
+                            || normalized.contains("containerd");
+                });
+            }
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private String buildViewerDicomwebGatewayBaseUrl(

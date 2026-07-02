@@ -205,7 +205,7 @@ class DicomServerServiceImplDicomServerConfigTest {
     void dicomServerDockerComposeShouldNeverPullServiceImage() {
         DicomServerServiceImpl service = new DicomServerServiceImpl();
         DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
-        response.setProjectName("dicom_server_ksfh");
+        response.setProjectName("dicom-server-ksfh");
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("AuthenticationEnabled", true);
         config.put("RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")));
@@ -215,7 +215,7 @@ class DicomServerServiceImplDicomServerConfigTest {
 
         assertTrue(compose.contains("pull_policy: never"));
         assertTrue(compose.contains("pull: false"));
-        assertTrue(compose.contains("container_name: ${UDAYA_DICOM_SERVER_CONTAINER_NAME:-dicom_server_ksfh}"));
+        assertTrue(compose.contains("container_name: ${UDAYA_DICOM_SERVER_CONTAINER_NAME:-dicom-server-ksfh}"));
         assertTrue(compose.contains("./runtime/config/dicom_server.json:/etc/dicom_server/config.json:ro"));
         assertFalse(compose.contains("./config/dicom_server.json:/etc/dicom_server/config.json:ro"));
     }
@@ -236,6 +236,48 @@ class DicomServerServiceImplDicomServerConfigTest {
 
         assertEquals("http://dicom-ct.example.lan:8043", publicUiBaseUrl);
         assertEquals("http://dicom-ct.example.lan:8043/dicom-web", dicomwebBaseUrl);
+        assertNull(ReflectionTestUtils.getField(endpoint, "dicomHost"));
+    }
+
+    @Test
+    void dicomServerEndpointShouldAllowSeparateNativeDicomHost() {
+        DicomServerServiceImpl service = new DicomServerServiceImpl();
+        HospitalDicomServerRequestUpdate request = new HospitalDicomServerRequestUpdate();
+        request.setIpAddress("dicomweb.example.com");
+        request.setPort(8042);
+        request.setDicomHost("dicom-native.example.com:4242");
+        request.setDicomPort(4242);
+        request.setSslEnabled(false);
+        request.setDicomwebPath("/dicom-web");
+
+        Object endpoint = ReflectionTestUtils.invokeMethod(service, "resolveDicomEndpoint", request, null);
+        String publicUiBaseUrl = (String) ReflectionTestUtils.getField(endpoint, "baseUrl");
+        String dicomwebBaseUrl = ReflectionTestUtils.invokeMethod(service, "buildDerivedDicomwebBaseUrl", publicUiBaseUrl, request.getDicomwebPath());
+
+        assertEquals("http://dicomweb.example.com:8042", publicUiBaseUrl);
+        assertEquals("http://dicomweb.example.com:8042/dicom-web", dicomwebBaseUrl);
+        assertEquals("dicom-native.example.com", ReflectionTestUtils.getField(endpoint, "dicomHost"));
+    }
+
+    @Test
+    void dicomServerUrlsShouldOmitPublicPortWhenToggleIsOff() {
+        DicomServerServiceImpl service = new DicomServerServiceImpl();
+        HospitalDicomServerRequestUpdate request = new HospitalDicomServerRequestUpdate();
+        request.setIpAddress("dicom.example.com");
+        request.setPort(8042);
+        request.setDicomPort(4242);
+        request.setSslEnabled(false);
+        request.setPublicEndpointIncludePort(false);
+        request.setDicomwebPath("/dicom-web");
+
+        Object endpoint = ReflectionTestUtils.invokeMethod(service, "resolveDicomEndpoint", request, null);
+        String publicUiBaseUrl = (String) ReflectionTestUtils.getField(endpoint, "baseUrl");
+        String dicomwebBaseUrl = ReflectionTestUtils.invokeMethod(service, "buildDerivedDicomwebBaseUrl", publicUiBaseUrl, request.getDicomwebPath());
+        String pingUrl = ReflectionTestUtils.invokeMethod(service, "buildGeneratedHealthCheckUrl", publicUiBaseUrl);
+
+        assertEquals("http://dicom.example.com", publicUiBaseUrl);
+        assertEquals("http://dicom.example.com/dicom-web", dicomwebBaseUrl);
+        assertEquals("http://dicom.example.com/system", pingUrl);
     }
 
     @Test
@@ -325,8 +367,12 @@ class DicomServerServiceImplDicomServerConfigTest {
     void dicomServerProjectZipShouldContainOfflineImageWorkflow() {
         DicomServerServiceImpl service = new DicomServerServiceImpl();
         DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
-        response.setProjectName("dicom_server_ksfh");
-        response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=https://pacs.example.com/pacsApi\n");
+        response.setProjectName("dicom-server-ksfh");
+        response.setEnvironmentContent("""
+                # Generated for dicom-server-ksfh. Keep this file private.
+                UDAYA_DICOM_SERVER_NETWORK_ALIAS=dicom-server-ksfh
+                UDAYA_PACS_API_AUTH_CALLBACK=https://pacs.example.com/pacsApi
+                """);
         response.setConfig(new LinkedHashMap<>(Map.of(
                 "AuthenticationEnabled", true,
                 "RegisteredUsers", new LinkedHashMap<>(Map.of("dicom_server", "secret-123")),
@@ -341,28 +387,54 @@ class DicomServerServiceImplDicomServerConfigTest {
         String base64 = ReflectionTestUtils.invokeMethod(service, "buildDicomServerProjectZipBase64", response);
         Map<String, String> files = unzipTextFiles(base64);
 
-        assertTrue(files.containsKey("dicom_server_ksfh/images/README.md"));
-        assertTrue(files.containsKey("dicom_server_ksfh/.gitignore"));
-        assertTrue(files.containsKey("dicom_server_ksfh/scripts/cache-base-image.sh"));
-        assertTrue(files.containsKey("dicom_server_ksfh/scripts/deploy.sh"));
-        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("pull_policy: never"));
-        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("pull: false"));
-        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("./runtime/config/dicom_server.json:/etc/dicom_server/config.json:ro"));
-        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("UDAYA_PACS_API_NETWORK_NAME"));
-        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("UDAYA_DICOM_SERVER_DOCKER_IP"));
-        assertTrue(files.get("dicom_server_ksfh/docker-compose.yml").contains("pacs_api"));
-        assertTrue(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("ensure_docker_network"));
-        assertTrue(files.get("dicom_server_ksfh/scripts/healthcheck.py").contains("socket.create_connection"));
-        assertTrue(files.get("dicom_server_ksfh/config/dicom_server.json").contains("${UDAYA_DICOM_SERVER_HTTP_USERNAME}"));
-        assertTrue(files.get("dicom_server_ksfh/config/dicom_server.json").contains("${UDAYA_DICOM_SERVER_HTTP_PASSWORD}"));
-        assertTrue(files.get("dicom_server_ksfh/config/dicom_server.json").contains("${UDAYA_PACS_API_AUTH_CALLBACK}/worklist/viewer-dicom-web-authorize"));
-        assertFalse(files.get("dicom_server_ksfh/config/dicom_server.json").contains("secret-123"));
-        assertTrue(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("images/dicom_server_base.tar"));
-        assertTrue(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("render_runtime_config"));
-        assertTrue(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("docker compose build --pull=false"));
-        assertFalse(files.get("dicom_server_ksfh/scripts/deploy.sh").contains("docker compose up -d --build --force-recreate"));
-        assertTrue(files.get("dicom_server_ksfh/Dockerfile").startsWith("FROM dicom_server_base:latest"));
-        assertFalse(files.get("dicom_server_ksfh/Dockerfile").contains("# syntax=docker/dockerfile"));
+        assertTrue(files.containsKey("dicom-server-ksfh/images/README.md"));
+        assertTrue(files.containsKey("dicom-server-ksfh/.gitignore"));
+        assertTrue(files.containsKey("dicom-server-ksfh/scripts/cache-base-image.sh"));
+        assertTrue(files.containsKey("dicom-server-ksfh/scripts/deploy.sh"));
+        assertTrue(files.get("dicom-server-ksfh/.env").contains("# Generated for dicom-server-ksfh. Keep this file private."));
+        assertTrue(files.get("dicom-server-ksfh/.env").contains("UDAYA_DICOM_SERVER_NETWORK_ALIAS=dicom-server-ksfh"));
+        assertFalse(files.get("dicom-server-ksfh/.env").contains("DICOM Server #"));
+        assertFalse(files.get("dicom-server-ksfh/.env").contains("server-4"));
+        assertTrue(files.get("dicom-server-ksfh/docker-compose.yml").contains("pull_policy: never"));
+        assertTrue(files.get("dicom-server-ksfh/docker-compose.yml").contains("pull: false"));
+        assertTrue(files.get("dicom-server-ksfh/docker-compose.yml").contains("name: dicom-server-ksfh"));
+        assertTrue(files.get("dicom-server-ksfh/docker-compose.yml").contains("image: ${UDAYA_DICOM_SERVER_IMAGE:-dicom-server-ksfh:latest}"));
+        assertTrue(files.get("dicom-server-ksfh/docker-compose.yml").contains("container_name: ${UDAYA_DICOM_SERVER_CONTAINER_NAME:-dicom-server-ksfh}"));
+        assertTrue(files.get("dicom-server-ksfh/docker-compose.yml").contains("- ${UDAYA_DICOM_SERVER_NETWORK_ALIAS:-dicom-server-ksfh}"));
+        assertFalse(files.get("dicom-server-ksfh/docker-compose.yml").contains("server-4"));
+        assertTrue(files.get("dicom-server-ksfh/docker-compose.yml").contains("./runtime/config/dicom_server.json:/etc/dicom_server/config.json:ro"));
+        assertFalse(files.get("dicom-server-ksfh/.env").contains("UDAYA_DICOM_SERVER_BIND_HOST"));
+        assertFalse(files.get("dicom-server-ksfh/docker-compose.yml").contains("UDAYA_DICOM_SERVER_BIND_HOST"));
+        assertFalse(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("UDAYA_DICOM_SERVER_BIND_HOST"));
+        assertFalse(files.get("dicom-server-ksfh/.env").contains("UDAYA_DICOM_SERVER_DOCKER_IP"));
+        assertFalse(files.get("dicom-server-ksfh/docker-compose.yml").contains("UDAYA_DICOM_SERVER_DOCKER_IP"));
+        assertFalse(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("UDAYA_DICOM_SERVER_DOCKER_IP"));
+        assertFalse(files.get("dicom-server-ksfh/.env").contains("UDAYA_PACS_API_NETWORK_SUBNET"));
+        assertFalse(files.get("dicom-server-ksfh/docker-compose.yml").contains("UDAYA_PACS_API_NETWORK_SUBNET"));
+        assertFalse(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("UDAYA_PACS_API_NETWORK_SUBNET"));
+        assertFalse(files.get("dicom-server-ksfh/docker-compose.yml").contains("ipv4_address"));
+        assertTrue(files.get("dicom-server-ksfh/docker-compose.yml").contains("UDAYA_DICOM_SERVER_PRIVATE_IP"));
+        assertTrue(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("resolve_private_ip"));
+        assertTrue(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("primary_ipv4"));
+        assertTrue(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("network_name=\"$(read_env_value UDAYA_PACS_API_NETWORK_NAME \"udaya_pacs_local_network\")\""));
+        assertTrue(files.get("dicom-server-ksfh/docker-compose.yml").contains("UDAYA_PACS_API_NETWORK_NAME"));
+        assertTrue(files.get("dicom-server-ksfh/docker-compose.yml").contains("pacs_api"));
+        assertTrue(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("ensure_docker_network"));
+        assertTrue(files.get("dicom-server-ksfh/scripts/healthcheck.py").contains("socket.create_connection"));
+        assertTrue(files.get("dicom-server-ksfh/config/dicom_server.json").contains("${UDAYA_DICOM_SERVER_HTTP_USERNAME}"));
+        assertTrue(files.get("dicom-server-ksfh/config/dicom_server.json").contains("${UDAYA_DICOM_SERVER_HTTP_PASSWORD}"));
+        assertTrue(files.get("dicom-server-ksfh/config/dicom_server.json").contains("${UDAYA_PACS_API_AUTH_CALLBACK}/worklist/viewer-dicom-web-authorize"));
+        assertFalse(files.get("dicom-server-ksfh/config/dicom_server.json").contains("secret-123"));
+        assertTrue(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("images/dicom_server_base.tar"));
+        assertTrue(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("render_runtime_config"));
+        assertTrue(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("docker compose build --pull=false"));
+        assertFalse(files.get("dicom-server-ksfh/scripts/deploy.sh").contains("docker compose up -d --build --force-recreate"));
+        assertTrue(files.get("dicom-server-ksfh/README.md").contains("## Deploy On Server"));
+        assertTrue(files.get("dicom-server-ksfh/README.md").contains("sudo unzip -o"));
+        assertTrue(files.get("dicom-server-ksfh/README.md").contains("sudo docker compose ps"));
+        assertTrue(files.get("dicom-server-ksfh/README.md").contains("You do not need to set a Docker-private IP or subnet"));
+        assertTrue(files.get("dicom-server-ksfh/Dockerfile").startsWith("FROM dicom_server_base:latest"));
+        assertFalse(files.get("dicom-server-ksfh/Dockerfile").contains("# syntax=docker/dockerfile"));
     }
 
     @Test
@@ -374,7 +446,7 @@ class DicomServerServiceImplDicomServerConfigTest {
             ReflectionTestUtils.setField(service, "includeDicomServerBaseImageInPackage", true);
             ReflectionTestUtils.setField(service, "dicomServerBaseImageArchivePath", archive.toString());
             DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
-            response.setProjectName("dicom_server_ksfh");
+            response.setProjectName("dicom-server-ksfh");
             response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=https://pacs.example.com/pacsApi\n");
             response.setConfig(new LinkedHashMap<>(Map.of(
                     "AuthenticationEnabled", true,
@@ -390,7 +462,7 @@ class DicomServerServiceImplDicomServerConfigTest {
             String base64 = ReflectionTestUtils.invokeMethod(service, "buildDicomServerProjectZipBase64", response);
             Map<String, byte[]> files = unzipFiles(base64);
 
-            assertFalse(files.containsKey("dicom_server_ksfh/images/dicom_server_base.tar"));
+            assertFalse(files.containsKey("dicom-server-ksfh/images/dicom_server_base.tar"));
         } finally {
             Files.deleteIfExists(archive);
         }
@@ -406,7 +478,7 @@ class DicomServerServiceImplDicomServerConfigTest {
             ReflectionTestUtils.setField(service, "dicomServerBaseImageArchivePath", archive.toString());
             ReflectionTestUtils.setField(service, "maxEmbeddedDicomServerBaseImageBytes", 4L);
             DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
-            response.setProjectName("dicom_server_ksfh");
+            response.setProjectName("dicom-server-ksfh");
             response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=https://pacs.example.com/pacsApi\n");
             response.setConfig(new LinkedHashMap<>(Map.of(
                     "AuthenticationEnabled", true,
@@ -422,7 +494,7 @@ class DicomServerServiceImplDicomServerConfigTest {
             String base64 = ReflectionTestUtils.invokeMethod(service, "buildDicomServerProjectZipBase64", response);
             Map<String, byte[]> files = unzipFiles(base64);
 
-            assertFalse(files.containsKey("dicom_server_ksfh/images/dicom_server_base.tar"));
+            assertFalse(files.containsKey("dicom-server-ksfh/images/dicom_server_base.tar"));
         } finally {
             Files.deleteIfExists(archive);
         }
@@ -457,7 +529,7 @@ class DicomServerServiceImplDicomServerConfigTest {
         try {
             DicomServerServiceImpl service = new DicomServerServiceImpl();
             DicomServerConfigBuildResponse response = new DicomServerConfigBuildResponse();
-            response.setProjectName("dicom_server_ksfh");
+            response.setProjectName("dicom-server-ksfh");
             response.setEnvironmentContent("UDAYA_PACS_API_AUTH_CALLBACK=https://pacs.example.com/pacsApi\n");
             response.setConfig(new LinkedHashMap<>(Map.of(
                     "AuthenticationEnabled", true,
@@ -482,7 +554,7 @@ class DicomServerServiceImplDicomServerConfigTest {
 
             assertArrayEquals(
                     "streamed-local-image".getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                    files.get("dicom_server_ksfh/images/dicom_server_base.tar")
+                    files.get("dicom-server-ksfh/images/dicom_server_base.tar")
             );
         } finally {
             Files.deleteIfExists(archive);
@@ -551,6 +623,31 @@ class DicomServerServiceImplDicomServerConfigTest {
             Map<String, byte[]> files = unzipBytes(outputStream.toByteArray());
 
             assertTrue(files.keySet().stream().anyMatch(name -> name.endsWith("/Dockerfile")));
+            String env = new String(zipFileBySuffix(files, "/.env"), java.nio.charset.StandardCharsets.UTF_8);
+            String compose = new String(zipFileBySuffix(files, "/docker-compose.yml"), java.nio.charset.StandardCharsets.UTF_8);
+            String deploy = new String(zipFileBySuffix(files, "/scripts/deploy.sh"), java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(files.keySet().stream().anyMatch(name -> name.startsWith("dicom-server-ksfh/")));
+            assertFalse(files.keySet().stream().anyMatch(name -> name.contains("server-33")));
+            assertTrue(env.contains("# Generated for dicom-server-ksfh. Keep this file private."));
+            assertTrue(env.contains("UDAYA_DICOM_SERVER_NETWORK_ALIAS=dicom-server-ksfh"));
+            assertFalse(env.contains("DICOM Server #"));
+            assertFalse(env.contains("server-33"));
+            assertFalse(compose.contains("server-33"));
+            assertFalse(env.contains("UDAYA_DICOM_SERVER_BIND_HOST"));
+            assertFalse(compose.contains("UDAYA_DICOM_SERVER_BIND_HOST"));
+            assertFalse(deploy.contains("UDAYA_DICOM_SERVER_BIND_HOST"));
+            assertFalse(env.contains("UDAYA_DICOM_SERVER_DOCKER_IP"));
+            assertFalse(compose.contains("UDAYA_DICOM_SERVER_DOCKER_IP"));
+            assertFalse(deploy.contains("UDAYA_DICOM_SERVER_DOCKER_IP"));
+            assertFalse(env.contains("UDAYA_PACS_API_NETWORK_SUBNET"));
+            assertFalse(compose.contains("UDAYA_PACS_API_NETWORK_SUBNET"));
+            assertFalse(deploy.contains("UDAYA_PACS_API_NETWORK_SUBNET"));
+            assertFalse(compose.contains("ipv4_address"));
+            assertTrue(compose.contains("UDAYA_DICOM_SERVER_PRIVATE_IP"));
+            assertTrue(deploy.contains("export UDAYA_DICOM_SERVER_PRIVATE_IP=\"$(resolve_private_ip)\""));
+            assertTrue(deploy.contains("hostname -I 2>/dev/null | awk"));
+            assertFalse(deploy.contains("tr ' ' '\\n'"));
+            assertTrue(deploy.contains("network_name=\"$(read_env_value UDAYA_PACS_API_NETWORK_NAME \"udaya_pacs_local_network\")\""));
             assertFalse(files.keySet().stream().anyMatch(name -> name.endsWith("/images/dicom_server_base.tar")));
             verify(dicomServerMapper).markRoutingConfigPackageBuilt(10L, 1L, 7L);
         } finally {
@@ -568,6 +665,14 @@ class DicomServerServiceImplDicomServerConfigTest {
             }
         });
         return files;
+    }
+
+    private static byte[] zipFileBySuffix(Map<String, byte[]> files, String suffix) {
+        return files.entrySet().stream()
+                .filter(entry -> entry.getKey().endsWith(suffix))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing zip entry ending with " + suffix + ". Entries: " + files.keySet()))
+                .getValue();
     }
 
     private static Map<String, byte[]> unzipFiles(String base64) {

@@ -23,8 +23,16 @@ public class HospitalDicomServerRequestUpdate {
      */
     private Integer port;
     /**
+     * When true, the public DICOM server URL includes the DICOMweb port.
+     * Turn off for reverse-proxy deployments that expose the server on the
+     * protocol default port.
+     */
+    private Boolean publicEndpointIncludePort;
+    /**
      * Native DICOM C-FIND/C-STORE port, for example 4242.
      */
+    @Size(max = 255)
+    private String dicomHost;
     private Integer dicomPort;
     @Size(max = 64)
     private String aeTitle;

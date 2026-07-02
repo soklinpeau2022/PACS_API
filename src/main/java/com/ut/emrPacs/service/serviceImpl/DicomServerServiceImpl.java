@@ -127,8 +127,6 @@ public class DicomServerServiceImpl implements DicomServerService {
             ApiConstants.Worklist.BASE_PATH + ApiConstants.Worklist.VIEWER_DICOMWEB_PROFILE_PATH;
     private static final String CALLBACK_SCRIPT_RESOURCE = "dicom_server/" + CALLBACK_SCRIPT_FILE_NAME;
     private static final String DEFAULT_PACS_API_DOCKER_NETWORK = "udaya_pacs_local_network";
-    private static final String DEFAULT_PACS_DOCKER_SUBNET_PREFIX = "192.168.192.";
-    private static final int DEFAULT_DICOM_SERVER_DOCKER_IP_START_OCTET = 30;
     private static final int PACS_RESULT_API_KEY_BYTES = 32;
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -323,7 +321,7 @@ public class DicomServerServiceImpl implements DicomServerService {
             if (dicomServerMapper.countActiveDicomServerNameDuplicate(hospitalId, name, null) > 0) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Duplicate Dicom Server Name", false));
             }
-            if (dicomServerMapper.countActiveDicomServerEndpointDuplicate(hospitalId, ipAddress, endpoint.dicomWebPort, endpoint.dicomPort, aeTitle, null) > 0) {
+            if (dicomServerMapper.countActiveDicomServerEndpointDuplicate(hospitalId, ipAddress, endpoint.dicomWebPort, endpoint.dicomHost, endpoint.dicomPort, aeTitle, null) > 0) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Duplicate Dicom Server Endpoint", false));
             }
 
@@ -333,14 +331,12 @@ public class DicomServerServiceImpl implements DicomServerService {
             server.setName(name);
             server.setIpAddress(ipAddress);
             server.setPort(endpoint.dicomWebPort);
+            server.setPublicEndpointIncludePort(endpoint.publicEndpointIncludePort);
+            server.setDicomHost(endpoint.dicomHost);
             server.setDicomPort(endpoint.dicomPort);
             server.setAeTitle(aeTitle);
             server.setDicomwebPath(normalizeDicomwebPath(requestUpdate.getDicomwebPath()));
-            server.setPublicHealthCheckUrl(normalizeOptionalHealthCheckUrl(
-                    requestUpdate.getPublicHealthCheckUrl(),
-                    endpoint.baseUrl,
-                    "Public DICOM server ping URL"
-            ));
+            server.setPublicHealthCheckUrl(buildGeneratedHealthCheckUrl(endpoint.baseUrl));
             server.setViewerBaseUrl(normalizeOptionalHttpBaseUrl(requestUpdate.getViewerBaseUrl(), "Viewer Base URL"));
             server.setPacsApiCallbackBaseUrl(normalizeOptionalHttpBaseUrl(requestUpdate.getPacsApiCallbackBaseUrl(), "UDAYA_PACS_API Callback URL"));
             server.setUsername(trimToNull(requestUpdate.getUsername()));
@@ -416,7 +412,7 @@ public class DicomServerServiceImpl implements DicomServerService {
             if (dicomServerMapper.countActiveDicomServerNameDuplicate(hospitalId, name, requestUpdate.getId()) > 0) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Duplicate Dicom Server Name", false));
             }
-            if (dicomServerMapper.countActiveDicomServerEndpointDuplicate(hospitalId, ipAddress, endpoint.dicomWebPort, endpoint.dicomPort, aeTitle, requestUpdate.getId()) > 0) {
+            if (dicomServerMapper.countActiveDicomServerEndpointDuplicate(hospitalId, ipAddress, endpoint.dicomWebPort, endpoint.dicomHost, endpoint.dicomPort, aeTitle, requestUpdate.getId()) > 0) {
                 return ResponseMessageUtils.makeResponse(false, messageService.message("Duplicate Dicom Server Endpoint", false));
             }
 
@@ -427,14 +423,12 @@ public class DicomServerServiceImpl implements DicomServerService {
             server.setName(name);
             server.setIpAddress(ipAddress);
             server.setPort(endpoint.dicomWebPort);
+            server.setPublicEndpointIncludePort(endpoint.publicEndpointIncludePort);
+            server.setDicomHost(endpoint.dicomHost);
             server.setDicomPort(endpoint.dicomPort);
             server.setAeTitle(aeTitle);
             server.setDicomwebPath(normalizeDicomwebPath(firstNonBlank(requestUpdate.getDicomwebPath(), existingServer.getDicomwebPath())));
-            server.setPublicHealthCheckUrl(normalizeOptionalHealthCheckUrl(
-                    firstNonBlank(requestUpdate.getPublicHealthCheckUrl(), existingServer.getPublicHealthCheckUrl()),
-                    endpoint.baseUrl,
-                    "Public DICOM server ping URL"
-            ));
+            server.setPublicHealthCheckUrl(buildGeneratedHealthCheckUrl(endpoint.baseUrl));
             server.setViewerBaseUrl(normalizeOptionalHttpBaseUrl(
                     firstNonBlank(requestUpdate.getViewerBaseUrl(), existingServer.getViewerBaseUrl()),
                     "Viewer Base URL"
@@ -1114,10 +1108,9 @@ public class DicomServerServiceImpl implements DicomServerService {
             response.setDicomServerName(serverRoute.getDicomServerName());
             response.setFileName(buildDicomServerConfigFileName(routeConfig, serverRoute));
             response.setConfig(buildDicomServerConfig(routeConfig, serverRoute, serverRoutes));
-            response.setProjectName(buildDicomServerProjectName(routeConfig, serverRoute, true));
-            response.setDockerPrivateIp(resolveDicomServerDockerPrivateIp(serverRoute));
+            response.setProjectName(buildDicomServerProjectName(routeConfig, serverRoute, false));
             response.setDockerNetworkName(DEFAULT_PACS_API_DOCKER_NETWORK);
-            response.setDockerNetworkAlias(response.getProjectName());
+            response.setDockerNetworkAlias(buildDicomServerDockerNetworkAlias(response.getProjectName()));
             DicomServerCallbackCredential callbackCredential = provisionDicomServerCallbackCredential(serverRoute, response.getProjectName());
             String pacsResultApiKey = provisionPacsResultApiKey(serverRoute);
             String artifactStem = response.getFileName().replaceFirst("(?i)\\.json$", "");
@@ -1162,7 +1155,7 @@ public class DicomServerServiceImpl implements DicomServerService {
                 packageBuild.routeConfig().getHospitalName(),
                 packageBuild.routeConfig().getHospitalId() == null ? null : "hospital-" + packageBuild.routeConfig().getHospitalId()
         ));
-        return DICOM_SERVER_PREFIX + "_" + hospitalSlug.replace('-', '_') + "_routing.zip";
+        return "dicom-server-" + hospitalSlug + "-routing.zip";
     }
 
     @Override
@@ -1354,7 +1347,7 @@ public class DicomServerServiceImpl implements DicomServerService {
                 ? firstNonNull(requestUpdate.getPort(), existing == null ? null : existing.getPort())
                 : firstNonNull(existing == null ? null : existing.getPort(), requestUpdate.getPort());
         if (ipAddress == null) {
-            throw new IllegalArgumentException("Public DICOM server IP/domain/hostname is required.");
+            throw new IllegalArgumentException("Public DICOM server IP/domain is required.");
         }
         if (dicomWebPort == null || dicomWebPort <= 0) {
             throw new IllegalArgumentException("DICOMweb port is required.");
@@ -1362,12 +1355,46 @@ public class DicomServerServiceImpl implements DicomServerService {
 
         String host = stripUrlScheme(ipAddress);
         if (!hasText(host)) {
-            throw new IllegalArgumentException("Public DICOM server IP/domain/hostname is required.");
+            throw new IllegalArgumentException("Public DICOM server IP/domain is required.");
         }
-        assertSplitServerHostAllowed(host, "Public DICOM server IP/domain/hostname");
+        assertSplitServerHostAllowed(host, "Public DICOM server IP/domain");
+        String dicomHost = resolveNativeDicomHost(requestUpdate, existing, host);
         Boolean sslEnabled = firstNonNull(requestUpdate.getSslEnabled(), existing == null ? null : existing.getSslEnabled());
         String scheme = Boolean.TRUE.equals(sslEnabled) ? "https" : "http";
-        return new ResolvedDicomEndpoint(host, dicomWebPort, dicomPort, scheme + "://" + host + ":" + dicomWebPort);
+        Boolean includePort = resolvePublicEndpointIncludePort(requestUpdate.getPublicEndpointIncludePort(), existing);
+        String baseUrl = scheme + "://" + host + (Boolean.TRUE.equals(includePort) ? ":" + dicomWebPort : "");
+        return new ResolvedDicomEndpoint(host, dicomHost, dicomWebPort, dicomPort, includePort, baseUrl);
+    }
+
+    private static Boolean resolvePublicEndpointIncludePort(Boolean requested, HospitalDicomServerResponse existing) {
+        return firstNonNull(
+                requested,
+                existing == null ? null : existing.getPublicEndpointIncludePort(),
+                Boolean.TRUE
+        );
+    }
+
+    private static String resolveNativeDicomHost(
+            HospitalDicomServerRequestUpdate requestUpdate,
+            HospitalDicomServerResponse existing,
+            String fallbackPublicHost
+    ) {
+        String rawDicomHost;
+        if (requestUpdate.getDicomHost() != null) {
+            rawDicomHost = requestUpdate.getDicomHost();
+        } else {
+            rawDicomHost = existing == null ? null : existing.getDicomHost();
+        }
+        String dicomHost = trimToNull(rawDicomHost);
+        if (dicomHost == null) {
+            return null;
+        }
+        String normalized = stripUrlScheme(dicomHost);
+        if (!hasText(normalized)) {
+            return null;
+        }
+        assertSplitServerHostAllowed(normalized, "Native DICOM IP/domain");
+        return normalized;
     }
 
     private static String normalizeOptionalHttpBaseUrl(String rawBaseUrl, String label) {
@@ -1389,13 +1416,13 @@ public class DicomServerServiceImpl implements DicomServerService {
         try {
             uri = new URI(valueWithScheme);
         } catch (URISyntaxException error) {
-            throw new IllegalArgumentException(label + " must be valid. Example: http://dicom-ct.example.lan:8042/system");
+            throw new IllegalArgumentException(label + " must be valid. Example: http://dicom.example.com:8042/system");
         }
 
         String scheme = uri.getScheme();
         String host = uri.getHost();
         if (!hasText(scheme) || !hasText(host)) {
-            throw new IllegalArgumentException(label + " must include protocol and host. Example: http://dicom-ct.example.lan:8042/system");
+            throw new IllegalArgumentException(label + " must include protocol and host. Example: http://dicom.example.com:8042/system");
         }
         if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
             throw new IllegalArgumentException(label + " must use http or https.");
@@ -1407,10 +1434,14 @@ public class DicomServerServiceImpl implements DicomServerService {
         return scheme.toLowerCase() + "://" + host + (uri.getPort() > 0 ? ":" + uri.getPort() : "") + normalizedPath;
     }
 
+    private static String buildGeneratedHealthCheckUrl(String publicBaseUrl) {
+        return normalizeOptionalHealthCheckUrl(null, publicBaseUrl, "Public DICOM server ping URL");
+    }
+
     private static ResolvedDicomEndpoint parseHttpBaseUrl(String rawBaseUrl, Integer dicomPort, String label) {
         String value = trimToNull(rawBaseUrl);
         if (value == null) {
-            throw new IllegalArgumentException("Public DICOM server IP/domain/hostname is required.");
+            throw new IllegalArgumentException("Public DICOM server IP/domain is required.");
         }
 
         String valueWithScheme = value.matches("(?i)^[a-z][a-z0-9+.-]*://.*") ? value : "http://" + value;
@@ -1434,7 +1465,7 @@ public class DicomServerServiceImpl implements DicomServerService {
         int port = uri.getPort() > 0 ? uri.getPort() : ("https".equalsIgnoreCase(scheme) ? 443 : 80);
         String normalizedPath = normalizePath(uri.getPath());
         String normalizedBaseUrl = scheme.toLowerCase() + "://" + host + (uri.getPort() > 0 ? ":" + uri.getPort() : "") + normalizedPath;
-        return new ResolvedDicomEndpoint(host, port, dicomPort, normalizedBaseUrl);
+        return new ResolvedDicomEndpoint(host, host, port, dicomPort, uri.getPort() > 0, normalizedBaseUrl);
     }
 
     private static Integer resolveDicomPort(Integer dicomPort) {
@@ -1457,7 +1488,7 @@ public class DicomServerServiceImpl implements DicomServerService {
             return;
         }
         if (isDockerOnlyHost(normalized)) {
-            throw new IllegalArgumentException(label + " must use a public IP address, domain, or hostname, not a Docker-only host like " + normalized + ".");
+            throw new IllegalArgumentException(label + " must use a public IP address or domain, not a Docker-only host like " + normalized + ".");
         }
     }
 
@@ -1528,14 +1559,18 @@ public class DicomServerServiceImpl implements DicomServerService {
 
     private static final class ResolvedDicomEndpoint {
         private final String ipAddress;
+        private final String dicomHost;
         private final Integer dicomWebPort;
         private final Integer dicomPort;
+        private final Boolean publicEndpointIncludePort;
         private final String baseUrl;
 
-        private ResolvedDicomEndpoint(String ipAddress, Integer dicomWebPort, Integer dicomPort, String baseUrl) {
+        private ResolvedDicomEndpoint(String ipAddress, String dicomHost, Integer dicomWebPort, Integer dicomPort, Boolean publicEndpointIncludePort, String baseUrl) {
             this.ipAddress = ipAddress;
+            this.dicomHost = dicomHost;
             this.dicomWebPort = dicomWebPort;
             this.dicomPort = dicomPort;
+            this.publicEndpointIncludePort = publicEndpointIncludePort;
             this.baseUrl = baseUrl;
         }
     }
@@ -2013,19 +2048,16 @@ public class DicomServerServiceImpl implements DicomServerService {
     ) {
         String callbackApiBaseUrl = resolveCallbackApiBaseUrl(serverRoute);
         return String.join("\n",
-                "# Generated for DICOM Server #" + serverRoute.getDicomServerId() + ". Keep this file private.",
+                "# Generated for " + response.getProjectName() + ". Keep this file private.",
                 "# Building config again rotates this server-specific callback secret and PACS Result proxy API key.",
                 "TZ=Asia/Phnom_Penh",
                 "",
-                "UDAYA_DICOM_SERVER_BIND_HOST=" + resolveDicomServerBindHost(serverRoute),
                 "UDAYA_DICOM_SERVER_HTTP_PORT=" + resolveDicomServerHttpPublishPort(serverRoute),
                 "UDAYA_DICOM_SERVER_DICOM_PORT=" + resolveDicomServerDicomPublishPort(serverRoute),
                 "",
-                "# Docker-private address used when this DICOM routing zip runs beside the local PACS stack.",
-                "UDAYA_DICOM_SERVER_DOCKER_IP=" + escapeEnvironmentValue(response.getDockerPrivateIp()),
+                "# Docker network used when this DICOM routing zip runs beside the local PACS stack.",
                 "UDAYA_DICOM_SERVER_NETWORK_ALIAS=" + escapeEnvironmentValue(response.getDockerNetworkAlias()),
                 "UDAYA_PACS_API_NETWORK_NAME=" + escapeEnvironmentValue(response.getDockerNetworkName()),
-                "UDAYA_PACS_API_NETWORK_SUBNET=" + DEFAULT_PACS_DOCKER_SUBNET_PREFIX + "0/20",
                 "",
                 "UDAYA_DICOM_SERVER_HTTP_USERNAME=" + escapeEnvironmentValue(requireDicomServerHttpUsername(serverRoute)),
                 "UDAYA_DICOM_SERVER_HTTP_PASSWORD=" + escapeEnvironmentValue(requireDicomServerHttpPassword(serverRoute)),
@@ -2071,7 +2103,7 @@ public class DicomServerServiceImpl implements DicomServerService {
 
     private String buildCallbackSetupContent(DicomServerConfigBuildResponse response) {
         return String.join("\n",
-                "UDAYA_DICOM_SERVER archive package for DICOM Server #" + response.getDicomServerId(),
+                "UDAYA_DICOM_SERVER archive package for " + response.getProjectName(),
                 "",
                 "1. Unzip " + response.getZipFileName() + ".",
                 "2. Open the " + response.getProjectName() + " folder.",
@@ -2253,12 +2285,11 @@ public class DicomServerServiceImpl implements DicomServerService {
     }
 
     private String buildDicomServerDockerComposeContent(DicomServerConfigBuildResponse response) {
-        String projectName = response.getProjectName().replace('-', '_');
+        String projectName = response.getProjectName();
         String volumeName = projectName + "_data";
         String imageName = projectName + ":latest";
-        String dockerPrivateIp = defaultString(response.getDockerPrivateIp(), defaultDicomServerDockerPrivateIp(response.getDicomServerId()));
         String dockerNetworkName = defaultString(response.getDockerNetworkName(), DEFAULT_PACS_API_DOCKER_NETWORK);
-        String dockerNetworkAlias = defaultString(response.getDockerNetworkAlias(), projectName);
+        String dockerNetworkAlias = defaultString(response.getDockerNetworkAlias(), buildDicomServerDockerNetworkAlias(projectName));
         return String.join("\n",
                 "name: " + projectName,
                 "",
@@ -2283,12 +2314,11 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "    expose:",
                 "      - \"8042\"",
                 "    ports:",
-                "      - \"${UDAYA_DICOM_SERVER_BIND_HOST:-127.0.0.1}:${UDAYA_DICOM_SERVER_HTTP_PORT:-8042}:8042\"",
-                "      - \"${UDAYA_DICOM_SERVER_BIND_HOST:-127.0.0.1}:${UDAYA_DICOM_SERVER_DICOM_PORT:-4242}:4242\"",
+                "      - \"${UDAYA_DICOM_SERVER_PRIVATE_IP:-127.0.0.1}:${UDAYA_DICOM_SERVER_HTTP_PORT:-8042}:8042\"",
+                "      - \"${UDAYA_DICOM_SERVER_PRIVATE_IP:-127.0.0.1}:${UDAYA_DICOM_SERVER_DICOM_PORT:-4242}:4242\"",
                 "    networks:",
                 "      default:",
                 "      pacs_api:",
-                "        ipv4_address: ${UDAYA_DICOM_SERVER_DOCKER_IP:-" + dockerPrivateIp + "}",
                 "        aliases:",
                 "          - ${UDAYA_DICOM_SERVER_NETWORK_ALIAS:-" + dockerNetworkAlias + "}",
                 "    volumes:",
@@ -2425,7 +2455,7 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "  UDAYA_DICOM_SERVER_UPSTREAM_IMAGE=orthancteam/orthanc:latest",
                 "  UDAYA_DICOM_SERVER_BASE_IMAGE_ARCHIVE=./images/dicom_server_base.tar",
                 "  UDAYA_DICOM_SERVER_ALLOW_PULL=true",
-                "  UDAYA_DICOM_SERVER_DOCKER_IP=192.168.192.x",
+                "  UDAYA_DICOM_SERVER_PRIVATE_IP=auto",
                 "  UDAYA_PACS_API_NETWORK_NAME=udaya_pacs_local_network",
                 "",
                 "Examples:",
@@ -2470,6 +2500,40 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "  else",
                 "    printf '%s\\n' \"${fallback}\"",
                 "  fi",
+                "}",
+                "",
+                "primary_ipv4() {",
+                "  local ip",
+                "  if command -v ip >/dev/null 2>&1; then",
+                "    ip=\"$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == \"src\") { print $(i + 1); exit } }')\"",
+                "    if [[ -n \"${ip}\" && \"${ip}\" != 127.* && \"${ip}\" != 169.254.* ]]; then",
+                "      printf '%s' \"${ip}\"",
+                "      return 0",
+                "    fi",
+                "  fi",
+                "  if command -v hostname >/dev/null 2>&1; then",
+                "    ip=\"$(hostname -I 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i !~ /^127\\./ && $i !~ /^169\\.254\\./) { print $i; exit } }')\"",
+                "    if [[ -n \"${ip}\" ]]; then",
+                "      printf '%s' \"${ip}\"",
+                "      return 0",
+                "    fi",
+                "  fi",
+                "  printf '127.0.0.1'",
+                "}",
+                "",
+                "resolve_private_ip() {",
+                "  local value lower",
+                "  value=\"$(read_env_value UDAYA_DICOM_SERVER_PRIVATE_IP auto)\"",
+                "  value=\"$(printf '%s' \"${value}\" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')\"",
+                "  lower=\"$(printf '%s' \"${value}\" | tr '[:upper:]' '[:lower:]')\"",
+                "  case \"${lower}\" in",
+                "    ''|auto|\\*|::|\\[::\\]|0.0.0.0)",
+                "      primary_ipv4",
+                "      ;;",
+                "    *)",
+                "      printf '%s' \"${value}\"",
+                "      ;;",
+                "  esac",
                 "}",
                 "",
                 "render_runtime_config() {",
@@ -2548,10 +2612,6 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "except ValueError:",
                 "    pass",
                 "",
-                "bind_host = values.get(\"UDAYA_DICOM_SERVER_BIND_HOST\", \"\").strip().lower()",
-                "if bind_host in {\"0.0.0.0\", \"::\", \"[::]\", \"*\"}:",
-                "    fail(\"UDAYA_DICOM_SERVER_BIND_HOST must be a specific hostname or interface address, not a wildcard bind.\")",
-                "",
                 "try:",
                 "    template = json.loads(template_text)",
                 "except json.JSONDecodeError as error:",
@@ -2593,14 +2653,12 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "",
                 "ensure_docker_network() {",
                 "  local network_name",
-                "  local network_subnet",
-                "  network_name=\"$(read_env_value UDAYA_PACS_API_NETWORK_NAME \"" + DEFAULT_PACS_API_DOCKER_NETWORK + ")\"",
-                "  network_subnet=\"$(read_env_value UDAYA_PACS_API_NETWORK_SUBNET \"" + DEFAULT_PACS_DOCKER_SUBNET_PREFIX + "0/20\")\"",
+                "  network_name=\"$(read_env_value UDAYA_PACS_API_NETWORK_NAME \"" + DEFAULT_PACS_API_DOCKER_NETWORK + "\")\"",
                 "  if docker network inspect \"${network_name}\" >/dev/null 2>&1; then",
                 "    return 0",
                 "  fi",
-                "  echo \"Creating local PACS Docker network: ${network_name} (${network_subnet})\"",
-                "  docker network create --subnet \"${network_subnet}\" \"${network_name}\" >/dev/null",
+                "  echo \"Creating local PACS Docker network: ${network_name}\"",
+                "  docker network create \"${network_name}\" >/dev/null",
                 "}",
                 "",
                 "echo \"Preparing UDAYA_DICOM_SERVER base image: ${BASE_IMAGE}\"",
@@ -2623,6 +2681,8 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "fi",
                 "",
                 "ensure_docker_network",
+                "export UDAYA_DICOM_SERVER_PRIVATE_IP=\"$(resolve_private_ip)\"",
+                "echo \"Using DICOM server private bind IP: ${UDAYA_DICOM_SERVER_PRIVATE_IP}\"",
                 "render_runtime_config",
                 "docker compose build --pull=false",
                 "docker compose up -d --force-recreate --no-build",
@@ -2747,14 +2807,34 @@ public class DicomServerServiceImpl implements DicomServerService {
                 "sudo bash ./scripts/deploy.sh",
                 "```",
                 "",
+                "## Deploy On Server",
+                "",
+                "Copy this zip to `/var/www`, then run:",
+                "",
+                "```bash",
+                "cd /var/www",
+                "sudo rm -rf /var/www/" + response.getProjectName(),
+                "sudo unzip -o \"/var/www/" + defaultString(response.getZipFileName(), response.getProjectName() + ".zip") + "\" -d /var/www",
+                "",
+                "cd /var/www/" + response.getProjectName(),
+                "sudo sed -i 's/\\r$//' .env Dockerfile docker-compose.yml ./scripts/*.sh",
+                "sudo chmod +x ./scripts/*.sh",
+                "sudo bash ./scripts/deploy.sh",
+                "sudo docker compose ps",
+                "sudo docker inspect " + response.getProjectName() + " --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'",
+                "```",
+                "",
+                "You do not need to set a Docker-private IP or subnet in `.env`; Docker assigns the container network address automatically.",
+                "",
                 "The deploy script loads `images/dicom_server_base.tar` when the shared base image `dicom_server_base:latest` is missing, then builds and starts this server-specific image.",
                 "Before Docker starts, it renders `runtime/config/dicom_server.json` from `config/dicom_server.json` and the private `.env` values.",
                 "This zip contains only the generated DICOM Routing archive deployment for this DICOM Server.",
                 "It does not pull from Docker Hub by default. To prepare the offline image once, run `bash ./scripts/cache-base-image.sh` on a machine with internet access and keep `images/dicom_server_base.tar` with this folder.",
                 "For a one-time online deploy only, run `UDAYA_DICOM_SERVER_ALLOW_PULL=true sudo bash ./scripts/deploy.sh`.",
-                "Use the PACS API callback base URL configured in DICOM Server Management for `UDAYA_PACS_API_AUTH_CALLBACK`. It can be an IP or domain reachable from this hospital install; localhost, wildcard binds, Docker host aliases, and local/reserved addresses are rejected by deploy.",
-                "When deployed on the local PACS host, Docker Compose joins `${UDAYA_PACS_API_NETWORK_NAME}` and assigns `${UDAYA_DICOM_SERVER_DOCKER_IP}` so the API, Frontend, Viewer, and DICOM archive share the local private network.",
-                "If that Docker network is missing, `scripts/deploy.sh` creates it with `${UDAYA_PACS_API_NETWORK_SUBNET}` before starting the archive.",
+                "Use the PACS API callback base URL configured in DICOM Server Management for `UDAYA_PACS_API_AUTH_CALLBACK`. It can be an IP or domain reachable from this hospital install; localhost, Docker host aliases, and local/reserved addresses are rejected by deploy.",
+                "At deploy time, `scripts/deploy.sh` resolves the server private IPv4 into `UDAYA_DICOM_SERVER_PRIVATE_IP`; the generated `.env` does not store a bind host.",
+                "When deployed on the local PACS host, Docker Compose joins `${UDAYA_PACS_API_NETWORK_NAME}` and lets Docker assign the container network address automatically.",
+                "If that Docker network is missing, `scripts/deploy.sh` creates it before starting the archive.",
                 "",
                 "After startup, configure DICOM Server Management with the real archive server URL:",
                 "`http://<archive-server-ip>:" + defaultPositiveInteger(response.getConfig() == null ? null : (Integer) response.getConfig().get("HttpPort"), DICOM_SERVER_CONTAINER_HTTP_PORT, "HTTP port") + "` or `http://localhost:${UDAYA_DICOM_SERVER_HTTP_PORT}` when API and the archive run on the same host.",
@@ -2788,20 +2868,24 @@ public class DicomServerServiceImpl implements DicomServerService {
     ) {
         String hospitalSlug = compactHospitalSlug(routeConfig == null ? null : routeConfig.getHospitalName());
         if (!includeServerName) {
-            return DICOM_SERVER_PREFIX + "_" + hospitalSlug.replace('-', '_');
+            return "dicom-server-" + hospitalSlug;
         }
         String serverText = firstNonBlank(
                 serverRoute == null ? null : serverRoute.getDicomServerName(),
                 "server-" + (serverRoute == null ? "" : serverRoute.getDicomServerId())
         ).replaceAll("(?i)\\b(?:udaya[\\s_-]*)?dicom[\\s_-]*server\\b", " ");
         String serverSlug = toSlug(serverText);
-        if (DICOM_SERVER_PREFIX.equals(serverSlug) || LEGACY_DICOM_SERVER_PREFIX.equals(serverSlug) || hospitalSlug.equals(serverSlug)) {
+        if (DICOM_SERVER_PREFIX.equals(serverSlug) || LEGACY_DICOM_SERVER_PREFIX.equals(serverSlug)) {
             serverSlug = "server-" + (serverRoute == null ? "" : serverRoute.getDicomServerId());
         }
         if (serverSlug.startsWith(hospitalSlug)) {
             return DICOM_SERVER_PREFIX + "_" + serverSlug.replace('-', '_');
         }
         return (DICOM_SERVER_PREFIX + "_" + hospitalSlug + "_" + serverSlug).replace('-', '_');
+    }
+
+    private String buildDicomServerDockerNetworkAlias(String projectName) {
+        return toSlug(defaultString(projectName, DICOM_SERVER_PREFIX + "_server").replace('_', '-'));
     }
 
     private String compactHospitalSlug(String hospitalName) {
@@ -2841,69 +2925,6 @@ public class DicomServerServiceImpl implements DicomServerService {
                 DEFAULT_DICOM_PORT,
                 "DICOM publish port"
         );
-    }
-
-    private String resolveDicomServerBindHost(HospitalModalityServerRouteResponse serverRoute) {
-        String bindHost = trimToNull(stripUrlScheme(serverRoute == null ? null : serverRoute.getIpAddress()));
-        if (bindHost == null || "*".equals(bindHost) || "::".equals(bindHost) || "[::]".equals(bindHost)) {
-            return "127.0.0.1";
-        }
-        return escapeEnvironmentValue(bindHost);
-    }
-
-    private String resolveDicomServerDockerPrivateIp(HospitalModalityServerRouteResponse serverRoute) {
-        String configuredHost = trimToNull(stripUrlScheme(serverRoute == null ? null : serverRoute.getIpAddress()));
-        if (configuredHost != null && isUsableLocalPacsDockerIp(configuredHost)) {
-            return configuredHost;
-        }
-        return defaultDicomServerDockerPrivateIp(serverRoute == null ? null : serverRoute.getDicomServerId());
-    }
-
-    private static String defaultDicomServerDockerPrivateIp(Long dicomServerId) {
-        int octet = DEFAULT_DICOM_SERVER_DOCKER_IP_START_OCTET;
-        if (dicomServerId != null && dicomServerId > 0) {
-            long offset = Math.floorMod(dicomServerId, 180L);
-            octet = DEFAULT_DICOM_SERVER_DOCKER_IP_START_OCTET + (int) offset;
-            while (!isUsableGeneratedLocalPacsDockerOctet(octet)) {
-                octet++;
-                if (octet > 254) {
-                    octet = DEFAULT_DICOM_SERVER_DOCKER_IP_START_OCTET;
-                }
-            }
-        }
-        return DEFAULT_PACS_DOCKER_SUBNET_PREFIX + octet;
-    }
-
-    private static boolean isUsableLocalPacsDockerIp(String host) {
-        String value = trimToNull(host);
-        if (value == null) {
-            return false;
-        }
-        String[] octets = value.split("\\.");
-        if (octets.length != 4) {
-            return false;
-        }
-        try {
-            int first = Integer.parseInt(octets[0]);
-            int second = Integer.parseInt(octets[1]);
-            int third = Integer.parseInt(octets[2]);
-            int fourth = Integer.parseInt(octets[3]);
-            return first == 192
-                    && second == 168
-                    && third >= 192
-                    && third <= 207
-                    && isUsableConfiguredLocalPacsDockerOctet(fourth);
-        } catch (NumberFormatException ex) {
-            return false;
-        }
-    }
-
-    private static boolean isUsableConfiguredLocalPacsDockerOctet(int octet) {
-        return octet >= 4 && octet <= 254 && octet != 20;
-    }
-
-    private static boolean isUsableGeneratedLocalPacsDockerOctet(int octet) {
-        return octet >= DEFAULT_DICOM_SERVER_DOCKER_IP_START_OCTET && octet <= 254;
     }
 
     private Integer extractHttpUrlPort(String rawUrl) {

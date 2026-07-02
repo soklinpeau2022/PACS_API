@@ -103,7 +103,7 @@ class WorklistServiceImplFlowStatusTest {
         DicomServerWorklistCreateResponse worklistResponse = new DicomServerWorklistCreateResponse();
         worklistResponse.setId("wl-1");
         worklistResponse.setPath("/worklists/wl-1");
-        when(dicomServerClientService.postToDicomServerWorklist(eq("http://localhost:8042/worklists/create"), eq("dicom_server"), eq("dicom_server"), any())).thenReturn(worklistResponse);
+        when(dicomServerClientService.postToDicomServerWorklist(eq("http://localhost:8042"), eq("dicom_server"), eq("dicom_server"), any())).thenReturn(worklistResponse);
         when(WorklistMapper.updateWorklistSentToPacsById(anyLong(), eq(1201L), eq(WorklistStatus.IN_PROGRESS.code()), eq(4L), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(1);
 
@@ -131,7 +131,7 @@ class WorklistServiceImplFlowStatusTest {
         when(WorklistMapper.findWorklistById(11L, 1203L)).thenReturn(Worklist);
         when(dicomServerMapper.listActiveRoutesByHospitalAndModality(11L, 5L)).thenReturn(List.of(localRoute()));
         when(dicomServerMapper.getDicomServerById(4L, 11L)).thenReturn(List.of(localDicomServer()));
-        when(dicomServerClientService.postToDicomServerWorklist(eq("http://localhost:8042/worklists/create"), eq("dicom_server"), eq("dicom_server"), any())).thenThrow(new ResourceAccessException("DicomServer down"));
+        when(dicomServerClientService.postToDicomServerWorklist(eq("http://localhost:8042"), eq("dicom_server"), eq("dicom_server"), any())).thenThrow(new ResourceAccessException("DicomServer down"));
         when(WorklistMapper.updateWorklistWorkflowStatusById(11L, 1203L, WorklistStatus.FAILED.code(), "DicomServer is unreachable.", 99L)).thenReturn(1);
 
         WorklistSendToPacsRequest request = new WorklistSendToPacsRequest();

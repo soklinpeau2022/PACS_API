@@ -21,6 +21,8 @@ public class HospitalDicomServerResponse {
     private String name;
     private String ipAddress;
     private Integer port;
+    private Boolean publicEndpointIncludePort;
+    private String dicomHost;
     private Integer dicomPort;
     private String aeTitle;
     private String baseUrl;

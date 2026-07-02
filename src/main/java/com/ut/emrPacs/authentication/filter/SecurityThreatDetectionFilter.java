@@ -67,6 +67,7 @@ public class SecurityThreatDetectionFilter extends OncePerRequestFilter {
 
     private static final Set<String> DICOM_SERVER_URL_FIELDS = Set.of(
             "ipAddress",
+            "dicomHost",
             "baseUrl",
             "dicomServerBaseUrl",
             "dicomServerUiBaseUrl",

@@ -60,6 +60,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -98,10 +99,12 @@ public class DicomUploadServiceImpl implements DicomUploadService {
     private static final int STATUS_IMAGE_RECEIVED = 1;
     private static final int DEFAULT_INSTANCE_UPLOAD_MAX_ATTEMPTS = 8;
     private static final long DEFAULT_INSTANCE_UPLOAD_RETRY_BACKOFF_MS = 500L;
-    private static final int DEFAULT_INSTANCE_UPLOAD_PARALLELISM = 24;
+    private static final int DEFAULT_INSTANCE_UPLOAD_PARALLELISM = 8;
     private static final int MAX_INSTANCE_UPLOAD_PARALLELISM = 64;
     private static final long MAX_INSTANCE_UPLOAD_RETRY_BACKOFF_MS = 10_000L;
     private static final long DEFAULT_IN_MEMORY_ZIP_ENTRY_MAX_BYTES = 1024L * 1024L;
+    private static final String DICOM_SERVER_PREFIX = "dicom-server";
+    private static final String LEGACY_DICOM_SERVER_PREFIX = "dicomserver";
     private static final Map<String, DestinationAvailabilityGate> DESTINATION_AVAILABILITY_GATES =
             new ConcurrentHashMap<>();
     private static final String REQUIRED_DICOM_FILE_EXTENSION = ".dcm";
@@ -1314,7 +1317,7 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         Long dicomServerId = publicEntityKeyResolver.resolve(Entity.DICOM_SERVER, dicomServerKey, null);
         if (dicomServerId != null && dicomServerId > 0) {
             List<HospitalDicomServerResponse> rows = dicomServerMapper.getDicomServerById(dicomServerId, hospitalId);
-            return new DicomServerResolution(rows == null || rows.isEmpty() ? null : rows.get(0), null);
+            return new DicomServerResolution(rows == null || rows.isEmpty() ? null : prepareDicomServerForUpload(rows.get(0)), null);
         }
         List<HospitalDicomServerResponse> rows = dicomServerMapper.listActiveDicomServersByHospital(hospitalId);
         if (rows == null || rows.isEmpty()) {
@@ -1323,7 +1326,105 @@ public class DicomUploadServiceImpl implements DicomUploadService {
         if (rows.size() > 1) {
             return new DicomServerResolution(null, "Select a DICOM server before uploading because this hospital has multiple active DICOM servers.");
         }
-        return new DicomServerResolution(rows.get(0), null);
+        return new DicomServerResolution(prepareDicomServerForUpload(rows.get(0)), null);
+    }
+
+    private HospitalDicomServerResponse prepareDicomServerForUpload(HospitalDicomServerResponse server) {
+        String baseUrl = resolveDicomUploadBaseUrl(server);
+        if (baseUrl != null) {
+            server.setBaseUrl(baseUrl);
+        }
+        return server;
+    }
+
+    private static String resolveDicomUploadBaseUrl(HospitalDicomServerResponse server) {
+        return firstNonBlank(
+                resolveContainerDicomServerBaseUrl(server),
+                server == null ? null : server.getBaseUrl(),
+                buildDicomServerBaseUrl(server)
+        );
+    }
+
+    private static String resolveContainerDicomServerBaseUrl(HospitalDicomServerResponse server) {
+        if (!isRunningInContainer()) {
+            return null;
+        }
+        String alias = buildDockerNetworkAlias(server);
+        if (alias == null || !canResolveHost(alias)) {
+            return null;
+        }
+        String scheme = Boolean.TRUE.equals(server.getSslEnabled()) ? "https" : "http";
+        int port = server.getPort() == null || server.getPort() <= 0 ? 8042 : server.getPort();
+        return scheme + "://" + alias + ":" + port;
+    }
+
+    private static String buildDockerNetworkAlias(HospitalDicomServerResponse server) {
+        String hospitalSlug = compactHospitalSlug(server == null ? null : server.getHospitalName());
+        String fallbackId = server == null || server.getId() == null ? "" : server.getId().toString();
+        String serverText = firstNonBlank(
+                server == null ? null : server.getName(),
+                "server-" + fallbackId
+        ).replaceAll("(?i)\\b(?:udaya[\\s_-]*)?dicom[\\s_-]*server\\b", " ");
+        String serverSlug = toSlug(serverText);
+        if (DICOM_SERVER_PREFIX.equals(serverSlug) || LEGACY_DICOM_SERVER_PREFIX.equals(serverSlug)) {
+            serverSlug = "server-" + fallbackId;
+        }
+        if (serverSlug.startsWith(hospitalSlug)) {
+            return toDockerDnsAlias(DICOM_SERVER_PREFIX + "_" + serverSlug);
+        }
+        return toDockerDnsAlias(DICOM_SERVER_PREFIX + "_" + hospitalSlug + "_" + serverSlug);
+    }
+
+    private static String compactHospitalSlug(String hospitalName) {
+        String text = firstNonBlank(hospitalName, "hospital");
+        String[] split = text.split("\\s+-\\s+|\\s+/\\s+");
+        if (split.length > 0 && trimToNull(split[0]) != null) {
+            text = split[0];
+        }
+        text = text.replaceAll("(?i)\\b(hospital|clinic|medical|center|centre)\\b", " ");
+        String slug = toSlug(text);
+        return trimToNull(slug) == null ? "hospital" : slug;
+    }
+
+    private static String toDockerDnsAlias(String value) {
+        return toSlug(value == null ? DICOM_SERVER_PREFIX : value.replace('_', '-'));
+    }
+
+    private static String toSlug(String value) {
+        String normalized = (value == null ? DICOM_SERVER_PREFIX : value)
+                .trim()
+                .replaceAll("[^A-Za-z0-9]+", "-")
+                .replaceAll("^-+|-+$", "")
+                .replaceAll("-{2,}", "-")
+                .toLowerCase(Locale.ROOT);
+        return normalized.isBlank() ? DICOM_SERVER_PREFIX : normalized;
+    }
+
+    private static boolean canResolveHost(String host) {
+        try {
+            InetAddress.getByName(host);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isRunningInContainer() {
+        try {
+            return Files.exists(Path.of("/.dockerenv"));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static String buildDicomServerBaseUrl(HospitalDicomServerResponse server) {
+        String host = trimToNull(server == null ? null : server.getIpAddress());
+        if (host == null) {
+            return null;
+        }
+        String scheme = Boolean.TRUE.equals(server.getSslEnabled()) ? "https" : "http";
+        int port = server.getPort() == null || server.getPort() <= 0 ? 8042 : server.getPort();
+        return scheme + "://" + host + ":" + port;
     }
 
     private DicomUploadResponse createBaseResponse(HospitalDicomServerResponse dicomServer) {

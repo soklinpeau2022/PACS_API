@@ -146,7 +146,23 @@ class DicomUploadServiceImplTest {
         assertEquals(Integer.valueOf(64), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
 
         ReflectionTestUtils.setField(service, "instanceUploadParallelism", 0);
-        assertEquals(Integer.valueOf(24), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
+        assertEquals(Integer.valueOf(8), ReflectionTestUtils.invokeMethod(service, "configuredInstanceUploadParallelism"));
+    }
+
+    @Test
+    void resolveDicomServerKeepsPublicBaseUrlWhenNotRunningInContainer() {
+        HospitalDicomServerResponse server = server();
+        server.setBaseUrl("http://192.168.192.4:8042");
+        server.setPublicHealthCheckUrl("http://192.168.192.4:8042/system");
+        when(publicEntityKeyResolver.resolve(PublicEntityKeyResolver.Entity.DICOM_SERVER, "server-key", null))
+                .thenReturn(5L);
+        when(dicomServerMapper.getDicomServerById(5L, 11L)).thenReturn(List.of(server));
+
+        Object resolution = ReflectionTestUtils.invokeMethod(service, "resolveDicomServer", 11L, "server-key");
+        HospitalDicomServerResponse resolvedServer = (HospitalDicomServerResponse) ReflectionTestUtils.getField(resolution, "server");
+
+        assertNotNull(resolvedServer);
+        assertEquals("http://192.168.192.4:8042", resolvedServer.getBaseUrl());
     }
 
     @Test
